@@ -27,7 +27,7 @@ use tracing::{debug, info, warn};
 use crate::engine::Captured;
 use crate::platform::{self, CaptureCtl};
 
-const PING_INTERVAL: Duration = Duration::from_secs(5);
+const PING_INTERVAL: Duration = Duration::from_secs(1);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(15);
 const RETURN_COOLDOWN: Duration = Duration::from_millis(300);
 const EDGE_INSET: i32 = 2;
@@ -89,6 +89,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     };
 
     // The layout editor rides along with the host process.
+    crate::ui::mark_running();
     tokio::spawn(async {
         if let Err(e) = crate::ui::serve_forever().await {
             debug!("ui server not started: {e:#}");
@@ -97,6 +98,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     info!("layout editor: {}", crate::ui::url());
     info!("host ready — move the cursor against a portal edge to cross over");
     loop {
+        let prev_focus = router.focus.clone();
         tokio::select! {
             cap = cap_rx.recv() => match cap {
                 Some(ev) => router.on_captured(ev, &mut cap_rx),
@@ -106,6 +108,9 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
                 Some(ev) => router.on_session_event(ev),
                 None => break,
             },
+        }
+        if router.focus != prev_focus {
+            crate::ui::set_focus(router.focus.clone());
         }
     }
     Ok(())
@@ -395,8 +400,13 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Msg>();
     sessions.lock().unwrap().insert(name.clone(), out_tx);
     let _ = evt_tx.send(SessionEvent::Connected { name: name.clone() });
+    crate::ui::set_connected(&name, true);
+
+    // Ping seq -> send time, so a Pong yields a round-trip measurement.
+    let pending: Arc<Mutex<HashMap<u64, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // Writer task: relays router messages and keeps the link warm with pings.
+    let writer_pending = pending.clone();
     let writer_task = tokio::spawn(async move {
         let mut ping = tokio::time::interval(PING_INTERVAL);
         let mut seq = 0u64;
@@ -408,6 +418,15 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
                 },
                 _ = ping.tick() => {
                     seq += 1;
+                    {
+                        let mut p = writer_pending.lock().unwrap();
+                        p.insert(seq, Instant::now());
+                        // Bound the map if pongs stop coming.
+                        if p.len() > 32 {
+                            let cutoff = Instant::now() - Duration::from_secs(30);
+                            p.retain(|_, t| *t > cutoff);
+                        }
+                    }
                     if writer.send(&Msg::Ping(seq)).await.is_err() { return; }
                 }
             }
@@ -422,7 +441,12 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
                 Msg::CursorLeft { edge, ratio } => {
                     let _ = evt_tx.send(SessionEvent::CursorLeft { name: name.clone(), edge, ratio });
                 }
-                Msg::Pong(_) => {}
+                Msg::Pong(seq) => {
+                    let sent = pending.lock().unwrap().remove(&seq);
+                    if let Some(sent) = sent {
+                        crate::ui::set_rtt(&name, sent.elapsed().as_secs_f64() * 1000.0);
+                    }
+                }
                 Msg::Bye => return Ok(()),
                 other => debug!("unexpected from {name}: {other:?}"),
             }
@@ -431,6 +455,7 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
     .await;
 
     sessions.lock().unwrap().remove(&name);
+    crate::ui::set_connected(&name, false);
     let _ = evt_tx.send(SessionEvent::Disconnected { name });
     writer_task.abort();
     result

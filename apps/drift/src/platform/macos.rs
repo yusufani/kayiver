@@ -235,17 +235,21 @@ pub fn ensure_permissions() -> Result<()> {
 
     let start = Instant::now();
     let mut opened_settings = false;
-    while start.elapsed() < Duration::from_secs(180) {
+    let mut last_reminder = Instant::now();
+    // Wait patiently (up to 15 min): granting these takes a trip through
+    // System Settings and there is no reason to rush the user.
+    while start.elapsed() < Duration::from_secs(900) {
         if permissions_ok() {
             eprintln!("permissions granted — continuing.");
             return Ok(());
         }
-        // If nothing happened after a while the dialogs were probably
-        // dismissed earlier; open the exact Settings panes as a fallback.
-        if !opened_settings && start.elapsed() > Duration::from_secs(10) {
+        // If nothing happened after a few seconds the dialogs were probably
+        // dismissed; open the exact Settings panes as a fallback.
+        if !opened_settings && start.elapsed() > Duration::from_secs(6) {
             opened_settings = true;
-            eprintln!("still waiting… opening System Settings at the right panes:");
-            eprintln!("  enable your terminal (or drift) in BOTH lists, then come back here.");
+            eprintln!("opening System Settings at the right panes — enable drift (or Terminal) in BOTH:");
+            eprintln!("  • Privacy & Security → Accessibility");
+            eprintln!("  • Privacy & Security → Input Monitoring");
             let _ = std::process::Command::new("open")
                 .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
                 .spawn();
@@ -253,11 +257,15 @@ pub fn ensure_permissions() -> Result<()> {
                 .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
                 .spawn();
         }
+        if last_reminder.elapsed() > Duration::from_secs(30) {
+            last_reminder = Instant::now();
+            eprintln!("still waiting for permissions… (drift continues automatically once granted)");
+        }
         std::thread::sleep(Duration::from_secs(1));
     }
     anyhow::bail!(
-        "permissions still missing after 3 minutes — enable this app in System Settings → \
-         Privacy & Security → Accessibility and Input Monitoring, then run `drift run` again"
+        "permissions still missing — enable drift in System Settings → Privacy & Security → \
+         Accessibility and Input Monitoring, then run `drift run` again"
     )
 }
 

@@ -5,6 +5,9 @@
 //! drag & drop and POSTs the resulting edge links, which are written to
 //! config.toml; a running host hot-reloads the layout within ~2 s.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use anyhow::{Context, Result};
 use drift_core::config::Config;
 use drift_core::layout::Link;
@@ -14,6 +17,50 @@ use tracing::warn;
 
 const INDEX_HTML: &str = include_str!("index.html");
 pub const UI_PORT: u16 = 24818;
+
+/// Live status the running host publishes for the editor to render
+/// (connection dots, latency, which machine currently has the cursor).
+#[derive(Default, Clone)]
+pub struct PeerLive {
+    pub connected: bool,
+    pub rtt_ms: Option<f64>,
+}
+
+#[derive(Default)]
+pub struct LiveState {
+    pub running: bool,
+    pub focus: Option<String>,
+    pub peers: HashMap<String, PeerLive>,
+}
+
+static LIVE: OnceLock<Mutex<LiveState>> = OnceLock::new();
+
+fn live() -> &'static Mutex<LiveState> {
+    LIVE.get_or_init(|| Mutex::new(LiveState::default()))
+}
+
+/// Called by the host once, to mark that a live session router exists.
+pub fn mark_running() {
+    live().lock().unwrap().running = true;
+}
+
+pub fn set_connected(peer: &str, connected: bool) {
+    let mut s = live().lock().unwrap();
+    let e = s.peers.entry(peer.to_string()).or_default();
+    e.connected = connected;
+    if !connected {
+        e.rtt_ms = None;
+    }
+}
+
+pub fn set_rtt(peer: &str, rtt_ms: f64) {
+    let mut s = live().lock().unwrap();
+    s.peers.entry(peer.to_string()).or_default().rtt_ms = Some(rtt_ms);
+}
+
+pub fn set_focus(focus: Option<String>) {
+    live().lock().unwrap().focus = focus;
+}
 
 pub fn url() -> String {
     format!("http://127.0.0.1:{UI_PORT}")
@@ -135,6 +182,7 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
             Ok(json) => ("200 OK", "application/json", json.into_bytes()),
             Err(e) => ("500 Internal Server Error", "text/plain", e.to_string().into_bytes()),
         },
+        ("GET", "/api/status") => ("200 OK", "application/json", api_status().into_bytes()),
         ("POST", "/api/layout") => match api_save_layout(body) {
             Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
@@ -163,6 +211,23 @@ fn api_state() -> Result<String> {
         "machines": machines,
         "links": cfg.layout.links,
     }))?)
+}
+
+fn api_status() -> String {
+    let s = live().lock().unwrap();
+    let peers: HashMap<&String, serde_json::Value> = s
+        .peers
+        .iter()
+        .map(|(name, p)| {
+            (name, serde_json::json!({ "connected": p.connected, "rtt_ms": p.rtt_ms }))
+        })
+        .collect();
+    serde_json::json!({
+        "running": s.running,
+        "focus": s.focus,
+        "peers": peers,
+    })
+    .to_string()
 }
 
 fn api_save_layout(body: &[u8]) -> Result<()> {
