@@ -62,7 +62,8 @@ pub fn desktop_bounds() -> Rect {
 
 /// Every physical display, in virtual-screen coordinates.
 pub fn monitors() -> Vec<Rect> {
-    use windows::Win32::Foundation::{BOOL, RECT};
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
 
     unsafe extern "system" fn cb(_m: HMONITOR, _dc: HDC, rc: *mut RECT, out: LPARAM) -> BOOL {
