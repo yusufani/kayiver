@@ -28,6 +28,10 @@ pub struct Peer {
     /// where multicast is filtered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addr: Option<String>,
+    /// Last known physical displays of this peer (cached from its Hello so
+    /// the layout editor can draw real monitor shapes while it's offline).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screens: Vec<crate::proto::Rect>,
 }
 
 impl Peer {
@@ -142,7 +146,7 @@ mod tests {
                 links: vec![Link { from: "mac-studio".into(), edge: Edge::Right, to: "win".into() }],
             },
         };
-        let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()) };
+        let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), screens: vec![] };
         peer.set_psk(&[9u8; 32]);
         cfg.peers.push(peer);
 

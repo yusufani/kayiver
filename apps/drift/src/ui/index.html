@@ -6,14 +6,15 @@
 <title>drift — layout</title>
 <style>
   :root {
-    --bg: #0f1115; --panel: #171a21; --line: #262b36;
+    --bg: #0f1115; --panel: #171a21; --panel2: #1d2129; --line: #262b36;
     --text: #e6e9ef; --muted: #8b93a3; --accent: #5eead4; --accent-dim: #134e4a;
-    --danger: #f87171;
+    --danger: #f87171; --chip: rgba(15, 17, 21, .85);
   }
   @media (prefers-color-scheme: light) {
     :root {
-      --bg: #f4f5f7; --panel: #ffffff; --line: #dfe3ea;
+      --bg: #f4f5f7; --panel: #ffffff; --panel2: #f0f2f5; --line: #d5dae2;
       --text: #16181d; --muted: #667085; --accent: #0d9488; --accent-dim: #ccfbf1;
+      --chip: rgba(255, 255, 255, .9);
     }
   }
   * { box-sizing: border-box; margin: 0; }
@@ -22,10 +23,7 @@
     font: 14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
     min-height: 100vh; display: flex; flex-direction: column;
   }
-  header {
-    display: flex; align-items: baseline; gap: 12px;
-    padding: 18px 24px 10px;
-  }
+  header { display: flex; align-items: baseline; gap: 12px; padding: 18px 24px 10px; }
   header h1 { font-size: 18px; letter-spacing: .5px; }
   header h1 span { color: var(--accent); }
   header .sub { color: var(--muted); font-size: 13px; }
@@ -36,27 +34,31 @@
       radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0) 0 0 / 28px 28px;
     touch-action: none;
   }
-  .screen {
-    position: absolute; width: 190px; height: 118px;
-    background: var(--panel); border: 1.5px solid var(--line); border-radius: 10px;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 4px; cursor: grab; user-select: none;
-    box-shadow: 0 4px 16px rgba(0,0,0,.25);
+  .machine { position: absolute; cursor: grab; user-select: none; }
+  .machine.dragging { cursor: grabbing; opacity: .93; z-index: 10; }
+  .mon {
+    position: absolute; background: var(--panel);
+    border: 1.5px solid var(--line); border-radius: 8px;
+    display: flex; align-items: flex-end; justify-content: flex-end;
+    padding: 6px 8px; color: var(--muted); font-size: 10.5px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.22);
     transition: border-color .12s, box-shadow .12s;
   }
-  .screen.dragging { cursor: grabbing; opacity: .92; z-index: 10; }
-  .screen.snapped { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
-  .screen .name { font-weight: 600; font-size: 15px; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .screen .tag { font-size: 11px; color: var(--muted); }
-  .screen .tag.me { color: var(--accent); font-weight: 600; }
-  footer {
-    display: flex; align-items: center; gap: 14px; padding: 14px 24px 20px;
+  .machine.me .mon { background: var(--panel2); }
+  .machine.snapped .mon { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+  .chip {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    background: var(--chip); border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 12px; text-align: center; pointer-events: none; white-space: nowrap;
+    font-weight: 650; font-size: 12.5px; backdrop-filter: blur(4px);
   }
+  .chip small { display: block; font-weight: 400; font-size: 10px; color: var(--muted); }
+  .machine.me .chip small { color: var(--accent); }
+  footer { display: flex; align-items: center; gap: 14px; padding: 14px 24px 20px; }
   button {
     background: var(--accent); color: #06251f; border: 0; border-radius: 8px;
     padding: 9px 22px; font-size: 14px; font-weight: 700; cursor: pointer;
   }
-  button:disabled { opacity: .45; cursor: default; }
   #status { color: var(--muted); font-size: 13px; }
   #status.err { color: var(--danger); }
   #status.ok { color: var(--accent); }
@@ -66,18 +68,17 @@
 <body>
 <header>
   <h1>drift <span>layout</span></h1>
-  <div class="sub">drag the screens to match your desk — touching edges become crossings</div>
+  <div class="sub">drag machines to match your desk — touching edges become crossings</div>
 </header>
 <div id="canvas"></div>
 <footer>
   <button id="save">Save layout</button>
   <div id="status"></div>
-  <div class="hint">changes apply live to a running host<br>screens must touch to be linked</div>
+  <div class="hint">monitor shapes are real (proportional)<br>changes apply live to a running host</div>
 </footer>
 <script>
-const SNAP = 18;          // px gap that still counts as "touching"
-const W = 190, H = 118;
-let machines = [];        // {name, me, x, y, el}
+const SNAP = 18; // px gap that still counts as "touching"
+let machines = []; // {name, me, monitors, x, y, w, h, el}  (w/h = scaled bbox)
 const canvas = document.getElementById('canvas');
 const statusEl = document.getElementById('status');
 
@@ -89,23 +90,48 @@ function setStatus(msg, cls) {
 async function load() {
   const r = await fetch('/api/state');
   const s = await r.json();
-  const names = [s.name, ...s.peers.filter(p => p !== s.name)];
-  machines = names.map(n => ({ name: n, me: n === s.name, x: 0, y: 0 }));
+
+  // One scale for everything, so relative monitor sizes are truthful.
+  let maxW = 1;
+  for (const m of s.machines) {
+    const bb = bbox(m.monitors);
+    maxW = Math.max(maxW, bb.w);
+  }
+  const scale = Math.min(0.08, 340 / maxW);
+
+  machines = s.machines.map(m => {
+    const bb = bbox(m.monitors);
+    return {
+      name: m.name, me: m.me, monitors: m.monitors, bb, scale,
+      x: 0, y: 0,
+      w: Math.max(70, bb.w * scale),
+      h: Math.max(48, bb.h * scale),
+    };
+  });
   placeFromLinks(s.links);
   machines.forEach(makeEl);
   refreshSnapHighlights();
 }
 
-// Initial positions: BFS over saved links, unplaced machines go in a row below.
+function bbox(mons) {
+  const x = Math.min(...mons.map(m => m.x));
+  const y = Math.min(...mons.map(m => m.y));
+  return {
+    x, y,
+    w: Math.max(...mons.map(m => m.x + m.w)) - x,
+    h: Math.max(...mons.map(m => m.y + m.h)) - y,
+  };
+}
+
+// Initial positions: BFS over saved links; unplaced machines go in a row below.
 function placeFromLinks(links) {
   const cw = canvas.clientWidth, ch = canvas.clientHeight;
   const byName = Object.fromEntries(machines.map(m => [m.name, m]));
   const placed = new Set();
   const me = machines.find(m => m.me) || machines[0];
-  me.x = (cw - W) / 2; me.y = (ch - H) / 2;
+  me.x = (cw - me.w) / 2; me.y = (ch - me.h) / 2;
   placed.add(me.name);
   const queue = [me];
-  const DELTA = { left: [-W, 0], right: [W, 0], top: [0, -H], bottom: [0, H] };
   const OPP = { left: 'right', right: 'left', top: 'bottom', bottom: 'top' };
   while (queue.length) {
     const cur = queue.shift();
@@ -114,8 +140,10 @@ function placeFromLinks(links) {
       if (l.from === cur.name) { other = byName[l.to]; edge = l.edge; }
       else if (l.to === cur.name) { other = byName[l.from]; edge = OPP[l.edge]; }
       if (!other || placed.has(other.name)) continue;
-      other.x = cur.x + DELTA[edge][0];
-      other.y = cur.y + DELTA[edge][1];
+      if (edge === 'left')   { other.x = cur.x - other.w; other.y = cur.y + (cur.h - other.h) / 2; }
+      if (edge === 'right')  { other.x = cur.x + cur.w;   other.y = cur.y + (cur.h - other.h) / 2; }
+      if (edge === 'top')    { other.y = cur.y - other.h; other.x = cur.x + (cur.w - other.w) / 2; }
+      if (edge === 'bottom') { other.y = cur.y + cur.h;   other.x = cur.x + (cur.w - other.w) / 2; }
       placed.add(other.name);
       queue.push(other);
     }
@@ -123,18 +151,33 @@ function placeFromLinks(links) {
   let i = 0;
   for (const m of machines) {
     if (!placed.has(m.name)) {
-      m.x = 40 + i * (W + 30);
-      m.y = ch - H - 30;
+      m.x = 40 + i * (m.w + 30);
+      m.y = ch - m.h - 30;
       i++;
     }
+    clampToCanvas(m);
   }
 }
 
 function makeEl(m) {
   const el = document.createElement('div');
-  el.className = 'screen';
-  el.innerHTML = `<div class="name">${m.name}</div>` +
-    `<div class="tag ${m.me ? 'me' : ''}">${m.me ? 'this machine' : 'paired'}</div>`;
+  el.className = 'machine' + (m.me ? ' me' : '');
+  el.style.width = m.w + 'px';
+  el.style.height = m.h + 'px';
+  for (const mon of m.monitors) {
+    const d = document.createElement('div');
+    d.className = 'mon';
+    d.style.left = ((mon.x - m.bb.x) * m.scale) + 'px';
+    d.style.top = ((mon.y - m.bb.y) * m.scale) + 'px';
+    d.style.width = Math.max(40, mon.w * m.scale) + 'px';
+    d.style.height = Math.max(30, mon.h * m.scale) + 'px';
+    d.textContent = mon.w + '×' + mon.h;
+    el.appendChild(d);
+  }
+  const chip = document.createElement('div');
+  chip.className = 'chip';
+  chip.innerHTML = m.name + '<small>' + (m.me ? 'this machine' : 'paired') + '</small>';
+  el.appendChild(chip);
   canvas.appendChild(el);
   m.el = el;
   position(m);
@@ -169,20 +212,21 @@ function position(m) {
 }
 
 function clampToCanvas(m) {
-  m.x = Math.max(0, Math.min(canvas.clientWidth - W, m.x));
-  m.y = Math.max(0, Math.min(canvas.clientHeight - H, m.y));
+  m.x = Math.max(0, Math.min(canvas.clientWidth - m.w, m.x));
+  m.y = Math.max(0, Math.min(canvas.clientHeight - m.h, m.y));
 }
+
+function overlapV(a, b) { return Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y); }
+function overlapH(a, b) { return Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x); }
 
 // After drop, pull the box flush against the nearest touching neighbor.
 function magnet(m) {
   for (const o of machines) {
     if (o === m) continue;
-    const vOverlap = Math.min(m.y + H, o.y + H) - Math.max(m.y, o.y);
-    const hOverlap = Math.min(m.x + W, o.x + W) - Math.max(m.x, o.x);
-    if (Math.abs(m.x - (o.x + W)) <= SNAP && vOverlap > 20) m.x = o.x + W;
-    else if (Math.abs(m.x + W - o.x) <= SNAP && vOverlap > 20) m.x = o.x - W;
-    else if (Math.abs(m.y - (o.y + H)) <= SNAP && hOverlap > 20) m.y = o.y + H;
-    else if (Math.abs(m.y + H - o.y) <= SNAP && hOverlap > 20) m.y = o.y - H;
+    if (Math.abs(m.x - (o.x + o.w)) <= SNAP && overlapV(m, o) > 20) m.x = o.x + o.w;
+    else if (Math.abs(m.x + m.w - o.x) <= SNAP && overlapV(m, o) > 20) m.x = o.x - m.w;
+    else if (Math.abs(m.y - (o.y + o.h)) <= SNAP && overlapH(m, o) > 20) m.y = o.y + o.h;
+    else if (Math.abs(m.y + m.h - o.y) <= SNAP && overlapH(m, o) > 20) m.y = o.y - m.h;
   }
 }
 
@@ -191,12 +235,10 @@ function currentLinks() {
   for (const a of machines) {
     for (const b of machines) {
       if (a === b) continue;
-      const vOverlap = Math.min(a.y + H, b.y + H) - Math.max(a.y, b.y);
-      const hOverlap = Math.min(a.x + W, b.x + W) - Math.max(a.x, b.x);
-      // only emit left->right / top->bottom once per pair
-      if (Math.abs(a.x + W - b.x) <= SNAP && vOverlap > 20)
+      // emit left->right / top->bottom once per pair
+      if (Math.abs(a.x + a.w - b.x) <= SNAP && overlapV(a, b) > 20)
         links.push({ from: a.name, edge: 'right', to: b.name });
-      if (Math.abs(a.y + H - b.y) <= SNAP && hOverlap > 20)
+      if (Math.abs(a.y + a.h - b.y) <= SNAP && overlapH(a, b) > 20)
         links.push({ from: a.name, edge: 'bottom', to: b.name });
     }
   }
@@ -212,7 +254,7 @@ function refreshSnapHighlights() {
 document.getElementById('save').addEventListener('click', async () => {
   const links = currentLinks();
   if (machines.length > 1 && links.length === 0) {
-    setStatus('nothing touches — drag the screens against each other first', 'err');
+    setStatus('nothing touches — drag the machines against each other first', 'err');
     return;
   }
   const r = await fetch('/api/layout', {

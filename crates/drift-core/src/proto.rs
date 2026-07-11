@@ -60,7 +60,10 @@ pub enum Msg {
         version: u16,
         name: String,
         os: String,
+        /// Bounding box of the whole desktop.
         screen: Rect,
+        /// Individual physical displays (used by the layout editor).
+        monitors: Vec<Rect>,
     },
     /// host -> client reply. `portal_edges` are the client's own desktop edges
     /// that lead somewhere in the layout; hitting one must emit `CursorLeft`.
@@ -123,6 +126,10 @@ mod tests {
                 name: "win-desktop".into(),
                 os: "windows".into(),
                 screen: Rect { x: 0, y: 0, w: 5120, h: 1440 },
+                monitors: vec![
+                    Rect { x: 0, y: 0, w: 2560, h: 1440 },
+                    Rect { x: 2560, y: 0, w: 2560, h: 1440 },
+                ],
             },
             Msg::Input(InputEvent::MouseMove { dx: -3, dy: 7 }),
             Msg::Input(InputEvent::Key { key: 0x04, pressed: true }),

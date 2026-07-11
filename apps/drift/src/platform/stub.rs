@@ -14,6 +14,10 @@ pub fn desktop_bounds() -> Rect {
     Rect { x: 0, y: 0, w: 1920, h: 1080 }
 }
 
+pub fn monitors() -> Vec<Rect> {
+    vec![desktop_bounds()]
+}
+
 pub fn ensure_permissions() -> Result<()> {
     Ok(())
 }

@@ -85,6 +85,7 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
             name: cfg.name.clone(),
             os: std::env::consts::OS.to_string(),
             screen: bounds,
+            monitors: platform::monitors(),
         })
         .await?;
 

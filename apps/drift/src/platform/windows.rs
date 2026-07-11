@@ -60,6 +60,28 @@ pub fn desktop_bounds() -> Rect {
     }
 }
 
+/// Every physical display, in virtual-screen coordinates.
+pub fn monitors() -> Vec<Rect> {
+    use windows::Win32::Foundation::{BOOL, RECT};
+    use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
+
+    unsafe extern "system" fn cb(_m: HMONITOR, _dc: HDC, rc: *mut RECT, out: LPARAM) -> BOOL {
+        let list = &mut *(out.0 as *mut Vec<Rect>);
+        let r = &*rc;
+        list.push(Rect { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top });
+        BOOL(1)
+    }
+
+    let mut list: Vec<Rect> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(None, None, Some(cb), LPARAM(&mut list as *mut _ as isize));
+    }
+    if list.is_empty() {
+        list.push(desktop_bounds());
+    }
+    list
+}
+
 pub fn ensure_permissions() -> Result<()> {
     Ok(()) // no special permissions needed on Windows
 }

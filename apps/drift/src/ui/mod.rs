@@ -145,10 +145,22 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
 
 fn api_state() -> Result<String> {
     let cfg = Config::load_or_init()?;
-    let peers: Vec<&str> = cfg.peers.iter().map(|p| p.name.as_str()).collect();
-    Ok(serde_json::to_string(&serde_json::json!({
+    let fallback = vec![drift_core::proto::Rect { x: 0, y: 0, w: 1920, h: 1080 }];
+    let mut machines = vec![serde_json::json!({
         "name": cfg.name,
-        "peers": peers,
+        "me": true,
+        "monitors": crate::platform::monitors(),
+    })];
+    for p in &cfg.peers {
+        machines.push(serde_json::json!({
+            "name": p.name,
+            "me": false,
+            // Real shapes once the peer has connected at least once.
+            "monitors": if p.screens.is_empty() { &fallback } else { &p.screens },
+        }));
+    }
+    Ok(serde_json::to_string(&serde_json::json!({
+        "machines": machines,
         "links": cfg.layout.links,
     }))?)
 }

@@ -159,28 +159,25 @@ const SOURCE_HID_STATE: i32 = 1; // kCGEventSourceStateHIDSystemState
 
 // ------------------------------------------------------------- helpers ----
 
-pub fn desktop_bounds() -> Rect {
+/// Every physical display, in global top-left-origin coordinates.
+pub fn monitors() -> Vec<Rect> {
     unsafe {
         let mut ids = [0u32; 16];
         let mut count = 0u32;
         if CGGetActiveDisplayList(16, ids.as_mut_ptr(), &mut count) != 0 || count == 0 {
-            let main = CGMainDisplayID();
-            let b = CGDisplayBounds(main);
-            return cgrect_to_rect(b);
+            return vec![cgrect_to_rect(CGDisplayBounds(CGMainDisplayID()))];
         }
-        let mut min_x = f64::MAX;
-        let mut min_y = f64::MAX;
-        let mut max_x = f64::MIN;
-        let mut max_y = f64::MIN;
-        for &id in &ids[..count as usize] {
-            let b = CGDisplayBounds(id);
-            min_x = min_x.min(b.origin.x);
-            min_y = min_y.min(b.origin.y);
-            max_x = max_x.max(b.origin.x + b.size.width);
-            max_y = max_y.max(b.origin.y + b.size.height);
-        }
-        Rect { x: min_x as i32, y: min_y as i32, w: (max_x - min_x) as i32, h: (max_y - min_y) as i32 }
+        ids[..count as usize].iter().map(|&id| cgrect_to_rect(CGDisplayBounds(id))).collect()
     }
+}
+
+pub fn desktop_bounds() -> Rect {
+    let mons = monitors();
+    let min_x = mons.iter().map(|m| m.x).min().unwrap_or(0);
+    let min_y = mons.iter().map(|m| m.y).min().unwrap_or(0);
+    let max_x = mons.iter().map(|m| m.right()).max().unwrap_or(1920);
+    let max_y = mons.iter().map(|m| m.bottom()).max().unwrap_or(1080);
+    Rect { x: min_x, y: min_y, w: max_x - min_x, h: max_y - min_y }
 }
 
 fn cgrect_to_rect(b: CGRect) -> Rect {

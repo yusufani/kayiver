@@ -360,14 +360,28 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
     let (mut reader, mut writer) = secure::handshake_responder(stream, &psk).await?;
 
     let hello = tokio::time::timeout(Duration::from_secs(5), reader.recv()).await??;
-    let (client_screen, os) = match hello {
-        Msg::Hello { version, screen, os, .. } => {
+    let (client_screen, os, monitors) = match hello {
+        Msg::Hello { version, screen, os, monitors, .. } => {
             anyhow::ensure!(version == PROTOCOL_VERSION, "protocol version mismatch: {version} != {PROTOCOL_VERSION}");
-            (screen, os)
+            (screen, os, monitors)
         }
         other => anyhow::bail!("expected Hello, got {other:?}"),
     };
     debug!(?client_screen, %os, "client hello");
+
+    // Cache the peer's monitor shapes so the layout editor can draw them.
+    if !monitors.is_empty() {
+        if let Ok(mut fresh) = Config::load_or_init() {
+            if let Some(p) = fresh.peers.iter_mut().find(|p| p.name == name) {
+                if p.screens != monitors {
+                    p.screens = monitors;
+                    if let Err(e) = fresh.save() {
+                        debug!("could not cache peer screens: {e}");
+                    }
+                }
+            }
+        }
+    }
 
     let portal_edges = { layout.read().unwrap().portals(&name) };
     writer
