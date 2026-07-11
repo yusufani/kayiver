@@ -24,7 +24,6 @@ use anyhow::{bail, Result};
 use drift_core::layout::{ratio_on_edge, touches_edge};
 use drift_core::proto::{InputEvent, MouseButton, Rect};
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::warn;
 
 use crate::engine::Captured;
 use crate::keymap;
@@ -93,6 +92,8 @@ extern "C" {
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
+    fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+    static kAXTrustedCheckOptionPrompt: CFStringRef;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -102,6 +103,18 @@ extern "C" {
     fn CFRunLoopAddSource(rl: CFRunLoopRef, src: CFRunLoopSourceRef, mode: CFStringRef);
     fn CFRunLoopRun();
     static kCFRunLoopCommonModes: CFStringRef;
+    fn CFDictionaryCreate(
+        allocator: *const c_void,
+        keys: *const *const c_void,
+        values: *const *const c_void,
+        num_values: isize,
+        key_callbacks: *const c_void,
+        value_callbacks: *const c_void,
+    ) -> *const c_void;
+    fn CFRelease(p: *const c_void);
+    static kCFBooleanTrue: *const c_void;
+    static kCFTypeDictionaryKeyCallBacks: c_void;
+    static kCFTypeDictionaryValueCallBacks: c_void;
 }
 
 // CGEventType values.
@@ -174,19 +187,81 @@ fn cgrect_to_rect(b: CGRect) -> Rect {
     Rect { x: b.origin.x as i32, y: b.origin.y as i32, w: b.size.width as i32, h: b.size.height as i32 }
 }
 
-pub fn ensure_permissions() -> Result<()> {
+fn permissions_ok() -> bool {
+    unsafe { AXIsProcessTrusted() && CGPreflightListenEventAccess() && CGPreflightPostEventAccess() }
+}
+
+/// Show the native macOS permission dialog for Accessibility (registers the
+/// app in the Settings list and offers an "Open System Settings" button).
+fn prompt_accessibility() {
     unsafe {
-        if !CGPreflightPostEventAccess() {
-            CGRequestPostEventAccess();
+        let key = kAXTrustedCheckOptionPrompt as *const c_void;
+        let val = kCFBooleanTrue;
+        let dict = CFDictionaryCreate(
+            std::ptr::null(),
+            &key,
+            &val,
+            1,
+            &kCFTypeDictionaryKeyCallBacks as *const c_void,
+            &kCFTypeDictionaryValueCallBacks as *const c_void,
+        );
+        AXIsProcessTrustedWithOptions(dict);
+        if !dict.is_null() {
+            CFRelease(dict);
+        }
+    }
+}
+
+/// Fresh-install flow: trigger the native permission prompts and wait until
+/// the user approves, then continue automatically — no manual Settings
+/// spelunking, no restart required in the common case.
+pub fn ensure_permissions() -> Result<()> {
+    if permissions_ok() {
+        return Ok(());
+    }
+    unsafe {
+        // Each of these pops the corresponding system dialog (once) and
+        // registers this binary in the right Privacy & Security list.
+        if !AXIsProcessTrusted() {
+            prompt_accessibility();
         }
         if !CGPreflightListenEventAccess() {
             CGRequestListenEventAccess();
         }
-        if !AXIsProcessTrusted() {
-            warn!("Accessibility permission missing: System Settings -> Privacy & Security -> Accessibility -> enable your terminal / drift");
+        if !CGPreflightPostEventAccess() {
+            CGRequestPostEventAccess();
         }
     }
-    Ok(())
+    eprintln!();
+    eprintln!("drift needs two macOS permissions: Accessibility and Input Monitoring.");
+    eprintln!("Approve the dialogs that just appeared — drift will continue by itself.");
+
+    let start = Instant::now();
+    let mut opened_settings = false;
+    while start.elapsed() < Duration::from_secs(180) {
+        if permissions_ok() {
+            eprintln!("permissions granted — continuing.");
+            return Ok(());
+        }
+        // If nothing happened after a while the dialogs were probably
+        // dismissed earlier; open the exact Settings panes as a fallback.
+        if !opened_settings && start.elapsed() > Duration::from_secs(10) {
+            opened_settings = true;
+            eprintln!("still waiting… opening System Settings at the right panes:");
+            eprintln!("  enable your terminal (or drift) in BOTH lists, then come back here.");
+            let _ = std::process::Command::new("open")
+                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+                .spawn();
+            let _ = std::process::Command::new("open")
+                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+                .spawn();
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    anyhow::bail!(
+        "permissions still missing after 3 minutes — enable this app in System Settings → \
+         Privacy & Security → Accessibility and Input Monitoring, then run `drift run` again"
+    )
 }
 
 pub fn doctor_permissions() {
@@ -208,10 +283,6 @@ pub fn cursor_pos() -> (i32, i32) {
     unsafe {
         let e = CGEventCreate(std::ptr::null_mut());
         let p = CGEventGetLocation(e);
-        // CGEventCreate result is CF-owned; releasing via CFRelease.
-        extern "C" {
-            fn CFRelease(p: *const c_void);
-        }
         CFRelease(e);
         (p.x as i32, p.y as i32)
     }
@@ -447,9 +518,6 @@ impl Injector {
             if !e.is_null() {
                 CGEventSetFlags(e, self.flags);
                 CGEventPost(TAP_HID, e);
-                extern "C" {
-                    fn CFRelease(p: *const c_void);
-                }
                 CFRelease(e);
             }
         }
