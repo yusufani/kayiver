@@ -15,7 +15,7 @@ use drift_core::proto::{InputEvent, Intro, Msg, Rect, PROTOCOL_VERSION};
 use drift_core::secure;
 use drift_core::wire::write_frame;
 use tokio::net::TcpStream;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::platform::{self, Injector};
 
@@ -115,15 +115,19 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
                 state.pos = point_on_edge(state.bounds, edge, ratio, EDGE_INSET);
                 state.injector.mouse_to(state.pos.0, state.pos.1, 0, 0);
                 state.active = true;
+                info!("cursor entered via {edge} edge -> injecting at {:?}", state.pos);
             }
             Msg::Leave => {
                 state.active = false;
                 state.injector.release_all();
+                debug!("cursor left; input released");
             }
             Msg::Input(ev) => {
+                debug!("input {ev:?} -> pos {:?}", state.pos);
                 if let Some((edge, ratio)) = state.apply(ev) {
                     state.active = false;
                     state.injector.release_all();
+                    info!("pushed through {edge} edge -> returning control to host");
                     writer.send(&Msg::CursorLeft { edge, ratio }).await?;
                 }
             }
