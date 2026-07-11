@@ -70,10 +70,15 @@ fn main() -> Result<()> {
 fn run() -> Result<()> {
     let cfg = Config::load_or_init()?;
     if cfg.peers.is_empty() {
+        // A host can run before its first pairing (useful to verify
+        // permissions and capture stability); a client has nothing to do.
         eprintln!("No paired devices yet.");
         eprintln!("  On the machine with the keyboard/mouse:  drift pair");
         eprintln!("  On the other machine:                    drift join <that-machine-ip>");
-        std::process::exit(2);
+        if cfg.mode == Mode::Client {
+            std::process::exit(2);
+        }
+        eprintln!("Running as host anyway — input stays local until a device pairs.");
     }
     platform::ensure_permissions()?;
     match cfg.mode {
