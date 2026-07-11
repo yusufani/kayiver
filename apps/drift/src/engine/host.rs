@@ -88,6 +88,13 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         down_buttons: HashSet::new(),
     };
 
+    // The layout editor rides along with the host process.
+    tokio::spawn(async {
+        if let Err(e) = crate::ui::serve_forever().await {
+            debug!("ui server not started: {e:#}");
+        }
+    });
+    info!("layout editor: {}", crate::ui::url());
     info!("host ready — move the cursor against a portal edge to cross over");
     loop {
         tokio::select! {

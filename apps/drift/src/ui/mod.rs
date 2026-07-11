@@ -15,27 +15,47 @@ use tracing::warn;
 const INDEX_HTML: &str = include_str!("index.html");
 pub const UI_PORT: u16 = 24818;
 
+pub fn url() -> String {
+    format!("http://127.0.0.1:{UI_PORT}")
+}
+
+/// Serve the editor forever. Used both by `drift ui` and by a running
+/// `drift run` (which embeds the editor so it is always one click away).
+pub async fn serve_forever() -> Result<()> {
+    // Localhost only: the editor writes to the local config and must not
+    // be reachable from the network.
+    let listener = TcpListener::bind(("127.0.0.1", UI_PORT))
+        .await
+        .with_context(|| format!("ui port {UI_PORT} busy"))?;
+    loop {
+        let (stream, _) = listener.accept().await?;
+        tokio::spawn(async move {
+            if let Err(e) = handle(stream).await {
+                warn!("ui request: {e:#}");
+            }
+        });
+    }
+}
+
 pub fn run(open_browser: bool) -> Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     rt.block_on(async {
-        // Localhost only: the editor writes to the local config and must not
-        // be reachable from the network.
-        let listener = TcpListener::bind(("127.0.0.1", UI_PORT))
-            .await
-            .with_context(|| format!("port {UI_PORT} busy — is another `drift ui` open?"))?;
-        let url = format!("http://127.0.0.1:{UI_PORT}");
+        let url = url();
+        // If a running `drift run` already serves the editor, just open it.
+        if TcpStream::connect(("127.0.0.1", UI_PORT)).await.is_ok() {
+            println!("drift layout editor (served by the running drift): {url}");
+            if open_browser {
+                open_in_browser(&url);
+            }
+            return Ok(());
+        }
+        let server = tokio::spawn(serve_forever());
         println!("drift layout editor: {url}  (Ctrl-C to quit)");
         if open_browser {
             open_in_browser(&url);
         }
-        loop {
-            let (stream, _) = listener.accept().await?;
-            tokio::spawn(async move {
-                if let Err(e) = handle(stream).await {
-                    warn!("ui request: {e:#}");
-                }
-            });
-        }
+        server.await??;
+        Ok(())
     })
 }
 
