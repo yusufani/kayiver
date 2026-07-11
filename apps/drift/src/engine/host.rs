@@ -59,7 +59,12 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     let cfg = Arc::new(cfg);
     let listener = TcpListener::bind(("0.0.0.0", cfg.port))
         .await
-        .with_context(|| format!("cannot listen on port {}", cfg.port))?;
+        .with_context(|| {
+            format!(
+                "port {} is busy — drift is probably already running (check with: pgrep -fl drift)",
+                cfg.port
+            )
+        })?;
     // Keep the daemon alive for the lifetime of the host: dropping it would
     // withdraw the mDNS advertisement.
     let _mdns = drift_core::discovery::advertise(&cfg.name, cfg.port)
