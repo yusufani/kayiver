@@ -1,0 +1,28 @@
+[package]
+name = "drift"
+description = "drift: a lightweight, open-source software KVM — share one keyboard and mouse across macOS, Windows (and soon Android)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "drift"
+path = "src/main.rs"
+
+[dependencies]
+drift-core = { path = "../../crates/drift-core" }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6"
+
+[target.'cfg(target_os = "windows")'.dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Threading",
+]

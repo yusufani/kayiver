@@ -1,0 +1,398 @@
+//! Windows backend.
+//!
+//! Capture: WH_MOUSE_LL / WH_KEYBOARD_LL hooks on a dedicated thread with a
+//! message pump. While forwarding, hook procs return 1 to swallow events, so
+//! the physical cursor never moves; each blocked WM_MOUSEMOVE still reports
+//! the *proposed* position, and the delta against the parked position is the
+//! raw motion we forward. The cursor is parked a safe inset away from the
+//! portal edge so proposed positions are never clamped by the screen bounds.
+//!
+//! Injection: SendInput with MOUSEEVENTF_ABSOLUTE|VIRTUALDESK for motion
+//! (normalized to the virtual desktop) and VK+scancode pairs for keys.
+
+#![allow(clippy::missing_safety_doc)]
+
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use anyhow::{bail, Result};
+use drift_core::layout::{ratio_on_edge, touches_edge, Edge};
+use drift_core::proto::{InputEvent, MouseButton, Rect};
+use tokio::sync::mpsc::UnboundedSender;
+
+use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC,
+    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
+    MOUSEEVENTF_XUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, GetCursorPos, GetMessageW, GetSystemMetrics, SetCursorPos, SetWindowsHookExW,
+    KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
+    WM_XBUTTONUP,
+};
+
+use crate::engine::Captured;
+use crate::keymap;
+use crate::platform::CaptureCtl;
+
+const LLMHF_INJECTED: u32 = 0x1;
+const LLKHF_INJECTED: u32 = 0x10;
+/// Park the cursor this far inside the portal edge while forwarding, so
+/// proposed positions in the hook are never clamped by the desktop bounds.
+const PARK_INSET: i32 = 300;
+
+pub fn desktop_bounds() -> Rect {
+    unsafe {
+        Rect {
+            x: GetSystemMetrics(SM_XVIRTUALSCREEN),
+            y: GetSystemMetrics(SM_YVIRTUALSCREEN),
+            w: GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            h: GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        }
+    }
+}
+
+pub fn ensure_permissions() -> Result<()> {
+    Ok(()) // no special permissions needed on Windows
+}
+
+pub fn doctor_permissions() {
+    println!("  permissions : none required on Windows");
+}
+
+pub fn warp_cursor(x: i32, y: i32) {
+    unsafe {
+        let _ = SetCursorPos(x, y);
+    }
+    if let Some(s) = STATE.get() {
+        *s.park.lock().unwrap() = (x, y);
+    }
+}
+
+#[allow(dead_code)]
+pub fn cursor_pos() -> (i32, i32) {
+    let mut p = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut p);
+    }
+    (p.x, p.y)
+}
+
+pub fn set_forwarding_visuals(_on: bool) {
+    // The hook swallows all motion, so the cursor simply stays parked.
+    // Truly hiding a cursor owned by other processes needs an overlay
+    // window; tracked in ROADMAP.
+}
+
+// ------------------------------------------------------------- capture ----
+
+struct CapState {
+    ctl: Arc<CaptureCtl>,
+    tx: UnboundedSender<Captured>,
+    /// Where the physical cursor is parked while forwarding; deltas are
+    /// computed against this point.
+    park: Mutex<(i32, i32)>,
+    esc_downs: Mutex<[Option<Instant>; 2]>,
+}
+
+static STATE: OnceLock<CapState> = OnceLock::new();
+
+pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Result<()> {
+    if STATE
+        .set(CapState { ctl, tx, park: Mutex::new((0, 0)), esc_downs: Mutex::new([None, None]) })
+        .is_err()
+    {
+        bail!("capture already started");
+    }
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
+    std::thread::Builder::new().name("drift-capture".into()).spawn(move || unsafe {
+        let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(HINSTANCE::default()), 0);
+        let keyboard = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), Some(HINSTANCE::default()), 0);
+        match (mouse, keyboard) {
+            (Ok(_), Ok(_)) => {
+                let _ = ready_tx.send(Ok(()));
+            }
+            (m, k) => {
+                let _ = ready_tx.send(Err(anyhow::anyhow!("SetWindowsHookExW failed: {m:?} / {k:?}")));
+                return;
+            }
+        }
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {}
+    })?;
+
+    ready_rx
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(|_| anyhow::anyhow!("capture thread did not start"))?
+}
+
+unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code < 0 {
+        return CallNextHookEx(None, code, wparam, lparam);
+    }
+    let Some(state) = STATE.get() else {
+        return CallNextHookEx(None, code, wparam, lparam);
+    };
+    let info = &*(lparam.0 as *const MSLLHOOKSTRUCT);
+    let msg = wparam.0 as u32;
+
+    if info.flags & LLMHF_INJECTED != 0 {
+        // Our own SendInput/SetCursorPos events: never touch them.
+        return CallNextHookEx(None, code, wparam, lparam);
+    }
+
+    let forwarding = state.ctl.forwarding.load(Ordering::SeqCst);
+
+    if !forwarding {
+        if msg == WM_MOUSEMOVE {
+            maybe_enter_portal(state, info.pt.x, info.pt.y);
+        }
+        return CallNextHookEx(None, code, wparam, lparam);
+    }
+
+    let park = *state.park.lock().unwrap();
+    let captured = match msg {
+        WM_MOUSEMOVE => {
+            let dx = info.pt.x - park.0;
+            let dy = info.pt.y - park.1;
+            if dx == 0 && dy == 0 {
+                None
+            } else {
+                Some(InputEvent::MouseMove { dx, dy })
+            }
+        }
+        WM_LBUTTONDOWN => Some(InputEvent::MouseButton { button: MouseButton::Left, pressed: true }),
+        WM_LBUTTONUP => Some(InputEvent::MouseButton { button: MouseButton::Left, pressed: false }),
+        WM_RBUTTONDOWN => Some(InputEvent::MouseButton { button: MouseButton::Right, pressed: true }),
+        WM_RBUTTONUP => Some(InputEvent::MouseButton { button: MouseButton::Right, pressed: false }),
+        WM_MBUTTONDOWN => Some(InputEvent::MouseButton { button: MouseButton::Middle, pressed: true }),
+        WM_MBUTTONUP => Some(InputEvent::MouseButton { button: MouseButton::Middle, pressed: false }),
+        WM_XBUTTONDOWN | WM_XBUTTONUP => {
+            let which = (info.mouseData >> 16) as u16;
+            let button = if which == 2 { MouseButton::X2 } else { MouseButton::X1 };
+            Some(InputEvent::MouseButton { button, pressed: msg == WM_XBUTTONDOWN })
+        }
+        WM_MOUSEWHEEL => Some(InputEvent::Wheel { dx: 0, dy: (info.mouseData >> 16) as i16 as i32 }),
+        WM_MOUSEHWHEEL => Some(InputEvent::Wheel { dx: (info.mouseData >> 16) as i16 as i32, dy: 0 }),
+        _ => None,
+    };
+
+    if let Some(ev) = captured {
+        let _ = state.tx.send(Captured::Input(ev));
+    }
+    LRESULT(1) // swallow
+}
+
+unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code < 0 {
+        return CallNextHookEx(None, code, wparam, lparam);
+    }
+    let Some(state) = STATE.get() else {
+        return CallNextHookEx(None, code, wparam, lparam);
+    };
+    let info = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+    if info.flags.0 & LLKHF_INJECTED != 0 {
+        return CallNextHookEx(None, code, wparam, lparam);
+    }
+    if !state.ctl.forwarding.load(Ordering::SeqCst) {
+        return CallNextHookEx(None, code, wparam, lparam);
+    }
+
+    let msg = wparam.0 as u32;
+    let pressed = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+    let released = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+    if !(pressed || released) {
+        return CallNextHookEx(None, code, wparam, lparam);
+    }
+
+    const VK_ESCAPE: u16 = 0x1B;
+    if pressed && info.vkCode as u16 == VK_ESCAPE && check_panic(state) {
+        return LRESULT(1);
+    }
+
+    if let Some(key) = keymap::native_to_hid(info.vkCode as u16) {
+        let _ = state.tx.send(Captured::Input(InputEvent::Key { key, pressed }));
+    }
+    LRESULT(1) // swallow
+}
+
+unsafe fn maybe_enter_portal(state: &CapState, x: i32, y: i32) {
+    if Instant::now() < *state.ctl.cooldown_until.lock().unwrap() {
+        return;
+    }
+    let bounds = state.ctl.bounds;
+    let portals = state.ctl.portals.read().unwrap().clone();
+    for edge in portals {
+        if touches_edge(bounds, edge, x, y) {
+            state.ctl.forwarding.store(true, Ordering::SeqCst);
+            // Park the cursor away from the edge so blocked-event positions
+            // never clamp (which would eat outward motion).
+            let (px, py) = park_point(bounds, edge, x, y);
+            let _ = SetCursorPos(px, py);
+            *state.park.lock().unwrap() = (px, py);
+            let ratio = ratio_on_edge(bounds, edge, x, y);
+            let _ = state.tx.send(Captured::EdgeHit { edge, ratio });
+            return;
+        }
+    }
+}
+
+fn park_point(bounds: Rect, edge: Edge, x: i32, y: i32) -> (i32, i32) {
+    match edge {
+        Edge::Left => ((bounds.x + PARK_INSET).min(bounds.right() - 1), y),
+        Edge::Right => ((bounds.right() - 1 - PARK_INSET).max(bounds.x), y),
+        Edge::Top => (x, (bounds.y + PARK_INSET).min(bounds.bottom() - 1)),
+        Edge::Bottom => (x, (bounds.bottom() - 1 - PARK_INSET).max(bounds.y)),
+    }
+}
+
+fn check_panic(state: &CapState) -> bool {
+    let now = Instant::now();
+    let window = Duration::from_millis(900);
+    let mut esc = state.esc_downs.lock().unwrap();
+    let hit = matches!(
+        (esc[0], esc[1]),
+        (Some(a), Some(b)) if now.duration_since(a) < window && now.duration_since(b) < window
+    );
+    esc[0] = esc[1];
+    esc[1] = Some(now);
+    if hit {
+        *esc = [None, None];
+        state.ctl.forwarding.store(false, Ordering::SeqCst);
+        let _ = state.tx.send(Captured::Panic);
+    }
+    hit
+}
+
+// ------------------------------------------------------------ injector ----
+
+/// HID usages that need KEYEVENTF_EXTENDEDKEY on Windows.
+const EXTENDED_HIDS: &[u16] = &[
+    0x46, // PrintScreen
+    0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, // Ins/Home/PgUp/Del/End/PgDn
+    0x4F, 0x50, 0x51, 0x52, // arrows
+    0x54, // KP divide
+    0x58, // KP enter
+    0xE4, 0xE6, // RCtrl, RAlt
+    0xE3, 0xE7, // LWin, RWin
+];
+
+pub struct Injector {
+    bounds: Rect,
+    down_keys: Vec<u16>,
+    down_buttons: Vec<MouseButton>,
+}
+
+impl Injector {
+    pub fn new() -> Result<Self> {
+        Ok(Injector { bounds: desktop_bounds(), down_keys: Vec::new(), down_buttons: Vec::new() })
+    }
+
+    fn send_mouse(&self, flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, data: i32) {
+        let input = INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx,
+                    dy,
+                    mouseData: data as u32,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        unsafe {
+            SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+        }
+    }
+
+    pub fn mouse_to(&mut self, x: i32, y: i32, _dx: i32, _dy: i32) {
+        // Normalize to 0..65535 across the virtual desktop.
+        let nx = ((x - self.bounds.x) as i64 * 65535 / (self.bounds.w.max(1) as i64 - 1).max(1)) as i32;
+        let ny = ((y - self.bounds.y) as i64 * 65535 / (self.bounds.h.max(1) as i64 - 1).max(1)) as i32;
+        self.send_mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, nx, ny, 0);
+    }
+
+    pub fn button(&mut self, b: MouseButton, pressed: bool) {
+        if pressed {
+            if !self.down_buttons.contains(&b) {
+                self.down_buttons.push(b);
+            }
+        } else {
+            self.down_buttons.retain(|&x| x != b);
+        }
+        let (flags, data) = match (b, pressed) {
+            (MouseButton::Left, true) => (MOUSEEVENTF_LEFTDOWN, 0),
+            (MouseButton::Left, false) => (MOUSEEVENTF_LEFTUP, 0),
+            (MouseButton::Right, true) => (MOUSEEVENTF_RIGHTDOWN, 0),
+            (MouseButton::Right, false) => (MOUSEEVENTF_RIGHTUP, 0),
+            (MouseButton::Middle, true) => (MOUSEEVENTF_MIDDLEDOWN, 0),
+            (MouseButton::Middle, false) => (MOUSEEVENTF_MIDDLEUP, 0),
+            (MouseButton::X1, p) => (if p { MOUSEEVENTF_XDOWN } else { MOUSEEVENTF_XUP }, 1),
+            (MouseButton::X2, p) => (if p { MOUSEEVENTF_XDOWN } else { MOUSEEVENTF_XUP }, 2),
+        };
+        self.send_mouse(flags, 0, 0, data);
+    }
+
+    pub fn wheel(&mut self, dx: i32, dy: i32) {
+        if dy != 0 {
+            self.send_mouse(MOUSEEVENTF_WHEEL, 0, 0, dy);
+        }
+        if dx != 0 {
+            self.send_mouse(MOUSEEVENTF_HWHEEL, 0, 0, dx);
+        }
+    }
+
+    pub fn key(&mut self, hid: u16, pressed: bool) {
+        let Some(vk) = keymap::hid_to_native(hid) else { return };
+        if pressed {
+            if !self.down_keys.contains(&hid) {
+                self.down_keys.push(hid);
+            }
+        } else {
+            self.down_keys.retain(|&k| k != hid);
+        }
+        let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u16;
+        let mut flags = KEYBD_EVENT_FLAGS(0);
+        if !pressed {
+            flags |= KEYEVENTF_KEYUP;
+        }
+        if EXTENDED_HIDS.contains(&hid) {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+        }
+        let input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: scan,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        unsafe {
+            SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+        }
+    }
+
+    pub fn release_all(&mut self) {
+        for hid in std::mem::take(&mut self.down_keys) {
+            self.key(hid, false);
+        }
+        for b in std::mem::take(&mut self.down_buttons) {
+            self.button(b, false);
+        }
+    }
+}
