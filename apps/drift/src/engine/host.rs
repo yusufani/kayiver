@@ -11,12 +11,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use drift_core::config::Config;
-use drift_core::layout::Edge;
+use drift_core::layout::{Edge, Layout};
 use drift_core::proto::{InputEvent, Intro, Msg, MouseButton, PROTOCOL_VERSION};
 use drift_core::secure;
 use drift_core::wire::read_frame;
@@ -33,11 +33,14 @@ const RETURN_COOLDOWN: Duration = Duration::from_millis(300);
 const EDGE_INSET: i32 = 2;
 
 type Sessions = Arc<Mutex<HashMap<String, UnboundedSender<Msg>>>>;
+/// Layout is shared (and hot-reloaded) so `drift ui` edits apply live.
+type SharedLayout = Arc<RwLock<Layout>>;
 
 enum SessionEvent {
     Connected { name: String },
     Disconnected { name: String },
     CursorLeft { name: String, edge: Edge, ratio: f32 },
+    LayoutChanged,
 }
 
 pub fn run(cfg: Config) -> Result<()> {
@@ -64,12 +67,15 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         .ok();
 
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
+    let layout: SharedLayout = Arc::new(RwLock::new(cfg.layout.clone()));
     let (evt_tx, mut evt_rx) = mpsc::unbounded_channel();
 
-    tokio::spawn(accept_loop(listener, cfg.clone(), sessions.clone(), evt_tx));
+    tokio::spawn(accept_loop(listener, cfg.clone(), layout.clone(), sessions.clone(), evt_tx.clone()));
+    tokio::spawn(watch_layout(layout.clone(), evt_tx));
 
     let mut router = Router {
         cfg: cfg.clone(),
+        layout,
         ctl,
         sessions,
         focus: None,
@@ -95,6 +101,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
 
 struct Router {
     cfg: Arc<Config>,
+    layout: SharedLayout,
     ctl: Arc<CaptureCtl>,
     sessions: Sessions,
     focus: Option<String>,
@@ -103,6 +110,11 @@ struct Router {
 }
 
 impl Router {
+    fn layout_target(&self, machine: &str, edge: Edge) -> Option<(String, Edge)> {
+        let layout = self.layout.read().unwrap();
+        layout.target(machine, edge).map(|(n, e)| (n.to_string(), e))
+    }
+
     fn send_to_focus(&self, msg: Msg) {
         if let Some(name) = &self.focus {
             let dead = {
@@ -151,10 +163,10 @@ impl Router {
                 self.send_to_focus(Msg::Input(ev));
             }
             Captured::EdgeHit { edge, ratio } => {
-                match self.cfg.layout.target(&self.cfg.name, edge) {
-                    Some((peer, entry_edge)) if self.session_exists(peer) => {
+                match self.layout_target(&self.cfg.name, edge) {
+                    Some((peer, entry_edge)) if self.session_exists(&peer) => {
                         info!("cursor -> {peer} (via {edge} edge)");
-                        self.focus = Some(peer.to_string());
+                        self.focus = Some(peer);
                         self.send_to_focus(Msg::Enter { edge: entry_edge, ratio });
                     }
                     _ => {
@@ -191,11 +203,12 @@ impl Router {
                 }
                 self.refresh_portals();
             }
+            SessionEvent::LayoutChanged => self.refresh_portals(),
             SessionEvent::CursorLeft { name, edge, ratio } => {
                 if self.focus.as_deref() != Some(name.as_str()) {
                     return; // stale report from a peer that lost focus already
                 }
-                match self.cfg.layout.target(&name, edge) {
+                match self.layout_target(&name, edge) {
                     Some((next, entry_edge)) if next == self.cfg.name => {
                         self.release_all();
                         self.send_to_focus(Msg::Leave);
@@ -203,8 +216,7 @@ impl Router {
                         self.return_local_at(entry_edge, ratio);
                         info!("cursor -> {} (home)", self.cfg.name);
                     }
-                    Some((next, entry_edge)) if self.session_exists(next) => {
-                        let next = next.to_string();
+                    Some((next, entry_edge)) if self.session_exists(&next) => {
                         self.release_all();
                         self.send_to_focus(Msg::Leave);
                         info!("cursor -> {next}");
@@ -255,10 +267,13 @@ impl Router {
     /// Portal edges are only armed when the machine behind them is online.
     fn refresh_portals(&self) {
         let mut active = Vec::new();
-        for edge in self.cfg.layout.portals(&self.cfg.name) {
-            if let Some((peer, _)) = self.cfg.layout.target(&self.cfg.name, edge) {
-                if self.session_exists(peer) {
-                    active.push(edge);
+        {
+            let layout = self.layout.read().unwrap();
+            for edge in layout.portals(&self.cfg.name) {
+                if let Some((peer, _)) = layout.target(&self.cfg.name, edge) {
+                    if self.sessions.lock().unwrap().contains_key(peer) {
+                        active.push(edge);
+                    }
                 }
             }
         }
@@ -266,21 +281,57 @@ impl Router {
     }
 }
 
-async fn accept_loop(listener: TcpListener, cfg: Arc<Config>, sessions: Sessions, evt_tx: UnboundedSender<SessionEvent>) {
+/// Re-read the config every 2 s; on change, swap the shared layout and nudge
+/// the router. This is what makes `drift ui` (or hand-editing config.toml)
+/// apply without restarting.
+async fn watch_layout(layout: SharedLayout, evt_tx: UnboundedSender<SessionEvent>) {
+    let path = Config::path();
+    let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let mut last = mtime(&path);
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let cur = mtime(&path);
+        if cur == last {
+            continue;
+        }
+        last = cur;
+        match Config::load_or_init() {
+            Ok(new_cfg) => {
+                let changed = {
+                    let mut l = layout.write().unwrap();
+                    if *l != new_cfg.layout {
+                        *l = new_cfg.layout.clone();
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if changed {
+                    info!("layout reloaded from config");
+                    let _ = evt_tx.send(SessionEvent::LayoutChanged);
+                }
+            }
+            Err(e) => warn!("config changed but reload failed: {e}"),
+        }
+    }
+}
+
+async fn accept_loop(listener: TcpListener, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, evt_tx: UnboundedSender<SessionEvent>) {
     loop {
         let Ok((stream, addr)) = listener.accept().await else { return };
         let cfg = cfg.clone();
+        let layout = layout.clone();
         let sessions = sessions.clone();
         let evt_tx = evt_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, cfg, sessions, evt_tx).await {
+            if let Err(e) = handle_conn(stream, cfg, layout, sessions, evt_tx).await {
                 debug!("connection from {addr}: {e}");
             }
         });
     }
 }
 
-async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, sessions: Sessions, evt_tx: UnboundedSender<SessionEvent>) -> Result<()> {
+async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, evt_tx: UnboundedSender<SessionEvent>) -> Result<()> {
     stream.set_nodelay(true)?;
     let intro = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stream)).await??;
     let name = match Intro::decode(&intro)? {
@@ -306,11 +357,12 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, sessions: Sessions
     };
     debug!(?client_screen, %os, "client hello");
 
+    let portal_edges = { layout.read().unwrap().portals(&name) };
     writer
         .send(&Msg::Welcome {
             version: PROTOCOL_VERSION,
             name: cfg.name.clone(),
-            portal_edges: cfg.layout.portals(&name),
+            portal_edges,
         })
         .await?;
 

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>drift — layout</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36;
+    --text: #e6e9ef; --muted: #8b93a3; --accent: #5eead4; --accent-dim: #134e4a;
+    --danger: #f87171;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f5f7; --panel: #ffffff; --line: #dfe3ea;
+      --text: #16181d; --muted: #667085; --accent: #0d9488; --accent-dim: #ccfbf1;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+    min-height: 100vh; display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 18px 24px 10px;
+  }
+  header h1 { font-size: 18px; letter-spacing: .5px; }
+  header h1 span { color: var(--accent); }
+  header .sub { color: var(--muted); font-size: 13px; }
+  #canvas {
+    flex: 1; margin: 8px 24px; border: 1px dashed var(--line);
+    border-radius: 12px; position: relative; overflow: hidden;
+    background:
+      radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0) 0 0 / 28px 28px;
+    touch-action: none;
+  }
+  .screen {
+    position: absolute; width: 190px; height: 118px;
+    background: var(--panel); border: 1.5px solid var(--line); border-radius: 10px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 4px; cursor: grab; user-select: none;
+    box-shadow: 0 4px 16px rgba(0,0,0,.25);
+    transition: border-color .12s, box-shadow .12s;
+  }
+  .screen.dragging { cursor: grabbing; opacity: .92; z-index: 10; }
+  .screen.snapped { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+  .screen .name { font-weight: 600; font-size: 15px; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .screen .tag { font-size: 11px; color: var(--muted); }
+  .screen .tag.me { color: var(--accent); font-weight: 600; }
+  footer {
+    display: flex; align-items: center; gap: 14px; padding: 14px 24px 20px;
+  }
+  button {
+    background: var(--accent); color: #06251f; border: 0; border-radius: 8px;
+    padding: 9px 22px; font-size: 14px; font-weight: 700; cursor: pointer;
+  }
+  button:disabled { opacity: .45; cursor: default; }
+  #status { color: var(--muted); font-size: 13px; }
+  #status.err { color: var(--danger); }
+  #status.ok { color: var(--accent); }
+  .hint { margin-left: auto; color: var(--muted); font-size: 12px; text-align: right; }
+</style>
+</head>
+<body>
+<header>
+  <h1>drift <span>layout</span></h1>
+  <div class="sub">drag the screens to match your desk — touching edges become crossings</div>
+</header>
+<div id="canvas"></div>
+<footer>
+  <button id="save">Save layout</button>
+  <div id="status"></div>
+  <div class="hint">changes apply live to a running host<br>screens must touch to be linked</div>
+</footer>
+<script>
+const SNAP = 18;          // px gap that still counts as "touching"
+const W = 190, H = 118;
+let machines = [];        // {name, me, x, y, el}
+const canvas = document.getElementById('canvas');
+const statusEl = document.getElementById('status');
+
+function setStatus(msg, cls) {
+  statusEl.textContent = msg;
+  statusEl.className = cls || '';
+}
+
+async function load() {
+  const r = await fetch('/api/state');
+  const s = await r.json();
+  const names = [s.name, ...s.peers.filter(p => p !== s.name)];
+  machines = names.map(n => ({ name: n, me: n === s.name, x: 0, y: 0 }));
+  placeFromLinks(s.links);
+  machines.forEach(makeEl);
+  refreshSnapHighlights();
+}
+
+// Initial positions: BFS over saved links, unplaced machines go in a row below.
+function placeFromLinks(links) {
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  const byName = Object.fromEntries(machines.map(m => [m.name, m]));
+  const placed = new Set();
+  const me = machines.find(m => m.me) || machines[0];
+  me.x = (cw - W) / 2; me.y = (ch - H) / 2;
+  placed.add(me.name);
+  const queue = [me];
+  const DELTA = { left: [-W, 0], right: [W, 0], top: [0, -H], bottom: [0, H] };
+  const OPP = { left: 'right', right: 'left', top: 'bottom', bottom: 'top' };
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const l of links) {
+      let other = null, edge = null;
+      if (l.from === cur.name) { other = byName[l.to]; edge = l.edge; }
+      else if (l.to === cur.name) { other = byName[l.from]; edge = OPP[l.edge]; }
+      if (!other || placed.has(other.name)) continue;
+      other.x = cur.x + DELTA[edge][0];
+      other.y = cur.y + DELTA[edge][1];
+      placed.add(other.name);
+      queue.push(other);
+    }
+  }
+  let i = 0;
+  for (const m of machines) {
+    if (!placed.has(m.name)) {
+      m.x = 40 + i * (W + 30);
+      m.y = ch - H - 30;
+      i++;
+    }
+  }
+}
+
+function makeEl(m) {
+  const el = document.createElement('div');
+  el.className = 'screen';
+  el.innerHTML = `<div class="name">${m.name}</div>` +
+    `<div class="tag ${m.me ? 'me' : ''}">${m.me ? 'this machine' : 'paired'}</div>`;
+  canvas.appendChild(el);
+  m.el = el;
+  position(m);
+
+  el.addEventListener('pointerdown', e => {
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('dragging');
+    const ox = e.clientX - m.x, oy = e.clientY - m.y;
+    const move = ev => {
+      m.x = ev.clientX - ox;
+      m.y = ev.clientY - oy;
+      clampToCanvas(m);
+      position(m);
+      refreshSnapHighlights();
+    };
+    const up = () => {
+      el.classList.remove('dragging');
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      magnet(m);
+      position(m);
+      refreshSnapHighlights();
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+  });
+}
+
+function position(m) {
+  m.el.style.left = m.x + 'px';
+  m.el.style.top = m.y + 'px';
+}
+
+function clampToCanvas(m) {
+  m.x = Math.max(0, Math.min(canvas.clientWidth - W, m.x));
+  m.y = Math.max(0, Math.min(canvas.clientHeight - H, m.y));
+}
+
+// After drop, pull the box flush against the nearest touching neighbor.
+function magnet(m) {
+  for (const o of machines) {
+    if (o === m) continue;
+    const vOverlap = Math.min(m.y + H, o.y + H) - Math.max(m.y, o.y);
+    const hOverlap = Math.min(m.x + W, o.x + W) - Math.max(m.x, o.x);
+    if (Math.abs(m.x - (o.x + W)) <= SNAP && vOverlap > 20) m.x = o.x + W;
+    else if (Math.abs(m.x + W - o.x) <= SNAP && vOverlap > 20) m.x = o.x - W;
+    else if (Math.abs(m.y - (o.y + H)) <= SNAP && hOverlap > 20) m.y = o.y + H;
+    else if (Math.abs(m.y + H - o.y) <= SNAP && hOverlap > 20) m.y = o.y - H;
+  }
+}
+
+function currentLinks() {
+  const links = [];
+  for (const a of machines) {
+    for (const b of machines) {
+      if (a === b) continue;
+      const vOverlap = Math.min(a.y + H, b.y + H) - Math.max(a.y, b.y);
+      const hOverlap = Math.min(a.x + W, b.x + W) - Math.max(a.x, b.x);
+      // only emit left->right / top->bottom once per pair
+      if (Math.abs(a.x + W - b.x) <= SNAP && vOverlap > 20)
+        links.push({ from: a.name, edge: 'right', to: b.name });
+      if (Math.abs(a.y + H - b.y) <= SNAP && hOverlap > 20)
+        links.push({ from: a.name, edge: 'bottom', to: b.name });
+    }
+  }
+  return links;
+}
+
+function refreshSnapHighlights() {
+  const linked = new Set();
+  for (const l of currentLinks()) { linked.add(l.from); linked.add(l.to); }
+  for (const m of machines) m.el.classList.toggle('snapped', linked.has(m.name));
+}
+
+document.getElementById('save').addEventListener('click', async () => {
+  const links = currentLinks();
+  if (machines.length > 1 && links.length === 0) {
+    setStatus('nothing touches — drag the screens against each other first', 'err');
+    return;
+  }
+  const r = await fetch('/api/layout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(links),
+  });
+  if (r.ok) {
+    setStatus('saved ✓ — a running host picks this up within ~2 s', 'ok');
+  } else {
+    setStatus('save failed: ' + await r.text(), 'err');
+  }
+});
+
+window.addEventListener('resize', () => machines.forEach(m => { clampToCanvas(m); position(m); }));
+load().catch(e => setStatus('cannot reach drift: ' + e, 'err'));
+</script>
+</body>
+</html>

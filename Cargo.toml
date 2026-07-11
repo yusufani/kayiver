@@ -13,3 +13,5 @@ lto = "thin"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# mingw cross-compilation from macOS/Linux: `cargo build --release --target x86_64-pc-windows-gnu`

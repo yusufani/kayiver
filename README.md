@@ -35,6 +35,14 @@ Build (Rust 1.85+):
 cargo build --release          # -> target/release/drift
 ```
 
+Cross-compile a Windows binary from macOS/Linux (no Rust needed on the
+Windows box): install mingw-w64 (`brew install mingw-w64`), then
+
+```sh
+rustup target add x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-gnu   # -> drift.exe
+```
+
 **1. Pair** (once). On the machine that has the keyboard/mouse:
 
 ```sh
@@ -55,7 +63,18 @@ drift join <host-ip>
 drift run
 ```
 
-**3. Make it permanent:**
+**3. Arrange your screens** (drag & drop):
+
+```sh
+drift ui
+```
+
+opens the visual layout editor in your browser — drag the machines to match
+your desk; touching edges become crossings. Saving applies **live** to a
+running host, no restart needed. (Prefer a file? `drift config-path` works
+too.)
+
+**4. Make it permanent:**
 
 ```sh
 drift autostart enable
@@ -70,7 +89,7 @@ missing.
 ## Layout
 
 Pairing creates a default layout (new machine to the right of the host).
-Edit `drift config-path` to match your physical desk:
+`drift ui` is the comfortable way to change it; under the hood it writes:
 
 ```toml
 [[layout.links]]

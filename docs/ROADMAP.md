@@ -4,6 +4,9 @@
 - [x] macOS ⇄ Windows keyboard/mouse sharing, edge crossing, PIN pairing,
       encrypted sessions, mDNS + static-addr discovery, reconnect,
       autostart, panic escape, `drift doctor`
+- [x] `drift ui` — drag & drop layout editor (embedded, localhost-only),
+      with live layout hot-reload in the running host
+- [x] mingw cross-compilation (build drift.exe from a Mac)
 
 ## v0.2 — polish the two-desktop experience
 - [ ] Clipboard sync (text first; images later) — follows the same
@@ -15,6 +18,8 @@
 - [ ] Keyboard hotkey to switch focus without touching the mouse
 - [ ] OS keychain storage for PSKs
 - [ ] `drift status` (IPC to the running instance) + `drift pair` while running
+- [ ] Serve the layout UI from the running daemon with live connection
+      status + latency per peer (today `drift ui` is a config editor)
 - [ ] Prebuilt binaries (GitHub releases, signed/notarized) + CI
 
 ## v0.3 — more platforms & the shared monitor

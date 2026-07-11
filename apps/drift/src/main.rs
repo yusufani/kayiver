@@ -2,6 +2,7 @@ mod autostart;
 mod engine;
 mod keymap;
 mod platform;
+mod ui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -25,6 +26,12 @@ enum Command {
     Join {
         /// Host address, e.g. 192.168.1.20 or 192.168.1.20:24817
         address: String,
+    },
+    /// Open the visual layout editor (drag & drop your screens).
+    Ui {
+        /// Don't open the browser automatically.
+        #[arg(long)]
+        no_open: bool,
     },
     /// Check permissions, config and screen geometry.
     Doctor,
@@ -50,6 +57,7 @@ fn main() -> Result<()> {
         Command::Run => run(),
         Command::Pair => engine::pairing::pair_as_display(),
         Command::Join { address } => engine::pairing::join(&address),
+        Command::Ui { no_open } => ui::run(!no_open),
         Command::Doctor => doctor(),
         Command::Autostart { action } => autostart::apply(action == "enable"),
         Command::ConfigPath => {
