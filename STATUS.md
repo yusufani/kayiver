@@ -69,6 +69,30 @@ Mac app paketi: `packaging/macos/build-app.sh [--install]`.
   `Authorization: Bearer <token>`. Varsayılan **kapalı**.
 - `apps/android`: durum + ortak monitör kumandası (Compose). Studio ile derle.
 
+## Yeni: dayanıklı bağlantı + bildirimler + kalıcı imza
+
+- **Çoklu adres + öğrenme:** peer config'de `addr` (birincil) + `addrs` (yedek,
+  ör. WiFi IP) + `last_good`. İstemci sırayla dener (last_good→addr→addrs→mDNS),
+  her adayda kısa 1.5 sn timeout; **başarılı adresi öğrenip kaydeder**. Kablo
+  çıkıp link-local IP değişse bile yedekten toparlar. Config her turda okunur.
+- **Tanı + bildirim:** kopunca sessiz kalmaz — istemci `link_error` yayar
+  (hangi adresler denendi, neden), editörde kırmızı banner çıkar; Windows tray
+  kopunca uyarı balonu; macOS menü çubuğunda canlı durum satırı + sorunda ikon
+  yanında **⚠**. `kayiver doctor` yerel IPv4'leri yazar.
+- **Kalıcı imza (izin çilesi bitti):** özel keychain'de sabit self-signed
+  sertifikayla imzalanıyor (parola `kayiver-local`,
+  `~/Library/Keychains/kayiver-signing.keychain-db`). designated requirement
+  sabit → TCC izinleri **derlemeler arası korunuyor**. Sertifika yoksa
+  `build-app.sh` üretir (gerçek OpenSSL, LibreSSL değil); olmazsa ad-hoc'a düşer.
+- **Windows istemcisi editörü yerelde sunuyor** (24818) → tray "Aç" tarayıcı
+  yerine Edge/Chrome `--app` penceresi açar. Client editörü çoğunlukla bilgi
+  amaçlı (layout/ortak host'tan yönetilir).
+
+### Mevcut ağ durumu (2026-07-12 gece)
+- USB-LAN adaptörü (en8) çıkıp takıldı → yeni link-local **169.254.4.59**.
+  Windows config: `addr = "169.254.4.59:24817"`, `addrs = ["192.168.0.11:24817"]`
+  (Mac WiFi yedeği). Mac IP'leri: en8 169.254.4.59, en0 (WiFi) 192.168.0.11.
+
 ---
 
 ## KALAN İŞLER / doğrulama
