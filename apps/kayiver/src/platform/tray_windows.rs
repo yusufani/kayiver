@@ -15,7 +15,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NOTIFYICONDATAW, NOTIFYICONDATAW_0, NIIF_INFO,
+    NOTIFYICONDATAW, NOTIFYICONDATAW_0, NIIF_INFO, NIIF_WARNING,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
@@ -65,11 +65,14 @@ pub fn start(host: &str) {
 }
 
 /// Public: update the indicator when connection / focus changes.
+/// Balloon notifications fire on both transitions: connected AND lost.
 pub fn set_state(connected: bool, cursor_here: bool) {
     let s = if !connected { 0 } else if cursor_here { 2 } else { 1 };
     let prev = STATE.swap(s, Ordering::Relaxed);
     if prev != s {
-        unsafe { refresh(prev == 0 && s != 0) };
+        let came_up = prev == 0 && s != 0;
+        let went_down = prev != 0 && s == 0;
+        unsafe { refresh_with(came_up, went_down) };
     }
 }
 
@@ -84,8 +87,8 @@ unsafe fn nid(hwnd: HWND) -> NOTIFYICONDATAW {
     n
 }
 
-/// Refresh tooltip + optionally pop a balloon (on connect).
-unsafe fn refresh(show_balloon: bool) {
+/// Refresh tooltip + optionally pop a balloon on connect / disconnect.
+unsafe fn refresh_with(connected_balloon: bool, lost_balloon: bool) {
     let h = HWND_VAL.load(Ordering::Relaxed);
     if h == 0 {
         return;
@@ -96,11 +99,20 @@ unsafe fn refresh(show_balloon: bool) {
     data.uCallbackMessage = WM_TRAY;
     data.hIcon = load_icon();
     fill(&mut data.szTip, &tooltip());
-    if show_balloon {
+    if connected_balloon {
         data.uFlags |= NIF_INFO;
-        fill(&mut data.szInfoTitle, "kayiver connected");
+        fill(&mut data.szInfoTitle, "Kayıver bağlandı");
         fill(&mut data.szInfo, &tooltip());
         data.dwInfoFlags = NIIF_INFO;
+    } else if lost_balloon {
+        let host = HOST_NAME.get().map(|s| s.as_str()).unwrap_or("host");
+        data.uFlags |= NIF_INFO;
+        fill(&mut data.szInfoTitle, "Kayıver bağlantısı koptu");
+        fill(
+            &mut data.szInfo,
+            &format!("{host} ile bağlantı kesildi — yeniden deneniyor. Sebep için editörü aç (sağ tık → Aç)."),
+        );
+        data.dwInfoFlags = NIIF_WARNING;
     }
     let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
 }

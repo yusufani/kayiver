@@ -327,6 +327,17 @@ fn doctor() -> Result<()> {
     println!("  port        : {}", cfg.port);
     let b = platform::desktop_bounds();
     println!("  desktop     : {}x{} at ({}, {})", b.w, b.h, b.x, b.y);
+    // Local addresses: what a peer's `addr`/`addrs` should point at.
+    if let Ok(ifaces) = if_addrs::get_if_addrs() {
+        let mut ips: Vec<String> = ifaces
+            .into_iter()
+            .filter(|i| !i.is_loopback() && i.ip().is_ipv4())
+            .map(|i| format!("{} ({})", i.ip(), i.name))
+            .collect();
+        ips.sort();
+        ips.dedup();
+        println!("  local ip    : {}", if ips.is_empty() { "none".into() } else { ips.join(", ") });
+    }
     if cfg.peers.is_empty() {
         println!("  peers       : none (run `kayiver pair` / `kayiver join`)");
     }

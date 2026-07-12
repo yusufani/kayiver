@@ -59,7 +59,7 @@ pub fn pair_as_display() -> Result<()> {
             let my_info = PairInfo { name: cfg.name.clone(), port: cfg.port };
             match pairing::exchange(&mut stream, &code, Role::Display, &my_info).await {
                 Ok((psk, theirs)) => {
-                    let mut peer = Peer { name: theirs.name.clone(), psk: String::new(), addr: None, screens: vec![], os: None };
+                    let mut peer = Peer { name: theirs.name.clone(), psk: String::new(), addr: None, addrs: vec![], last_good: None, screens: vec![], os: None };
                     peer.set_psk(&psk);
                     cfg.upsert_peer(peer);
                     ensure_layout_link(&mut cfg, &theirs.name);
@@ -106,6 +106,8 @@ pub fn join(address: &str) -> Result<()> {
             name: theirs.name.clone(),
             psk: String::new(),
             addr: Some(SocketAddr::new(addr.ip(), theirs.port).to_string()),
+            addrs: vec![],
+            last_good: None,
             screens: vec![],
             os: None,
         };

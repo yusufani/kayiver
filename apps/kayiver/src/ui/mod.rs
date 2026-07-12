@@ -41,6 +41,8 @@ pub struct LiveState {
     pub shared_peer: Option<String>,
     pub shared_owner: Option<String>,
     pub shared_error: Option<String>,
+    /// Client: last connection failure details (None while connected).
+    pub link_error: Option<String>,
     /// Channel into the router; present while a host is running.
     pub cmd: Option<tokio::sync::mpsc::UnboundedSender<UiCmd>>,
 }
@@ -95,6 +97,12 @@ pub fn set_shared_owner(owner: Option<String>) {
 
 pub fn set_shared_error(err: Option<String>) {
     live().lock().unwrap().shared_error = err;
+}
+
+/// Client-side link diagnostics: why the last connect attempt failed
+/// (which addresses were tried). None = connected / not applicable.
+pub fn set_link_error(err: Option<String>) {
+    live().lock().unwrap().link_error = err;
 }
 
 pub fn url() -> String {
@@ -524,6 +532,7 @@ fn api_status() -> String {
         "running": s.running,
         "focus": s.focus,
         "peers": peers,
+        "link_error": s.link_error,
         "shared": {
             "configured": s.shared_configured,
             "peer": s.shared_peer,

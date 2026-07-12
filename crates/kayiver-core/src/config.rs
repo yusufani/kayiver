@@ -28,6 +28,16 @@ pub struct Peer {
     /// where multicast is filtered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addr: Option<String>,
+    /// Fallback addresses tried after `addr` (e.g. the host's Wi-Fi IP when
+    /// the direct cable is the primary). Learned automatically: whenever a
+    /// session succeeds via mDNS or a fallback, that address is remembered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addrs: Vec<String>,
+    /// Address of the most recent successful session; tried first on
+    /// reconnect. Kept separate from `addr` so the user's configured primary
+    /// is never overwritten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_good: Option<String>,
     /// Last known physical displays of this peer (cached from its Hello so
     /// the layout editor can draw real monitor shapes while it's offline).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -233,7 +243,7 @@ mod tests {
             shared_monitor: SharedMonitor::default(),
             remote: RemoteApi::default(),
         };
-        let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), screens: vec![], os: None };
+        let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), addrs: vec![], last_good: None, screens: vec![], os: None };
         peer.set_psk(&[9u8; 32]);
         cfg.peers.push(peer);
 

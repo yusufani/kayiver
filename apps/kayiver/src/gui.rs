@@ -29,12 +29,45 @@ const MENUBAR_ICON: &[u8] = include_bytes!("../../../assets/icons/menubarTemplat
 #[derive(Debug)]
 enum UserEvent {
     Menu(MenuEvent),
+    /// Periodic status summary from the local API for the tray.
+    Status { line: String, warn: bool },
 }
 
 struct MenuIds {
     open: tray_icon::menu::MenuId,
     toggle_shared: tray_icon::menu::MenuId,
     quit: tray_icon::menu::MenuId,
+}
+
+/// Summarize /api/status into one tray line + a warning flag.
+fn status_summary() -> (String, bool) {
+    let parsed = crate::ui::local_api("GET", "/api/status", None)
+        .ok()
+        .and_then(|(code, body)| if code == 200 { serde_json::from_str::<serde_json::Value>(&body).ok() } else { None });
+    let Some(v) = parsed else {
+        return ("Motor başlatılıyor / izin bekleniyor…".into(), true);
+    };
+    if !v["running"].as_bool().unwrap_or(false) {
+        return ("Motor çalışmıyor (izin bekleniyor olabilir)".into(), true);
+    }
+    let peers = v["peers"].as_object().cloned().unwrap_or_default();
+    if peers.is_empty() {
+        return ("Eş bekleniyor…".into(), true);
+    }
+    let mut parts = Vec::new();
+    let mut any_down = false;
+    for (name, p) in peers {
+        if p["connected"].as_bool().unwrap_or(false) {
+            match p["rtt_ms"].as_f64() {
+                Some(rtt) => parts.push(format!("{name}: bağlı ({rtt:.1} ms)")),
+                None => parts.push(format!("{name}: bağlı")),
+            }
+        } else {
+            any_down = true;
+            parts.push(format!("{name}: çevrimdışı"));
+        }
+    }
+    (parts.join(" · "), any_down)
 }
 
 /// `kayiver run` (host mode): engine on a background thread, tray + window
@@ -88,7 +121,18 @@ fn run_shell(_open_window_now: bool) -> Result<()> {
         let _ = proxy.send_event(UserEvent::Menu(e));
     }));
 
-    let (_tray, ids) = build_tray()?;
+    // Feed the tray a status summary every few seconds (connection state,
+    // latency, warnings) so problems are visible without opening the editor.
+    let status_proxy = event_loop.create_proxy();
+    std::thread::Builder::new().name("kayiver-tray-status".into()).spawn(move || loop {
+        let (line, warn) = status_summary();
+        if status_proxy.send_event(UserEvent::Status { line, warn }).is_err() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    })?;
+
+    let (tray, ids, status_item) = build_tray()?;
 
     let mut editor: Option<(Window, WebView)> = None;
     // Open the window once on launch so the app is visible (and in the Dock);
@@ -132,6 +176,13 @@ fn run_shell(_open_window_now: bool) -> Result<()> {
                     std::process::exit(0);
                 }
             }
+            Event::UserEvent(UserEvent::Status { line, warn }) => {
+                status_item.set_text(line.clone());
+                let _ = tray.set_tooltip(Some(format!("Kayıver — {line}")));
+                // A "⚠" next to the menu-bar icon whenever something is off
+                // (engine down, peer offline) — visible at a glance.
+                let _ = tray.set_title(if warn { Some("⚠") } else { None });
+            }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
                 // Window closed → drop it and retreat to the menu bar only.
                 editor = None;
@@ -151,11 +202,14 @@ fn show_in_dock(target: &EventLoopWindowTarget<UserEvent>, window: &Window) {
     window.set_focus();
 }
 
-fn build_tray() -> Result<(TrayIcon, MenuIds)> {
+fn build_tray() -> Result<(TrayIcon, MenuIds, MenuItem)> {
     let menu = Menu::new();
+    let status = MenuItem::new("Durum alınıyor…", false, None);
     let open = MenuItem::new("Kayıver'ı Aç", true, None);
     let toggle_shared = MenuItem::new("Ortak Monitörü Değiştir\t⌘⌥M", true, None);
     let quit = MenuItem::new("Kayıver'dan Çık", true, None);
+    menu.append(&status)?;
+    menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&open)?;
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&toggle_shared)?;
@@ -174,7 +228,7 @@ fn build_tray() -> Result<(TrayIcon, MenuIds)> {
         .with_icon(load_menubar_icon()?)
         .with_icon_as_template(true)
         .build()?;
-    Ok((tray, ids))
+    Ok((tray, ids, status))
 }
 
 fn load_menubar_icon() -> Result<tray_icon::Icon> {

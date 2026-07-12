@@ -208,6 +208,10 @@
   </div>
 </header>
 
+<div id="banner" style="display:none; margin: 0 22px 4px; padding: 8px 14px; border-radius: 10px;
+     background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.4);
+     color: var(--danger); font-size: 12.5px;"></div>
+
 <div id="canvas"><button id="sharedBtn"></button></div>
 
 <footer>
@@ -553,6 +557,14 @@ async function poll() {
     const st = await (await fetch('/api/status')).json();
     document.getElementById('hostDot').className = 'dot ' + (st.running ? 'on' : 'off');
     document.getElementById('hostTxt').textContent = st.running ? 'kayıver çalışıyor' : 'çalışmıyor';
+
+    const banner = document.getElementById('banner');
+    if (st.link_error) {
+      banner.style.display = 'block';
+      banner.textContent = '⚠ bağlantı sorunu: ' + st.link_error;
+    } else {
+      banner.style.display = 'none';
+    }
 
     const prevOwner = sharedLive.owner, prevErr = sharedLive.error;
     sharedLive = st.shared || {};
