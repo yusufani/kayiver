@@ -111,10 +111,18 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
         active: false,
     };
 
+    // Display attach/detach runs blocking on its own thread; results come
+    // back through this channel so injection never stalls.
+    let (dp_tx, mut dp_rx) = tokio::sync::mpsc::unbounded_channel::<Msg>();
+
     loop {
-        let msg = tokio::time::timeout(RECV_TIMEOUT, reader.recv())
-            .await
-            .context("session timed out")??;
+        let msg = tokio::select! {
+            m = tokio::time::timeout(RECV_TIMEOUT, reader.recv()) => m.context("session timed out")??,
+            Some(result) = dp_rx.recv() => {
+                writer.send(&result).await?;
+                continue;
+            }
+        };
         match msg {
             Msg::Enter { edge, ratio } => {
                 state.pos = point_on_edge(state.bounds, edge, ratio, EDGE_INSET);
@@ -143,6 +151,17 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
                 }
             }
             Msg::Ping(n) => writer.send(&Msg::Pong(n)).await?,
+            Msg::DisplayPower { index, on } => {
+                info!("host asks: {} display {index}", if on { "attach" } else { "detach" });
+                let tx = dp_tx.clone();
+                std::thread::spawn(move || {
+                    let error = platform::set_display_enabled(index, on).err().map(|e| format!("{e:#}"));
+                    if let Some(e) = &error {
+                        warn!("display {index} {}: {e}", if on { "attach" } else { "detach" });
+                    }
+                    let _ = tx.send(Msg::DisplayPowerResult { index, on, error });
+                });
+            }
             Msg::Bye => return Ok(()),
             other => warn!("unexpected message: {other:?}"),
         }

@@ -67,6 +67,7 @@ extern "C" {
     fn CGEventTapCreate(tap: u32, place: u32, options: u32, mask: u64, cb: TapCallback, user: *mut c_void) -> CFMachPortRef;
     fn CGEventTapEnable(port: CFMachPortRef, enable: bool);
     fn CGEventGetLocation(e: CGEventRef) -> CGPoint;
+    fn CGEventGetFlags(e: CGEventRef) -> u64;
     fn CGEventGetIntegerValueField(e: CGEventRef, field: u32) -> i64;
     fn CGEventSetIntegerValueField(e: CGEventRef, field: u32, value: i64);
     fn CGEventSetFlags(e: CGEventRef, flags: u64);
@@ -84,6 +85,7 @@ extern "C" {
     fn CGGetActiveDisplayList(max: u32, ids: *mut u32, count: *mut u32) -> i32;
     fn CGGetOnlineDisplayList(max: u32, ids: *mut u32, count: *mut u32) -> i32;
     fn CGDisplayBounds(id: u32) -> CGRect;
+    fn CGDisplayIsInMirrorSet(display: u32) -> u32;
     fn CGBeginDisplayConfiguration(config: *mut *mut c_void) -> i32;
     fn CGConfigureDisplayMirrorOfDisplay(config: *mut c_void, display: u32, master: u32) -> i32;
     fn CGCompleteDisplayConfiguration(config: *mut c_void, option: u32) -> i32;
@@ -293,6 +295,18 @@ pub fn set_display_enabled(index: u32, enabled: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Is a display currently "disabled" (mirrored away by `set_display_enabled`)?
+/// `index` is 1-based, matching `drift display list`. None = can't tell.
+pub fn display_disabled(index: u32) -> Option<bool> {
+    let ids = online_display_ids();
+    let target = *ids.get(index.saturating_sub(1) as usize)?;
+    let main = unsafe { CGMainDisplayID() };
+    if target == main {
+        return Some(false);
+    }
+    Some(unsafe { CGDisplayIsInMirrorSet(target) } != 0)
+}
+
 /// Set the input source (VCP 0x60) of a display by 1-based m1ddc index.
 /// Samsung DDC is flaky, so send the command a few times with small gaps.
 pub fn set_display_input(index: u32, value: u16) -> anyhow::Result<()> {
@@ -473,6 +487,20 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         // macOS disables taps it thinks are too slow; recover immediately.
         CGEventTapEnable(state.tap, true);
         return event;
+    }
+
+    // Shared-monitor hotkey (Cmd+Alt+M) works in both modes: the tap sees
+    // every physical key regardless of where the cursor currently lives.
+    if etype == ET_KEY_DOWN && state.ctl.shared_hotkey.load(Ordering::Relaxed) {
+        const VK_M: i64 = 46;
+        let flags = CGEventGetFlags(event);
+        if CGEventGetIntegerValueField(event, F_KEYCODE) == VK_M
+            && flags & FLAG_CMD != 0
+            && flags & FLAG_ALT != 0
+        {
+            let _ = state.tx.send(Captured::SharedHotkey);
+            return std::ptr::null_mut(); // swallow the keystroke
+        }
     }
 
     let forwarding = state.ctl.forwarding.load(Ordering::SeqCst);

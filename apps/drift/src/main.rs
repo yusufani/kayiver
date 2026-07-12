@@ -60,6 +60,13 @@ enum Command {
         #[command(subcommand)]
         action: Option<DisplayAction>,
     },
+    /// Shared monitor: show who owns the panel, or hand it to a machine.
+    /// `drift monitor <machine>` / `drift monitor toggle` — enables the
+    /// display on that machine and detaches it on the other one.
+    Monitor {
+        /// Machine name or "toggle". Omit to print the current state.
+        target: Option<String>,
+    },
     /// Print the config file path.
     ConfigPath,
     /// Hidden: inject an absolute cursor move to verify injection reaches the
@@ -105,6 +112,7 @@ fn main() -> Result<()> {
         Command::Doctor => doctor(),
         Command::Autostart { action } => autostart::apply(action == "enable"),
         Command::Display { action } => display_cmd(action),
+        Command::Monitor { target } => monitor_cmd(target),
         Command::ConfigPath => {
             println!("{}", Config::path().display());
             Ok(())
@@ -179,6 +187,66 @@ fn display_cmd(action: Option<DisplayAction>) -> Result<()> {
         DisplayAction::Enable { index } => {
             platform::set_display_enabled(index, true)?;
             println!("display {index} re-added to this machine's desktop");
+            Ok(())
+        }
+    }
+}
+
+/// Talk to the running drift's local API (the layout-editor server).
+fn local_api(method: &str, path: &str, body: Option<&str>) -> Result<(u16, String)> {
+    use std::io::{Read, Write};
+    let addr = format!("127.0.0.1:{}", ui::UI_PORT);
+    let mut stream = std::net::TcpStream::connect_timeout(
+        &addr.parse().unwrap(),
+        std::time::Duration::from_secs(2),
+    )
+    .map_err(|_| anyhow::anyhow!("drift is not running (nothing listening on {addr})"))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+    let body = body.unwrap_or("");
+    let req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(req.as_bytes())?;
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp)?;
+    let status: u16 = resp
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let payload = resp.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+    Ok((status, payload))
+}
+
+fn monitor_cmd(target: Option<String>) -> Result<()> {
+    match target {
+        None => {
+            let (_, body) = local_api("GET", "/api/status", None)?;
+            let v: serde_json::Value = serde_json::from_str(&body)?;
+            let sh = &v["shared"];
+            if !sh["configured"].as_bool().unwrap_or(false) {
+                println!("shared monitor: not configured");
+                println!("  set it up in the editor ({}) or add [shared_monitor] to config.toml", ui::url());
+                return Ok(());
+            }
+            println!(
+                "shared monitor: showing {}",
+                sh["owner"].as_str().unwrap_or("?")
+            );
+            if let Some(p) = sh["peer"].as_str() {
+                println!("  shared with  : {p}");
+            }
+            if let Some(e) = sh["error"].as_str() {
+                println!("  last error   : {e}");
+            }
+            Ok(())
+        }
+        Some(t) => {
+            let body = serde_json::json!({ "owner": t }).to_string();
+            let (status, payload) = local_api("POST", "/api/shared", Some(&body))?;
+            anyhow::ensure!(status == 200, "drift said: {payload}");
+            println!("shared monitor -> {t}");
             Ok(())
         }
     }

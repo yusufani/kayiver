@@ -30,6 +30,10 @@ pub fn set_display_enabled(_index: u32, _enabled: bool) -> anyhow::Result<()> {
     anyhow::bail!("display enable/disable not supported on this platform")
 }
 
+pub fn display_disabled(_index: u32) -> Option<bool> {
+    None
+}
+
 pub fn init() {}
 
 pub fn ensure_permissions() -> Result<()> {

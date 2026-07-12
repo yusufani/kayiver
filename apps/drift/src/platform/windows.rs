@@ -146,6 +146,220 @@ fn with_physical_monitors<T>(f: impl FnOnce(&[windows::Win32::Devices::Display::
     Some(result)
 }
 
+// -------------------------------------------- display attach / detach ----
+// "Disabling" a display detaches it from the desktop (ChangeDisplaySettingsExW
+// with a zero mode), so the cursor can no longer wander onto a panel that is
+// physically showing the other machine. The previous mode is saved to a file
+// next to config.toml, because enable/disable typically run in different
+// processes.
+
+const DD_ATTACHED_TO_DESKTOP: u32 = 0x0000_0001;
+const DD_MIRRORING_DRIVER: u32 = 0x0000_0008;
+
+/// All display adapters (`\\.\DISPLAYn`) with their state flags, in
+/// enumeration order. Mirroring pseudo-devices are filtered out.
+fn display_devices() -> Vec<(String, u32)> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Graphics::Gdi::{EnumDisplayDevicesW, DISPLAY_DEVICEW};
+    let mut out = Vec::new();
+    let mut i = 0u32;
+    loop {
+        let mut dd = DISPLAY_DEVICEW {
+            cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+            ..Default::default()
+        };
+        let ok = unsafe { EnumDisplayDevicesW(PCWSTR::null(), i, &mut dd, 0) };
+        if !ok.as_bool() {
+            break;
+        }
+        i += 1;
+        if dd.StateFlags.0 & DD_MIRRORING_DRIVER != 0 {
+            continue;
+        }
+        let name = String::from_utf16_lossy(&dd.DeviceName)
+            .trim_end_matches('\0')
+            .to_string();
+        out.push((name, dd.StateFlags.0));
+    }
+    out
+}
+
+fn state_path(device: &str) -> std::path::PathBuf {
+    let safe: String = device.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    drift_core::config::Config::path().with_file_name(format!("display_state_{safe}.json"))
+}
+
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Detach (enabled=false) or re-attach (enabled=true) a display. `index` is
+/// the 0-based position among *attached* displays for disable (matches
+/// `drift display list` order); for enable, the saved state file identifies
+/// the device (index is used as a tie-breaker when several are saved).
+pub fn set_display_enabled(index: u32, enabled: bool) -> Result<()> {
+    if enabled {
+        enable_display(index)
+    } else {
+        disable_display(index)
+    }
+}
+
+fn disable_display(index: u32) -> Result<()> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Graphics::Gdi::{
+        ChangeDisplaySettingsExW, EnumDisplaySettingsW, CDS_NORESET, CDS_TYPE,
+        CDS_UPDATEREGISTRY, DEVMODEW, DISP_CHANGE_SUCCESSFUL, DM_PELSHEIGHT, DM_PELSWIDTH,
+        DM_POSITION, ENUM_CURRENT_SETTINGS,
+    };
+
+    let devices = display_devices();
+    let attached: Vec<&(String, u32)> =
+        devices.iter().filter(|(_, f)| f & DD_ATTACHED_TO_DESKTOP != 0).collect();
+    anyhow::ensure!(attached.len() > 1, "refusing to detach the only attached display");
+    let (name, _) = attached
+        .get(index as usize)
+        .ok_or_else(|| anyhow::anyhow!("display index {index} out of range (attached: {})", attached.len()))?;
+    let wname = to_wide(name);
+
+    // Remember the current mode so enable can restore it exactly.
+    let mut cur = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
+    let ok = unsafe { EnumDisplaySettingsW(PCWSTR(wname.as_ptr()), ENUM_CURRENT_SETTINGS, &mut cur) };
+    anyhow::ensure!(ok.as_bool(), "EnumDisplaySettings failed for {name}");
+    let pos = unsafe { cur.Anonymous1.Anonymous2.dmPosition };
+    let saved = serde_json::json!({
+        "device": name, "index": index,
+        "x": pos.x, "y": pos.y,
+        "w": cur.dmPelsWidth, "h": cur.dmPelsHeight,
+        "bpp": cur.dmBitsPerPel, "freq": cur.dmDisplayFrequency,
+    });
+    std::fs::write(state_path(name), saved.to_string())?;
+
+    // A zero-size mode with position+size fields set means "detach".
+    let mut detach = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
+    detach.dmFields = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT;
+    unsafe {
+        let r = ChangeDisplaySettingsExW(
+            PCWSTR(wname.as_ptr()),
+            Some(&detach),
+            None,
+            CDS_UPDATEREGISTRY | CDS_NORESET,
+            None,
+        );
+        anyhow::ensure!(r == DISP_CHANGE_SUCCESSFUL, "detach {name} failed: {r:?}");
+        // Apply the whole pending topology change at once.
+        let r = ChangeDisplaySettingsExW(PCWSTR::null(), None, None, CDS_TYPE(0), None);
+        anyhow::ensure!(r == DISP_CHANGE_SUCCESSFUL, "applying topology failed: {r:?}");
+    }
+    Ok(())
+}
+
+fn enable_display(index: u32) -> Result<()> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Graphics::Gdi::{
+        ChangeDisplaySettingsExW, EnumDisplaySettingsW, CDS_NORESET, CDS_TYPE,
+        CDS_UPDATEREGISTRY, DEVMODEW, DISP_CHANGE_SUCCESSFUL, DM_BITSPERPEL,
+        DM_DISPLAYFREQUENCY, DM_PELSHEIGHT, DM_PELSWIDTH, DM_POSITION,
+        ENUM_DISPLAY_SETTINGS_MODE,
+    };
+
+    // Candidates: detached devices, preferring ones we detached ourselves
+    // (state file present), tie-broken by the saved index.
+    let devices = display_devices();
+    let detached: Vec<&(String, u32)> =
+        devices.iter().filter(|(_, f)| f & DD_ATTACHED_TO_DESKTOP == 0).collect();
+    anyhow::ensure!(!detached.is_empty(), "no detached display to enable");
+
+    let mut chosen: Option<(&str, Option<serde_json::Value>)> = None;
+    for (name, _) in &detached {
+        if let Ok(text) = std::fs::read_to_string(state_path(name)) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                let saved_idx = v.get("index").and_then(|i| i.as_u64()).unwrap_or(u64::MAX);
+                if saved_idx == index as u64 || chosen.is_none() {
+                    chosen = Some((name, Some(v)));
+                }
+            }
+        }
+    }
+    let (name, saved) = match chosen {
+        Some(c) => c,
+        // No state file (detached by other means): take the index-th detached.
+        None => (
+            detached
+                .get(index as usize)
+                .map(|(n, _)| n.as_str())
+                .unwrap_or(detached[0].0.as_str()),
+            None,
+        ),
+    };
+    let wname = to_wide(name);
+
+    let mut dm = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
+    if let Some(v) = &saved {
+        dm.dmPelsWidth = v["w"].as_u64().unwrap_or(0) as u32;
+        dm.dmPelsHeight = v["h"].as_u64().unwrap_or(0) as u32;
+        dm.dmBitsPerPel = v["bpp"].as_u64().unwrap_or(32) as u32;
+        dm.dmDisplayFrequency = v["freq"].as_u64().unwrap_or(60) as u32;
+        dm.Anonymous1.Anonymous2.dmPosition.x = v["x"].as_i64().unwrap_or(0) as i32;
+        dm.Anonymous1.Anonymous2.dmPosition.y = v["y"].as_i64().unwrap_or(0) as i32;
+    }
+    if dm.dmPelsWidth == 0 || dm.dmPelsHeight == 0 {
+        // No usable saved mode: pick the device's best supported mode and
+        // place it to the right of the current desktop.
+        let mut best = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
+        let mut i = 0u32;
+        loop {
+            let mut m = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
+            let ok = unsafe {
+                EnumDisplaySettingsW(PCWSTR(wname.as_ptr()), ENUM_DISPLAY_SETTINGS_MODE(i), &mut m)
+            };
+            if !ok.as_bool() {
+                break;
+            }
+            i += 1;
+            if (m.dmPelsWidth, m.dmPelsHeight, m.dmDisplayFrequency)
+                > (best.dmPelsWidth, best.dmPelsHeight, best.dmDisplayFrequency)
+            {
+                best = m;
+            }
+        }
+        anyhow::ensure!(best.dmPelsWidth > 0, "no display mode found for {name}");
+        let b = desktop_bounds();
+        dm.dmPelsWidth = best.dmPelsWidth;
+        dm.dmPelsHeight = best.dmPelsHeight;
+        dm.dmBitsPerPel = if best.dmBitsPerPel > 0 { best.dmBitsPerPel } else { 32 };
+        dm.dmDisplayFrequency = best.dmDisplayFrequency;
+        dm.Anonymous1.Anonymous2.dmPosition.x = b.right();
+        dm.Anonymous1.Anonymous2.dmPosition.y = 0;
+    }
+    dm.dmFields = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY;
+
+    unsafe {
+        let r = ChangeDisplaySettingsExW(
+            PCWSTR(wname.as_ptr()),
+            Some(&dm),
+            None,
+            CDS_UPDATEREGISTRY | CDS_NORESET,
+            None,
+        );
+        anyhow::ensure!(r == DISP_CHANGE_SUCCESSFUL, "attach {name} failed: {r:?}");
+        let r = ChangeDisplaySettingsExW(PCWSTR::null(), None, None, CDS_TYPE(0), None);
+        anyhow::ensure!(r == DISP_CHANGE_SUCCESSFUL, "applying topology failed: {r:?}");
+    }
+    let _ = std::fs::remove_file(state_path(name));
+    Ok(())
+}
+
+/// Is the shared display currently detached by us? Windows can't easily map a
+/// detached device back to its old attached index, so this reports true when
+/// any drift-saved detach state exists. None is never returned here.
+pub fn display_disabled(_index: u32) -> Option<bool> {
+    let devices = display_devices();
+    Some(devices.iter().any(|(name, flags)| {
+        flags & DD_ATTACHED_TO_DESKTOP == 0 && state_path(name).exists()
+    }))
+}
+
 /// Every physical display, in virtual-screen coordinates.
 pub fn monitors() -> Vec<Rect> {
     use windows::core::BOOL;
@@ -415,11 +629,26 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
     if info.flags.0 & LLKHF_INJECTED != 0 {
         return CallNextHookEx(None, code, wparam, lparam);
     }
+
+    let msg = wparam.0 as u32;
+
+    // Shared-monitor hotkey (Ctrl+Alt+M) works in both modes.
+    if state.ctl.shared_hotkey.load(Ordering::Relaxed)
+        && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
+        && info.vkCode == 0x4D
+    {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_MENU};
+        let down = |vk: u16| (GetAsyncKeyState(vk as i32) as u16) & 0x8000 != 0;
+        if down(VK_CONTROL.0) && down(VK_MENU.0) {
+            let _ = state.tx.send(Captured::SharedHotkey);
+            return LRESULT(1);
+        }
+    }
+
     if !state.ctl.forwarding.load(Ordering::SeqCst) {
         return CallNextHookEx(None, code, wparam, lparam);
     }
 
-    let msg = wparam.0 as u32;
     let pressed = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
     let released = msg == WM_KEYUP || msg == WM_SYSKEYUP;
     if !(pressed || released) {

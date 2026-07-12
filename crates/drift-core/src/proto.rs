@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -84,6 +84,12 @@ pub enum Msg {
     Ping(u64),
     Pong(u64),
     Bye,
+    /// host -> client: attach (`on`) or detach one of your displays. Used for
+    /// the shared-monitor flow: the machine the panel is NOT showing detaches
+    /// it so its cursor can't wander onto an invisible screen.
+    DisplayPower { index: u32, on: bool },
+    /// client -> host: outcome of a `DisplayPower` request.
+    DisplayPowerResult { index: u32, on: bool, error: Option<String> },
 }
 
 impl Msg {

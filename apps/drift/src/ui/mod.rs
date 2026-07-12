@@ -26,11 +26,23 @@ pub struct PeerLive {
     pub rtt_ms: Option<f64>,
 }
 
+/// Commands the editor (or `drift monitor`) sends to the running host router.
+pub enum UiCmd {
+    SetSharedOwner(String),
+}
+
 #[derive(Default)]
 pub struct LiveState {
     pub running: bool,
     pub focus: Option<String>,
     pub peers: HashMap<String, PeerLive>,
+    /// Shared-monitor live state (host only).
+    pub shared_configured: bool,
+    pub shared_peer: Option<String>,
+    pub shared_owner: Option<String>,
+    pub shared_error: Option<String>,
+    /// Channel into the router; present while a host is running.
+    pub cmd: Option<tokio::sync::mpsc::UnboundedSender<UiCmd>>,
 }
 
 static LIVE: OnceLock<Mutex<LiveState>> = OnceLock::new();
@@ -60,6 +72,29 @@ pub fn set_rtt(peer: &str, rtt_ms: f64) {
 
 pub fn set_focus(focus: Option<String>) {
     live().lock().unwrap().focus = focus;
+}
+
+pub fn set_cmd_sender(tx: tokio::sync::mpsc::UnboundedSender<UiCmd>) {
+    live().lock().unwrap().cmd = Some(tx);
+}
+
+/// Update shared-monitor config-derived state. `owner: None` keeps the
+/// current owner untouched (used on config hot-reload).
+pub fn set_shared_state(configured: bool, peer: Option<String>, owner: Option<String>) {
+    let mut s = live().lock().unwrap();
+    s.shared_configured = configured;
+    s.shared_peer = peer;
+    if owner.is_some() {
+        s.shared_owner = owner;
+    }
+}
+
+pub fn set_shared_owner(owner: Option<String>) {
+    live().lock().unwrap().shared_owner = owner;
+}
+
+pub fn set_shared_error(err: Option<String>) {
+    live().lock().unwrap().shared_error = err;
 }
 
 pub fn url() -> String {
@@ -247,8 +282,45 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
             Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
         },
+        ("POST", "/api/shared") => match api_set_shared(body) {
+            Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
+            Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+        },
+        ("POST", "/api/shared-config") => match api_shared_config(body) {
+            Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
+            Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+        },
         _ => ("404 Not Found", "text/plain", b"not found".to_vec()),
     }
+}
+
+/// POST /api/shared {"owner": "<machine>" | "toggle"} — hand the shared panel
+/// to a machine. Forwarded to the running host router.
+fn api_set_shared(body: &[u8]) -> Result<()> {
+    let v: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
+    let owner = v.get("owner").and_then(|o| o.as_str()).context("missing 'owner'")?;
+    let s = live().lock().unwrap();
+    let tx = s.cmd.as_ref().context("host not running")?;
+    tx.send(UiCmd::SetSharedOwner(owner.to_string())).ok().context("host router gone")?;
+    Ok(())
+}
+
+/// POST /api/shared-config {"local_index":N,"peer":"name","peer_index":M,"hotkey":bool}
+/// — persist which panel is shared. null/absent local_index clears the config.
+fn api_shared_config(body: &[u8]) -> Result<()> {
+    let v: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
+    let mut cfg = Config::load_or_init()?;
+    cfg.shared_monitor.local_index = v.get("local_index").and_then(|x| x.as_u64()).map(|x| x as u32);
+    cfg.shared_monitor.peer_index = v.get("peer_index").and_then(|x| x.as_u64()).map(|x| x as u32);
+    cfg.shared_monitor.peer = v.get("peer").and_then(|x| x.as_str()).map(|s| s.to_string());
+    if let Some(h) = v.get("hotkey").and_then(|x| x.as_bool()) {
+        cfg.shared_monitor.hotkey = h;
+    }
+    if let Some(p) = &cfg.shared_monitor.peer {
+        anyhow::ensure!(cfg.peers.iter().any(|x| &x.name == p), "unknown peer '{p}'");
+    }
+    cfg.save()?;
+    Ok(())
 }
 
 fn api_state() -> Result<String> {
@@ -286,6 +358,12 @@ fn api_status() -> String {
         "running": s.running,
         "focus": s.focus,
         "peers": peers,
+        "shared": {
+            "configured": s.shared_configured,
+            "peer": s.shared_peer,
+            "owner": s.shared_owner,
+            "error": s.shared_error,
+        },
     })
     .to_string()
 }

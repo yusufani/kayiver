@@ -61,6 +61,48 @@ pub struct Config {
     pub layout: Layout,
     #[serde(default)]
     pub display: DisplaySwitch,
+    #[serde(default)]
+    pub shared_monitor: SharedMonitor,
+}
+
+/// One physical panel cabled to both machines ("shared monitor"). drift keeps
+/// the OS desktops honest about which machine the panel is currently showing:
+/// the visible machine has the display attached, the hidden one detaches it so
+/// its cursor can't wander onto a screen nobody can see. The user flips
+/// ownership with the hotkey, the UI, or `drift monitor <machine>` — matching
+/// the physical input switch on the monitor itself.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SharedMonitor {
+    /// This machine's index for the shared panel (macOS: 1-based, matching
+    /// `drift display list`; Windows: 0-based attached-display order).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_index: Option<u32>,
+    /// Peer sharing the panel. Defaults to the first paired peer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
+    /// The peer's own index for the same panel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_index: Option<u32>,
+    /// Toggle ownership with Cmd+Alt+M (macOS) / Ctrl+Alt+M (Windows).
+    #[serde(default = "default_true")]
+    pub hotkey: bool,
+}
+
+impl Default for SharedMonitor {
+    fn default() -> Self {
+        SharedMonitor { local_index: None, peer: None, peer_index: None, hotkey: true }
+    }
+}
+
+impl SharedMonitor {
+    /// Fully configured (both sides' indices known)?
+    pub fn configured(&self) -> bool {
+        self.local_index.is_some() && self.peer_index.is_some()
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// DDC/CI switching for a monitor physically shared with the peer (one panel,
@@ -103,6 +145,7 @@ impl Default for Config {
             peers: Vec::new(),
             layout: Layout::default(),
             display: DisplaySwitch::default(),
+            shared_monitor: SharedMonitor::default(),
         }
     }
 }
@@ -168,6 +211,7 @@ mod tests {
                 links: vec![Link { from: "mac-studio".into(), edge: Edge::Right, to: "win".into() }],
             },
             display: DisplaySwitch::default(),
+            shared_monitor: SharedMonitor::default(),
         };
         let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), screens: vec![] };
         peer.set_psk(&[9u8; 32]);

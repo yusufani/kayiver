@@ -30,6 +30,9 @@ pub struct CaptureCtl {
     /// Portal triggers are ignored until this instant (set when the cursor
     /// returns, to stop instant re-triggering on the same edge).
     pub cooldown_until: Mutex<Instant>,
+    /// When set, Cmd/Ctrl+Alt+M is swallowed and reported as
+    /// `Captured::SharedHotkey` (shared-monitor ownership toggle).
+    pub shared_hotkey: AtomicBool,
     pub bounds: Rect,
 }
 
@@ -39,6 +42,7 @@ impl CaptureCtl {
             forwarding: AtomicBool::new(false),
             portals: RwLock::new(Vec::new()),
             cooldown_until: Mutex::new(Instant::now()),
+            shared_hotkey: AtomicBool::new(false),
             bounds,
         }
     }

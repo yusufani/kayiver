@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use drift_core::config::Config;
+use drift_core::config::{Config, SharedMonitor};
 use drift_core::layout::{Edge, Layout};
 use drift_core::proto::{InputEvent, Intro, Msg, MouseButton, PROTOCOL_VERSION};
 use drift_core::secure;
@@ -35,6 +35,8 @@ const EDGE_INSET: i32 = 2;
 type Sessions = Arc<Mutex<HashMap<String, UnboundedSender<Msg>>>>;
 /// Layout is shared (and hot-reloaded) so `drift ui` edits apply live.
 type SharedLayout = Arc<RwLock<Layout>>;
+/// Shared-monitor config, hot-reloaded together with the layout.
+type SharedCfg = Arc<RwLock<SharedMonitor>>;
 
 enum SessionEvent {
     Connected { name: String },
@@ -73,14 +75,37 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
 
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
     let layout: SharedLayout = Arc::new(RwLock::new(cfg.layout.clone()));
+    let shared: SharedCfg = Arc::new(RwLock::new(cfg.shared_monitor.clone()));
     let (evt_tx, mut evt_rx) = mpsc::unbounded_channel();
 
     tokio::spawn(accept_loop(listener, cfg.clone(), layout.clone(), sessions.clone(), evt_tx.clone()));
-    tokio::spawn(watch_layout(layout.clone(), evt_tx));
+    tokio::spawn(watch_layout(layout.clone(), shared.clone(), ctl.clone(), evt_tx));
+
+    // Shared-monitor state: arm the hotkey and work out who owns the panel
+    // right now (a disabled local display means the peer is being shown).
+    let shared_peer = shared_peer_name(&cfg, &cfg.shared_monitor);
+    let mut shared_owner = cfg.name.clone();
+    if cfg.shared_monitor.configured() {
+        ctl.shared_hotkey.store(cfg.shared_monitor.hotkey, Ordering::SeqCst);
+        if let Some(idx) = cfg.shared_monitor.local_index {
+            if platform::display_disabled(idx) == Some(true) {
+                if let Some(p) = &shared_peer {
+                    shared_owner = p.clone();
+                }
+            }
+        }
+    }
+    crate::ui::set_shared_state(
+        cfg.shared_monitor.configured(),
+        shared_peer.clone(),
+        Some(shared_owner.clone()),
+    );
 
     let mut router = Router {
         cfg: cfg.clone(),
         layout,
+        shared,
+        shared_owner,
         ctl,
         sessions,
         focus: None,
@@ -90,6 +115,8 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
 
     // The layout editor rides along with the host process.
     crate::ui::mark_running();
+    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
+    crate::ui::set_cmd_sender(cmd_tx);
     tokio::spawn(async {
         if let Err(e) = crate::ui::serve_forever().await {
             debug!("ui server not started: {e:#}");
@@ -108,6 +135,10 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
                 Some(ev) => router.on_session_event(ev),
                 None => break,
             },
+            cmd = cmd_rx.recv() => match cmd {
+                Some(crate::ui::UiCmd::SetSharedOwner(owner)) => router.set_shared_owner(&owner),
+                None => break,
+            },
         }
         if router.focus != prev_focus {
             crate::ui::set_focus(router.focus.clone());
@@ -116,9 +147,17 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     Ok(())
 }
 
+/// The peer that shares the panel: explicit config, else the first paired peer.
+fn shared_peer_name(cfg: &Config, sm: &SharedMonitor) -> Option<String> {
+    sm.peer.clone().or_else(|| cfg.peers.first().map(|p| p.name.clone()))
+}
+
 struct Router {
     cfg: Arc<Config>,
     layout: SharedLayout,
+    shared: SharedCfg,
+    /// Which machine the shared panel is currently showing (best knowledge).
+    shared_owner: String,
     ctl: Arc<CaptureCtl>,
     sessions: Sessions,
     focus: Option<String>,
@@ -203,6 +242,61 @@ impl Router {
                 let b = self.ctl.bounds;
                 platform::warp_cursor(b.x + b.w / 2, b.y + b.h / 2);
             }
+            Captured::SharedHotkey => self.set_shared_owner("toggle"),
+        }
+    }
+
+    /// Flip which machine the shared panel is "showing": attach the display on
+    /// the new owner, detach it on the other side. `owner` is a machine name
+    /// or "toggle". Mirrors the physical input switch the user just pressed
+    /// (or is about to press) on the monitor itself.
+    fn set_shared_owner(&mut self, owner: &str) {
+        let sm = self.shared.read().unwrap().clone();
+        if !sm.configured() {
+            warn!("shared monitor not configured (set shared_monitor in config or via the editor)");
+            return;
+        }
+        let Some(peer) = shared_peer_name(&self.cfg, &sm) else {
+            warn!("shared monitor: no peer configured/paired");
+            return;
+        };
+        let owner = match owner {
+            "toggle" => {
+                if self.shared_owner == self.cfg.name { peer.clone() } else { self.cfg.name.clone() }
+            }
+            o if o == self.cfg.name || o == peer => o.to_string(),
+            o => {
+                warn!("shared monitor: unknown machine '{o}'");
+                return;
+            }
+        };
+        let to_me = owner == self.cfg.name;
+        info!("shared monitor -> {owner}");
+        self.shared_owner = owner.clone();
+        crate::ui::set_shared_owner(Some(owner));
+        crate::ui::set_shared_error(None);
+
+        // Local side (blocking display reconfigure: off-thread). Skip when the
+        // display is already in the desired state.
+        let local_idx = sm.local_index.unwrap();
+        if platform::display_disabled(local_idx).map(|dis| dis == to_me).unwrap_or(true) {
+            std::thread::spawn(move || {
+                if let Err(e) = platform::set_display_enabled(local_idx, to_me) {
+                    warn!("shared monitor, local display: {e:#}");
+                    crate::ui::set_shared_error(Some(format!("local display: {e}")));
+                }
+            });
+        }
+
+        // Peer side: ask it to do the opposite with its own display.
+        let msg = Msg::DisplayPower { index: sm.peer_index.unwrap(), on: !to_me };
+        let sent = {
+            let sessions = self.sessions.lock().unwrap();
+            sessions.get(&peer).map(|tx| tx.send(msg).is_ok()).unwrap_or(false)
+        };
+        if !sent {
+            warn!("shared monitor: peer '{peer}' offline — its display was not changed");
+            crate::ui::set_shared_error(Some(format!("{peer} offline — its display unchanged")));
         }
     }
 
@@ -301,10 +395,15 @@ impl Router {
     }
 }
 
-/// Re-read the config every 2 s; on change, swap the shared layout and nudge
-/// the router. This is what makes `drift ui` (or hand-editing config.toml)
-/// apply without restarting.
-async fn watch_layout(layout: SharedLayout, evt_tx: UnboundedSender<SessionEvent>) {
+/// Re-read the config every 2 s; on change, swap the shared layout /
+/// shared-monitor settings and nudge the router. This is what makes
+/// `drift ui` (or hand-editing config.toml) apply without restarting.
+async fn watch_layout(
+    layout: SharedLayout,
+    shared: SharedCfg,
+    ctl: Arc<CaptureCtl>,
+    evt_tx: UnboundedSender<SessionEvent>,
+) {
     let path = Config::path();
     let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let mut last = mtime(&path);
@@ -329,6 +428,25 @@ async fn watch_layout(layout: SharedLayout, evt_tx: UnboundedSender<SessionEvent
                 if changed {
                     info!("layout reloaded from config");
                     let _ = evt_tx.send(SessionEvent::LayoutChanged);
+                }
+                let sm_changed = {
+                    let mut s = shared.write().unwrap();
+                    if *s != new_cfg.shared_monitor {
+                        *s = new_cfg.shared_monitor.clone();
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if sm_changed {
+                    info!("shared-monitor settings reloaded from config");
+                    let sm = new_cfg.shared_monitor.clone();
+                    ctl.shared_hotkey.store(sm.configured() && sm.hotkey, Ordering::SeqCst);
+                    crate::ui::set_shared_state(
+                        sm.configured(),
+                        shared_peer_name(&new_cfg, &sm),
+                        None,
+                    );
                 }
             }
             Err(e) => warn!("config changed but reload failed: {e}"),
@@ -466,6 +584,13 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
                         crate::ui::set_rtt(&name, sent.elapsed().as_secs_f64() * 1000.0);
                     }
                 }
+                Msg::DisplayPowerResult { index, on, error } => match error {
+                    None => info!("{name}: display {index} {}", if on { "attached" } else { "detached" }),
+                    Some(e) => {
+                        warn!("{name}: display {index} {} failed: {e}", if on { "attach" } else { "detach" });
+                        crate::ui::set_shared_error(Some(format!("{name}: {e}")));
+                    }
+                },
                 Msg::Bye => return Ok(()),
                 other => debug!("unexpected from {name}: {other:?}"),
             }
