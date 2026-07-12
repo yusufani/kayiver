@@ -101,6 +101,30 @@ pub fn url() -> String {
     format!("http://127.0.0.1:{UI_PORT}")
 }
 
+/// Talk to a running kayiver's local API over plain TCP (no HTTP client dep).
+/// Used by the CLI (`kayiver monitor`) and the macOS menu-bar shell.
+pub fn local_api(method: &str, path: &str, body: Option<&str>) -> anyhow::Result<(u16, String)> {
+    use std::io::{Read, Write};
+    let addr = format!("127.0.0.1:{UI_PORT}");
+    let mut stream = std::net::TcpStream::connect_timeout(
+        &addr.parse().unwrap(),
+        std::time::Duration::from_secs(2),
+    )
+    .map_err(|_| anyhow::anyhow!("kayiver is not running (nothing listening on {addr})"))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+    let body = body.unwrap_or("");
+    let req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(req.as_bytes())?;
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp)?;
+    let status: u16 = resp.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let payload = resp.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+    Ok((status, payload))
+}
+
 /// Serve the editor forever. Used both by `kayiver ui` and by a running
 /// `kayiver run` (which embeds the editor so it is always one click away).
 pub async fn serve_forever() -> Result<()> {

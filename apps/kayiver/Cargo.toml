@@ -36,3 +36,9 @@ features = [
     "Win32_Security",
     "Win32_Devices_Display",
 ]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+png = "0.18.1"
+tao = "0.35.3"
+tray-icon = "0.24.1"
+wry = "0.55.1"

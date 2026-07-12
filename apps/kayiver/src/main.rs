@@ -1,5 +1,7 @@
 mod autostart;
 mod engine;
+#[cfg(target_os = "macos")]
+mod gui;
 mod keymap;
 mod platform;
 mod ui;
@@ -32,7 +34,11 @@ enum DisplayAction {
 #[derive(Subcommand)]
 enum Command {
     /// Run kayiver with the configured role (default subcommand).
-    Run,
+    Run {
+        /// Headless: skip the menu-bar icon / native window (macOS only).
+        #[arg(long)]
+        no_gui: bool,
+    },
     /// Pair a new device: run this on the machine WITH the keyboard/mouse.
     /// Displays a PIN and waits for the other machine to `kayiver join`.
     Pair,
@@ -104,11 +110,17 @@ fn main() -> Result<()> {
     platform::init();
 
     let cli = Cli::parse();
-    match cli.command.unwrap_or(Command::Run) {
-        Command::Run => run(),
+    match cli.command.unwrap_or(Command::Run { no_gui: false }) {
+        Command::Run { no_gui } => run(no_gui),
         Command::Pair => engine::pairing::pair_as_display(),
         Command::Join { address } => engine::pairing::join(&address),
-        Command::Ui { no_open } => ui::run(!no_open),
+        Command::Ui { no_open } => {
+            #[cfg(target_os = "macos")]
+            if !no_open {
+                return gui::run_editor();
+            }
+            ui::run(!no_open)
+        }
         Command::Doctor => doctor(),
         Command::Autostart { action } => autostart::apply(action == "enable"),
         Command::Display { action } => display_cmd(action),
@@ -133,7 +145,8 @@ fn main() -> Result<()> {
     }
 }
 
-fn run() -> Result<()> {
+fn run(no_gui: bool) -> Result<()> {
+    let _ = no_gui;
     let cfg = Config::load_or_init()?;
     if cfg.peers.is_empty() {
         // A host can run before its first pairing (useful to verify
@@ -148,7 +161,13 @@ fn run() -> Result<()> {
     }
     platform::ensure_permissions()?;
     match cfg.mode {
-        Mode::Host => engine::host::run(cfg),
+        Mode::Host => {
+            #[cfg(target_os = "macos")]
+            if !no_gui {
+                return gui::run_host(cfg);
+            }
+            engine::host::run(cfg)
+        }
         Mode::Client => engine::client::run(cfg),
     }
 }
@@ -192,37 +211,10 @@ fn display_cmd(action: Option<DisplayAction>) -> Result<()> {
     }
 }
 
-/// Talk to the running kayiver's local API (the layout-editor server).
-fn local_api(method: &str, path: &str, body: Option<&str>) -> Result<(u16, String)> {
-    use std::io::{Read, Write};
-    let addr = format!("127.0.0.1:{}", ui::UI_PORT);
-    let mut stream = std::net::TcpStream::connect_timeout(
-        &addr.parse().unwrap(),
-        std::time::Duration::from_secs(2),
-    )
-    .map_err(|_| anyhow::anyhow!("kayiver is not running (nothing listening on {addr})"))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
-    let body = body.unwrap_or("");
-    let req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(req.as_bytes())?;
-    let mut resp = String::new();
-    stream.read_to_string(&mut resp)?;
-    let status: u16 = resp
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let payload = resp.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
-    Ok((status, payload))
-}
-
 fn monitor_cmd(target: Option<String>) -> Result<()> {
     match target {
         None => {
-            let (_, body) = local_api("GET", "/api/status", None)?;
+            let (_, body) = ui::local_api("GET", "/api/status", None)?;
             let v: serde_json::Value = serde_json::from_str(&body)?;
             let sh = &v["shared"];
             if !sh["configured"].as_bool().unwrap_or(false) {
@@ -244,7 +236,7 @@ fn monitor_cmd(target: Option<String>) -> Result<()> {
         }
         Some(t) => {
             let body = serde_json::json!({ "owner": t }).to_string();
-            let (status, payload) = local_api("POST", "/api/shared", Some(&body))?;
+            let (status, payload) = ui::local_api("POST", "/api/shared", Some(&body))?;
             anyhow::ensure!(status == 200, "kayiver said: {payload}");
             println!("shared monitor -> {t}");
             Ok(())
