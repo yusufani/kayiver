@@ -73,6 +73,11 @@ enum Command {
         /// Machine name or "toggle". Omit to print the current state.
         target: Option<String>,
     },
+    /// LAN API for the mobile companion app: enable/disable/status.
+    Remote {
+        #[arg(value_parser = ["enable", "disable", "status"])]
+        action: String,
+    },
     /// Print the config file path.
     ConfigPath,
     /// Hidden: inject an absolute cursor move to verify injection reaches the
@@ -125,6 +130,7 @@ fn main() -> Result<()> {
         Command::Autostart { action } => autostart::apply(action == "enable"),
         Command::Display { action } => display_cmd(action),
         Command::Monitor { target } => monitor_cmd(target),
+        Command::Remote { action } => remote_cmd(&action),
         Command::ConfigPath => {
             println!("{}", Config::path().display());
             Ok(())
@@ -242,6 +248,40 @@ fn monitor_cmd(target: Option<String>) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn remote_cmd(action: &str) -> Result<()> {
+    use kayiver_core::config::RemoteApi;
+    let mut cfg = Config::load_or_init()?;
+    match action {
+        "enable" => {
+            cfg.remote.enabled = true;
+            if cfg.remote.token.as_deref().unwrap_or("").is_empty() {
+                cfg.remote.token = Some(RemoteApi::generate_token());
+            }
+            cfg.save()?;
+            println!("remote api: ENABLED (restart kayiver to apply)");
+            println!("  port : {} (all interfaces)", ui::UI_PORT + 1);
+            println!("  token: {}", cfg.remote.token.as_deref().unwrap_or(""));
+            println!("  companion app settings: host = this machine's LAN IP, port + token above");
+        }
+        "disable" => {
+            cfg.remote.enabled = false;
+            cfg.save()?;
+            println!("remote api: disabled (restart kayiver to apply)");
+        }
+        _ => {
+            println!(
+                "remote api: {}",
+                if cfg.remote.enabled { "enabled" } else { "disabled" }
+            );
+            if let Some(t) = &cfg.remote.token {
+                println!("  port : {}", ui::UI_PORT + 1);
+                println!("  token: {t}");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn inject_test() -> Result<()> {

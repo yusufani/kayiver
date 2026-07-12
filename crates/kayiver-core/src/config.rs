@@ -67,6 +67,20 @@ pub struct Config {
     pub display: DisplaySwitch,
     #[serde(default)]
     pub shared_monitor: SharedMonitor,
+    #[serde(default)]
+    pub remote: RemoteApi,
+}
+
+/// Opt-in LAN exposure of the status/control API (used by the mobile
+/// companion app). Off by default; when enabled, a second listener binds on
+/// all interfaces and every request must carry `Authorization: Bearer <token>`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct RemoteApi {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Shared secret; generate one with `kayiver remote enable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 /// One physical panel cabled to both machines ("shared monitor"). kayiver keeps
@@ -95,6 +109,16 @@ pub struct SharedMonitor {
 impl Default for SharedMonitor {
     fn default() -> Self {
         SharedMonitor { local_index: None, peer: None, peer_index: None, hotkey: true }
+    }
+}
+
+impl RemoteApi {
+    /// Random 128-bit hex token for the LAN API.
+    pub fn generate_token() -> String {
+        use rand::RngCore;
+        let mut b = [0u8; 16];
+        rand::rng().fill_bytes(&mut b);
+        b.iter().map(|x| format!("{x:02x}")).collect()
     }
 }
 
@@ -150,6 +174,7 @@ impl Default for Config {
             layout: Layout::default(),
             display: DisplaySwitch::default(),
             shared_monitor: SharedMonitor::default(),
+            remote: RemoteApi::default(),
         }
     }
 }
@@ -229,6 +254,7 @@ mod tests {
             },
             display: DisplaySwitch::default(),
             shared_monitor: SharedMonitor::default(),
+            remote: RemoteApi::default(),
         };
         let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), screens: vec![], os: None };
         peer.set_psk(&[9u8; 32]);

@@ -128,15 +128,44 @@ pub fn local_api(method: &str, path: &str, body: Option<&str>) -> anyhow::Result
 /// Serve the editor forever. Used both by `kayiver ui` and by a running
 /// `kayiver run` (which embeds the editor so it is always one click away).
 pub async fn serve_forever() -> Result<()> {
-    // Localhost only: the editor writes to the local config and must not
-    // be reachable from the network.
+    // Localhost: the editor writes to the local config and is not reachable
+    // from the network by default.
     let listener = TcpListener::bind(("127.0.0.1", UI_PORT))
         .await
         .with_context(|| format!("ui port {UI_PORT} busy"))?;
+
+    // Opt-in LAN listener (mobile companion): same routes, one port up, and
+    // every request must present the bearer token from the config.
+    if let Ok(cfg) = Config::load_or_init() {
+        if cfg.remote.enabled {
+            match cfg.remote.token.clone() {
+                Some(token) if !token.is_empty() => {
+                    tokio::spawn(async move {
+                        let lan = match TcpListener::bind(("0.0.0.0", UI_PORT + 1)).await {
+                            Ok(l) => l,
+                            Err(e) => return warn!("remote api port {} busy: {e}", UI_PORT + 1),
+                        };
+                        tracing::info!("remote api listening on 0.0.0.0:{}", UI_PORT + 1);
+                        loop {
+                            let Ok((stream, _)) = lan.accept().await else { return };
+                            let token = token.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = handle(stream, Some(token)).await {
+                                    warn!("remote api request: {e:#}");
+                                }
+                            });
+                        }
+                    });
+                }
+                _ => warn!("remote.enabled is set but remote.token is empty — run `kayiver remote enable`"),
+            }
+        }
+    }
+
     loop {
         let (stream, _) = listener.accept().await?;
         tokio::spawn(async move {
-            if let Err(e) = handle(stream).await {
+            if let Err(e) = handle(stream, None).await {
                 warn!("ui request: {e:#}");
             }
         });
@@ -234,7 +263,7 @@ fn try_app_window(_url: &str) -> bool {
     false
 }
 
-async fn handle(mut stream: TcpStream) -> Result<()> {
+async fn handle(mut stream: TcpStream, required_token: Option<String>) -> Result<()> {
     let mut buf = Vec::with_capacity(4096);
     let mut tmp = [0u8; 4096];
 
@@ -256,11 +285,35 @@ async fn handle(mut stream: TcpStream) -> Result<()> {
     let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
     let mut lines = head.lines();
     let request_line = lines.next().unwrap_or_default().to_string();
-    let content_length: usize = lines
+    let headers: Vec<(String, String)> = lines
         .filter_map(|l| l.split_once(':'))
-        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, v)| v.trim().parse().ok())
+        .map(|(k, v)| (k.to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
+    let content_length: usize = headers
+        .iter()
+        .find(|(k, _)| k == "content-length")
+        .and_then(|(_, v)| v.parse().ok())
         .unwrap_or(0);
+
+    // LAN listener: reject anything without the right bearer token.
+    if let Some(token) = &required_token {
+        let ok = headers
+            .iter()
+            .find(|(k, _)| k == "authorization")
+            .map(|(_, v)| v == &format!("Bearer {token}"))
+            .unwrap_or(false);
+        if !ok {
+            let body = b"unauthorized";
+            let resp = format!(
+                "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(resp.as_bytes()).await?;
+            stream.write_all(body).await?;
+            stream.flush().await?;
+            return Ok(());
+        }
+    }
 
     // Read the body.
     let mut body = buf[header_end + 4..].to_vec();

@@ -106,6 +106,13 @@ unsafe fn refresh(show_balloon: bool) {
 }
 
 unsafe fn load_icon() -> HICON {
+    // Icon resource #1 = the app icon embedded by build.rs (winres);
+    // fall back to the stock application icon if it's missing.
+    if let Ok(hinst) = GetModuleHandleW(None) {
+        if let Ok(icon) = LoadIconW(Some(hinst.into()), PCWSTR(1 as *const u16)) {
+            return icon;
+        }
+    }
     LoadIconW(None, IDI_APPLICATION).unwrap_or(HICON(std::ptr::null_mut()))
 }
 

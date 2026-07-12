@@ -42,3 +42,6 @@ png = "0.18.1"
 tao = "0.35.3"
 tray-icon = "0.24.1"
 wry = "0.55.1"
+
+[build-dependencies]
+winres = "0.1.12"
