@@ -89,16 +89,105 @@ pub fn monitors() -> Vec<Rect> {
 /// we read and the coordinates SendInput expects disagree, and the injected
 /// cursor lands in the wrong place. Must run before any geometry is read.
 pub fn init() {
+    use windows::Win32::System::StationsAndDesktops::{
+        OpenInputDesktop, SetThreadDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS,
+    };
     use windows::Win32::UI::HiDpi::{
         SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     };
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+        // Attach this thread to the session's *input* desktop. Without this,
+        // a drift launched from a service / scheduled task runs on a
+        // non-interactive desktop and its SendInput never reaches the visible
+        // cursor — even though everything reports success. The client injects
+        // on this same thread (single-threaded tokio runtime), so binding it
+        // here is what makes remote-launched drift actually move the cursor.
+        // GENERIC_ALL = 0x10000000.
+        match OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_ACCESS_FLAGS(0x1000_0000)) {
+            Ok(hdesk) => {
+                let ok = SetThreadDesktop(hdesk).is_ok();
+                tracing::info!("input-desktop attach: opened=true set_thread_desktop={ok}");
+            }
+            Err(e) => tracing::info!("input-desktop attach: OpenInputDesktop failed: {e:?}"),
+        }
     }
 }
 
 pub fn ensure_permissions() -> Result<()> {
     Ok(()) // no special permissions needed on Windows
+}
+
+/// Launch `drift run` inside the active console session on the visible input
+/// desktop. Must be called from a process running as SYSTEM (a scheduled task
+/// with the SYSTEM principal) — that is the only way to obtain the logged-in
+/// user's token and start a process that can actually inject input. This is
+/// how a remotely-triggered launch reaches the user's real desktop.
+pub fn launch_in_active_session() -> Result<()> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
+    use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQueryUserToken};
+    use windows::Win32::System::Threading::{
+        CreateProcessAsUserW, CREATE_UNICODE_ENVIRONMENT, NORMAL_PRIORITY_CLASS, PROCESS_INFORMATION,
+        STARTUPINFOW,
+    };
+
+    unsafe {
+        let session = WTSGetActiveConsoleSessionId();
+        anyhow::ensure!(session != 0xFFFF_FFFF, "no active console session (no one logged in)");
+
+        let mut token = HANDLE::default();
+        WTSQueryUserToken(session, &mut token)
+            .map_err(|e| anyhow::anyhow!("WTSQueryUserToken failed (must run as SYSTEM): {e:?}"))?;
+
+        let mut env: *mut std::ffi::c_void = std::ptr::null_mut();
+        let _ = CreateEnvironmentBlock(&mut env, Some(token), false);
+
+        let exe = std::env::current_exe()?;
+        // Subcommand to launch in-session (default "run"; overridable for
+        // diagnostics via DRIFT_LAUNCH_ARGS).
+        let args = std::env::var("DRIFT_LAUNCH_ARGS").unwrap_or_else(|_| "run".into());
+        let mut cmd: Vec<u16> = format!("\"{}\" {args}", exe.display())
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut desktop: Vec<u16> = "winsta0\\default\0".encode_utf16().collect();
+
+        let mut si = STARTUPINFOW {
+            cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+            lpDesktop: PWSTR(desktop.as_mut_ptr()),
+            ..Default::default()
+        };
+        let mut pi = PROCESS_INFORMATION::default();
+
+        let res = CreateProcessAsUserW(
+            Some(token),
+            None,
+            Some(PWSTR(cmd.as_mut_ptr())),
+            None,
+            None,
+            false,
+            CREATE_UNICODE_ENVIRONMENT | NORMAL_PRIORITY_CLASS,
+            Some(env),
+            None,
+            &si as *const _ as *const STARTUPINFOW as *mut _,
+            &mut pi,
+        );
+
+        if !env.is_null() {
+            let _ = DestroyEnvironmentBlock(env);
+        }
+        let _ = CloseHandle(token);
+
+        res.map_err(|e| anyhow::anyhow!("CreateProcessAsUserW failed: {e:?}"))?;
+        let _ = CloseHandle(pi.hProcess);
+        let _ = CloseHandle(pi.hThread);
+        // Silence unused warning for si (used via raw pointer above).
+        let _ = &mut si;
+        Ok(())
+    }
 }
 
 pub fn doctor_permissions() {

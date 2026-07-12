@@ -42,6 +42,14 @@ enum Command {
     },
     /// Print the config file path.
     ConfigPath,
+    /// Hidden: inject an absolute cursor move to verify injection reaches the
+    /// visible desktop (used to diagnose service/scheduled-task launches).
+    #[command(hide = true)]
+    InjectTest,
+    /// Hidden (Windows): relaunch `drift run` in the active console session on
+    /// the visible desktop. Only works when invoked as SYSTEM.
+    #[command(hide = true)]
+    LaunchSession,
 }
 
 fn main() -> Result<()> {
@@ -80,6 +88,19 @@ fn main() -> Result<()> {
             println!("{}", Config::path().display());
             Ok(())
         }
+        Command::InjectTest => inject_test(),
+        Command::LaunchSession => {
+            #[cfg(target_os = "windows")]
+            {
+                platform::launch_in_active_session()?;
+                println!("launched drift run in the active session");
+                Ok(())
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                anyhow::bail!("launch-session is Windows-only")
+            }
+        }
     }
 }
 
@@ -101,6 +122,31 @@ fn run() -> Result<()> {
         Mode::Host => engine::host::run(cfg),
         Mode::Client => engine::client::run(cfg),
     }
+}
+
+fn inject_test() -> Result<()> {
+    // platform::init() already ran in main (DPI + input-desktop attach).
+    let before = platform::cursor_pos();
+    let bounds = platform::desktop_bounds();
+    // Target the primary monitor (first in the list) center, which is always
+    // a real visible point, rather than the whole-desktop bbox (which can land
+    // on an offset/secondary monitor).
+    let primary = platform::monitors().into_iter().next().unwrap_or(bounds);
+    let target = (primary.x + primary.w / 2, primary.y + primary.h / 2);
+    let mut inj = platform::Injector::new()?;
+    inj.mouse_to(target.0, target.1, 0, 0);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let after = platform::cursor_pos();
+    let moved = after != before;
+    let report = format!(
+        "inject-test: bounds={bounds:?} target={target:?} before={before:?} after={after:?}\ncursor moved: {moved}\n"
+    );
+    print!("{report}");
+    // Also write next to the config so a detached (session-launched) run can be
+    // inspected from outside.
+    let out = Config::path().with_file_name("injtest.txt");
+    let _ = std::fs::write(out, report);
+    Ok(())
 }
 
 fn doctor() -> Result<()> {
