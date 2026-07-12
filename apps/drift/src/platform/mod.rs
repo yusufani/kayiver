@@ -58,3 +58,22 @@ pub use windows::*;
 mod stub;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub use stub::*;
+
+#[cfg(target_os = "windows")]
+mod tray_windows;
+
+/// Cross-platform status indicator (system tray / menu bar). Implemented on
+/// Windows; a no-op elsewhere for now.
+pub mod indicator {
+    /// Start the indicator (call once on the client). Non-fatal.
+    pub fn start(_host: &str) {
+        #[cfg(target_os = "windows")]
+        super::tray_windows::start(_host);
+    }
+
+    /// Update the indicator when connection / focus changes.
+    pub fn set_state(_connected: bool, _cursor_here: bool) {
+        #[cfg(target_os = "windows")]
+        super::tray_windows::set_state(_connected, _cursor_here);
+    }
+}

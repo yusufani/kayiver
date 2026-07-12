@@ -106,13 +106,73 @@ pub fn run(open_browser: bool) -> Result<()> {
     })
 }
 
+/// Open the editor as a chromeless **app window** (not a browser tab) using
+/// whichever Chromium browser is installed (`--app=URL`), so it feels like a
+/// native panel with no address bar / tabs. Falls back to a normal browser
+/// open if none is found. This keeps drift a single dependency-free binary
+/// (no bundled webview runtime) while still presenting an app-like window.
 fn open_in_browser(url: &str) {
+    if try_app_window(url) {
+        return;
+    }
+    // Fallback: ordinary browser.
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "windows")]
     let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+#[cfg(target_os = "macos")]
+fn try_app_window(url: &str) -> bool {
+    // Prefer Chrome/Edge/Brave/Chromium app-mode; each runs chromeless.
+    const BROWSERS: &[&str] = &[
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ];
+    for b in BROWSERS {
+        if std::path::Path::new(b).exists() {
+            return std::process::Command::new(b)
+                .arg(format!("--app={url}"))
+                .arg("--window-size=980,680")
+                .spawn()
+                .is_ok();
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn try_app_window(url: &str) -> bool {
+    use std::path::Path;
+    let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+    let pf86 = std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".into());
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let candidates = [
+        format!(r"{pf}\Google\Chrome\Application\chrome.exe"),
+        format!(r"{pf86}\Google\Chrome\Application\chrome.exe"),
+        format!(r"{pf86}\Microsoft\Edge\Application\msedge.exe"),
+        format!(r"{pf}\Microsoft\Edge\Application\msedge.exe"),
+        format!(r"{local}\Google\Chrome\Application\chrome.exe"),
+    ];
+    for c in candidates {
+        if Path::new(&c).exists() {
+            return std::process::Command::new(&c)
+                .arg(format!("--app={url}"))
+                .arg("--window-size=980,680")
+                .spawn()
+                .is_ok();
+        }
+    }
+    false
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn try_app_window(_url: &str) -> bool {
+    false
 }
 
 async fn handle(mut stream: TcpStream) -> Result<()> {

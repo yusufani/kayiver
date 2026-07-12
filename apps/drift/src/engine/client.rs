@@ -33,6 +33,9 @@ pub fn run(cfg: Config) -> Result<()> {
         warn!("multiple peers configured; using '{}' as host", host_peer.name);
     }
 
+    // Status indicator (Windows tray / no-op elsewhere).
+    platform::indicator::start(&host_peer.name);
+
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     rt.block_on(async {
         let mut backoff = Duration::from_secs(1);
@@ -47,6 +50,7 @@ pub fn run(cfg: Config) -> Result<()> {
                     backoff = (backoff * 2).min(Duration::from_secs(5));
                 }
             }
+            platform::indicator::set_state(false, false);
             tokio::time::sleep(backoff).await;
         }
     })
@@ -98,6 +102,7 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
     };
 
     info!("connected to host '{}' at {addr}; my desktop bounds = {bounds:?}", peer.name);
+    platform::indicator::set_state(true, false);
     let mut state = ClientState {
         injector: Injector::new()?,
         bounds,
@@ -115,11 +120,13 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
                 state.pos = point_on_edge(state.bounds, edge, ratio, EDGE_INSET);
                 state.injector.mouse_to(state.pos.0, state.pos.1, 0, 0);
                 state.active = true;
+                platform::indicator::set_state(true, true);
                 info!("cursor entered via {edge} edge -> injecting at {:?}", state.pos);
             }
             Msg::Leave => {
                 state.active = false;
                 state.injector.release_all();
+                platform::indicator::set_state(true, false);
                 debug!("cursor left; input released");
             }
             Msg::Input(ev) => {
@@ -127,6 +134,7 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
                 if let Some((edge, ratio)) = state.apply(ev) {
                     state.active = false;
                     state.injector.release_all();
+                    platform::indicator::set_state(true, false);
                     info!("pushed through {edge} edge -> returning control to host");
                     writer.send(&Msg::CursorLeft { edge, ratio }).await?;
                 }

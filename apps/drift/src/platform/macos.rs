@@ -316,6 +316,10 @@ struct CaptureState {
     /// Modifier keycodes currently held (for flagsChanged press/release).
     mods_down: Vec<u16>,
     esc_downs: [Option<Instant>; 2],
+    /// Where the local cursor is pinned while forwarding. Every swallowed
+    /// pointer event warps back here, so the local pointer is rock-solid even
+    /// if the OS re-associates the mouse under us.
+    park: CGPoint,
 }
 
 pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Result<()> {
@@ -330,6 +334,7 @@ pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Res
                 tap: std::ptr::null_mut(),
                 mods_down: Vec::new(),
                 esc_downs: [None, None],
+                park: CGPoint { x: 0.0, y: 0.0 },
             }));
 
             let mask: u64 = [
@@ -386,6 +391,10 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         ET_MOVED | ET_LEFT_DRAG | ET_RIGHT_DRAG | ET_OTHER_DRAG => {
             let dx = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_X) as i32;
             let dy = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_Y) as i32;
+            // Pin the local pointer: warp it back to the park spot every move.
+            // Belt-and-braces on top of the association disconnect, so the
+            // local cursor never drifts while you're driving the other screen.
+            CGWarpMouseCursorPosition(state.park);
             Some(InputEvent::MouseMove { dx, dy })
         }
         ET_LEFT_DOWN => Some(InputEvent::MouseButton { button: MouseButton::Left, pressed: true }),
@@ -450,8 +459,14 @@ unsafe fn maybe_enter_portal(state: &mut CaptureState, x: i32, y: i32) {
         if touches_edge(bounds, edge, x, y) {
             // Flip into forwarding *now*, inside the callback: the very next
             // event is already swallowed. Then tell the router.
+            // Park a little inside the edge we're leaving through, so the
+            // pinned pointer is off the boundary (won't re-trigger on return).
+            let park_x = (x as f64).clamp(bounds.x as f64 + 4.0, bounds.right() as f64 - 5.0);
+            let park_y = (y as f64).clamp(bounds.y as f64 + 4.0, bounds.bottom() as f64 - 5.0);
+            state.park = CGPoint { x: park_x, y: park_y };
             state.ctl.forwarding.store(true, Ordering::SeqCst);
             set_forwarding_visuals(true);
+            CGWarpMouseCursorPosition(state.park);
             let ratio = ratio_on_edge(bounds, edge, x, y);
             let _ = state.tx.send(Captured::EdgeHit { edge, ratio });
             return;
