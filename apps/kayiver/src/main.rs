@@ -163,16 +163,22 @@ fn run(no_gui: bool) -> Result<()> {
         }
         eprintln!("Running as host anyway — input stays local until a device pairs.");
     }
-    platform::ensure_permissions()?;
     match cfg.mode {
         Mode::Host => {
+            // macOS GUI host: start the menu-bar/window shell immediately and
+            // let the engine thread wait for permissions, so the app is
+            // visible right away instead of blocking on the permission prompt.
             #[cfg(target_os = "macos")]
             if !no_gui {
                 return gui::run_host(cfg);
             }
+            platform::ensure_permissions()?;
             engine::host::run(cfg)
         }
-        Mode::Client => engine::client::run(cfg),
+        Mode::Client => {
+            platform::ensure_permissions()?;
+            engine::client::run(cfg)
+        }
     }
 }
 
