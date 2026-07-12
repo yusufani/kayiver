@@ -313,8 +313,18 @@ function bbox(mons) {
     h: Math.max(...mons.map(m => m.y + m.h)) - y };
 }
 
-async function load() {
-  const s = await (await fetch('/api/state')).json();
+let stateSig = '';
+// Signature of the parts that require a full rebuild (machine set + monitor
+// shapes). Positions/links don't count — only topology.
+function stateSignature(s) {
+  return JSON.stringify(s.machines.map(m => [m.name, m.me, m.monitors]));
+}
+
+function buildFromState(s) {
+  // Remove any existing machine elements (keep #sharedBtn).
+  document.querySelectorAll('.machine').forEach(e => e.remove());
+  sharedBtn.style.display = 'none';
+  candidate = null;
   sharedCfg = s.shared_monitor;
   let maxW = 1;
   for (const m of s.machines) maxW = Math.max(maxW, bbox(m.monitors).w);
@@ -331,7 +341,24 @@ async function load() {
   refreshSnap();
   renderSharedBadges();
   renderSharedCard();
+}
+
+async function load() {
+  const s = await (await fetch('/api/state')).json();
+  stateSig = stateSignature(s);
+  buildFromState(s);
   poll();
+}
+
+// Rebuild the canvas if a peer's monitor layout changed (e.g. it reconnected
+// and reported its real displays). Skipped while dragging.
+async function refreshStateIfChanged() {
+  if (document.querySelector('.machine.dragging')) return;
+  try {
+    const s = await (await fetch('/api/state')).json();
+    const g = stateSignature(s);
+    if (g !== stateSig) { stateSig = g; buildFromState(s); }
+  } catch (_) {}
 }
 
 function placeFromLinks(links) {
@@ -571,7 +598,10 @@ function renderSharedCard() {
 
 // ---------------------------------------------------------------- poll ----
 
+let pollN = 0;
 async function poll() {
+  // Every ~4 s, pick up monitor-topology changes (peer reconnect etc.).
+  if (++pollN % 4 === 0) await refreshStateIfChanged();
   try {
     const st = await (await fetch('/api/status')).json();
     const hostDot = document.getElementById('hostDot');
