@@ -494,19 +494,7 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
 
     // Cache the peer's monitor shapes + OS so the layout editor can draw them
     // and map its display indices.
-    if !monitors.is_empty() {
-        if let Ok(mut fresh) = Config::load_or_init() {
-            if let Some(p) = fresh.peers.iter_mut().find(|p| p.name == name) {
-                if p.screens != monitors || p.os.as_deref() != Some(os.as_str()) {
-                    p.screens = monitors;
-                    p.os = Some(os.clone());
-                    if let Err(e) = fresh.save() {
-                        debug!("could not cache peer screens: {e}");
-                    }
-                }
-            }
-        }
-    }
+    cache_peer_screens(&name, &monitors, Some(&os));
 
     let portal_edges = { layout.read().unwrap().portals(&name) };
     writer
@@ -574,6 +562,12 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
                         crate::ui::set_shared_error(Some(format!("{name}: {e}")));
                     }
                 },
+                Msg::Monitors { monitors, .. } => {
+                    // The peer's desktop changed (a display was attached/detached);
+                    // refresh the cache so the editor and crossing use the new shape.
+                    debug!("{name}: geometry update, {} monitors", monitors.len());
+                    cache_peer_screens(&name, &monitors, None);
+                }
                 Msg::Bye => return Ok(()),
                 other => debug!("unexpected from {name}: {other:?}"),
             }
@@ -586,4 +580,27 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
     let _ = evt_tx.send(SessionEvent::Disconnected { name });
     writer_task.abort();
     result
+}
+
+/// Persist a peer's monitor shapes (and optionally its OS) so the layout
+/// editor can draw them and map display indices. Called from the initial
+/// Hello and from later `Monitors` geometry updates.
+fn cache_peer_screens(name: &str, monitors: &[kayiver_core::proto::Rect], os: Option<&str>) {
+    if monitors.is_empty() {
+        return;
+    }
+    if let Ok(mut fresh) = Config::load_or_init() {
+        if let Some(p) = fresh.peers.iter_mut().find(|p| p.name == name) {
+            let os_changed = os.map(|o| p.os.as_deref() != Some(o)).unwrap_or(false);
+            if p.screens != monitors || os_changed {
+                p.screens = monitors.to_vec();
+                if let Some(o) = os {
+                    p.os = Some(o.to_string());
+                }
+                if let Err(e) = fresh.save() {
+                    debug!("could not cache peer screens: {e}");
+                }
+            }
+        }
+    }
 }

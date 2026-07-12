@@ -90,6 +90,10 @@ pub enum Msg {
     DisplayPower { index: u32, on: bool },
     /// client -> host: outcome of a `DisplayPower` request.
     DisplayPowerResult { index: u32, on: bool, error: Option<String> },
+    /// client -> host: my desktop geometry changed (e.g. a display was
+    /// detached/attached), so the layout editor and crossing math use the
+    /// current monitors instead of the ones from the initial `Hello`.
+    Monitors { screen: Rect, monitors: Vec<Rect> },
 }
 
 impl Msg {

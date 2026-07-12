@@ -119,6 +119,21 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
         let msg = tokio::select! {
             m = tokio::time::timeout(RECV_TIMEOUT, reader.recv()) => m.context("session timed out")??,
             Some(result) = dp_rx.recv() => {
+                // A display was just attached/detached: our desktop geometry
+                // changed, so refresh the bounds that crossing + injection use
+                // (otherwise the cursor would land using the stale, pre-detach
+                // desktop and end up in the wrong place / on the hidden panel).
+                if matches!(&result, Msg::DisplayPowerResult { error: None, .. }) {
+                    let nb = platform::desktop_bounds();
+                    state.bounds = nb;
+                    state.injector = Injector::new()?;
+                    state.pos = (nb.x + nb.w / 2, nb.y + nb.h / 2);
+                    info!("desktop geometry refreshed after display change: {nb:?}");
+                    // Note: we intentionally don't send Msg::Monitors here — an
+                    // older host wouldn't decode it. The editor picks up the new
+                    // shape on the next reconnect; crossing is already correct
+                    // because it maps ratios against these refreshed bounds.
+                }
                 writer.send(&result).await?;
                 continue;
             }
