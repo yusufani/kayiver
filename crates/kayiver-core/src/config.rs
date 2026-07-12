@@ -32,6 +32,10 @@ pub struct Peer {
     /// the layout editor can draw real monitor shapes while it's offline).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub screens: Vec<crate::proto::Rect>,
+    /// Peer OS ("macos"/"windows"...), cached from its Hello. Used to map
+    /// editor monitor picks to that platform's display indexing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
 }
 
 impl Peer {
@@ -226,7 +230,7 @@ mod tests {
             display: DisplaySwitch::default(),
             shared_monitor: SharedMonitor::default(),
         };
-        let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), screens: vec![] };
+        let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), screens: vec![], os: None };
         peer.set_psk(&[9u8; 32]);
         cfg.peers.push(peer);
 

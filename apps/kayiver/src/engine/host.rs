@@ -511,12 +511,14 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
     };
     debug!(?client_screen, %os, "client hello");
 
-    // Cache the peer's monitor shapes so the layout editor can draw them.
+    // Cache the peer's monitor shapes + OS so the layout editor can draw them
+    // and map its display indices.
     if !monitors.is_empty() {
         if let Ok(mut fresh) = Config::load_or_init() {
             if let Some(p) = fresh.peers.iter_mut().find(|p| p.name == name) {
-                if p.screens != monitors {
+                if p.screens != monitors || p.os.as_deref() != Some(os.as_str()) {
                     p.screens = monitors;
+                    p.os = Some(os.clone());
                     if let Err(e) = fresh.save() {
                         debug!("could not cache peer screens: {e}");
                     }

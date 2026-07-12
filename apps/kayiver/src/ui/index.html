@@ -1,82 +1,103 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="tr">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>kayiver — layout</title>
+<title>Kayıver</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><defs><linearGradient id="a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="%235eead4"/><stop offset="1" stop-color="%2334d399"/></linearGradient></defs><rect x="286" y="30" width="12" height="580" rx="6" fill="url(%23a)" opacity=".7"/><path d="M0 0 L0 218 L58 164 L95 247 L130 231 L92 149 L172 149 Z" transform="translate(172,200)" fill="url(%23a)" opacity=".45"/><path d="M0 0 L0 218 L58 164 L95 247 L130 231 L92 149 L172 149 Z" transform="translate(342,200)" fill="%23eaedf3"/></svg>'>
 <style>
   :root {
-    --bg: #0e1014; --bg2: #14171e; --panel: #1a1e27; --panel2: #212633;
-    --line: #2a3040; --line2: #363d4f;
+    --bg: #0b0e14; --bg2: #131722; --panel: #191e2a; --panel2: #212736;
+    --line: #2a3040; --line2: #39415466;
     --text: #eaedf3; --muted: #8b93a3; --faint: #5b6472;
-    --accent: #5eead4; --accent2: #34d399; --accent-dim: #0f3b36;
+    --a1: #5eead4; --a2: #34d399;
+    --accent-grad: linear-gradient(135deg, var(--a1), var(--a2));
+    --accent-dim: #0f3b36;
     --danger: #f87171; --warn: #fbbf24; --good: #34d399;
-    --chip: rgba(14, 16, 20, .82);
-    --shadow: 0 8px 30px rgba(0,0,0,.35);
+    --chip: rgba(11, 14, 20, .84);
+    --shadow: 0 10px 32px rgba(0,0,0,.38);
+    --cursor-main: #ffffff;
   }
   @media (prefers-color-scheme: light) {
     :root {
-      --bg: #eef1f5; --bg2: #f7f9fb; --panel: #ffffff; --panel2: #eef1f6;
-      --line: #d7dce4; --line2: #c2c9d5;
+      --bg: #edf0f5; --bg2: #f8fafc; --panel: #ffffff; --panel2: #eef1f6;
+      --line: #d7dce4; --line2: #c2c9d5aa;
       --text: #14171d; --muted: #5a6472; --faint: #9aa3b2;
-      --accent: #0d9488; --accent2: #059669; --accent-dim: #ccfbf1;
-      --chip: rgba(255,255,255,.9);
-      --shadow: 0 8px 30px rgba(20,30,60,.12);
+      --a1: #0d9488; --a2: #059669;
+      --accent-dim: #ccfbf1;
+      --chip: rgba(255,255,255,.92);
+      --shadow: 0 10px 32px rgba(20,30,60,.12);
+      --cursor-main: #14171d;
     }
   }
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; }
   body {
-    background: radial-gradient(1200px 600px at 80% -10%, var(--bg2), var(--bg) 60%);
+    background:
+      radial-gradient(1100px 560px at 82% -12%, var(--bg2), transparent 55%),
+      radial-gradient(900px 500px at -10% 110%, var(--bg2), transparent 50%),
+      var(--bg);
     color: var(--text);
     font: 14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
     display: flex; flex-direction: column; height: 100vh; overflow: hidden;
   }
-  header {
-    display: flex; align-items: center; gap: 16px;
-    padding: 16px 24px 12px;
-  }
-  .brand { display: flex; align-items: baseline; gap: 10px; }
-  .brand h1 { font-size: 19px; letter-spacing: .3px; font-weight: 750; }
-  .brand h1 span {
-    background: linear-gradient(90deg, var(--accent), var(--accent2));
+
+  header { display: flex; align-items: center; gap: 14px; padding: 14px 22px 10px; }
+  .brand { display: flex; align-items: center; gap: 11px; }
+  .brand svg { width: 30px; height: 30px; color: var(--cursor-main); }
+  .brand h1 {
+    font-size: 21px; font-weight: 800; letter-spacing: .2px; line-height: 1;
+    background: var(--accent-grad);
     -webkit-background-clip: text; background-clip: text; color: transparent;
   }
-  .brand .sub { color: var(--muted); font-size: 12.5px; }
-  .statusbar { margin-left: auto; display: flex; align-items: center; gap: 18px; }
+  .brand .sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .statusbar { margin-left: auto; display: flex; align-items: center; gap: 16px; }
   .stat { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
-  .stat b { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
+  .stat b { color: var(--text); font-weight: 650; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
   .dot.on { background: var(--good); box-shadow: 0 0 0 3px rgba(52,211,153,.18); }
   .dot.off { background: var(--danger); box-shadow: 0 0 0 3px rgba(248,113,113,.15); }
   .dot.idle { background: var(--warn); }
 
   #canvas {
-    flex: 1; margin: 6px 24px 4px; position: relative; overflow: hidden;
+    flex: 1; margin: 4px 22px; position: relative; overflow: hidden;
     border: 1px solid var(--line); border-radius: 16px;
     background:
       radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0) 0 0 / 30px 30px,
       linear-gradient(180deg, rgba(255,255,255,.015), transparent 40%);
     touch-action: none;
   }
+  #canvas.picking { cursor: crosshair; outline: 2px dashed var(--a2); outline-offset: -6px; }
+  #pickbar {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    background: var(--chip); border: 1px solid var(--line2); border-radius: 999px;
+    padding: 8px 18px; font-size: 13px; box-shadow: var(--shadow);
+    backdrop-filter: blur(8px); display: none; z-index: 40; white-space: nowrap;
+  }
+  #pickbar b { color: var(--a2); }
+  #pickbar button { margin-left: 10px; }
 
   .machine { position: absolute; cursor: grab; user-select: none; transition: filter .15s; }
-  .machine.dragging { cursor: grabbing; z-index: 20; filter: brightness(1.05); }
+  .machine.dragging { cursor: grabbing; z-index: 20; filter: brightness(1.06); }
   .mon {
     position: absolute; border-radius: 9px;
     background: linear-gradient(160deg, var(--panel), var(--panel2));
     border: 1.5px solid var(--line2); box-shadow: var(--shadow);
     display: flex; align-items: flex-end; justify-content: flex-end;
     padding: 5px 7px; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums;
-    transition: border-color .16s, box-shadow .16s, transform .16s;
+    transition: border-color .16s, box-shadow .16s;
   }
+  #canvas.picking .mon { cursor: crosshair; }
+  #canvas.picking .mon:hover { border-color: var(--a1); }
+  .mon.shared::before {
+    content: "ortak"; position: absolute; top: -9px; left: 8px;
+    background: var(--accent-grad); color: #052e24; font-size: 9px; font-weight: 800;
+    padding: 1px 8px; border-radius: 999px; letter-spacing: .4px;
+  }
+  .mon.picked { border-color: var(--a2); box-shadow: 0 0 0 3px var(--accent-dim), var(--shadow); }
   .machine.me .mon { background: linear-gradient(160deg, var(--panel2), var(--panel)); }
-  .machine.snapped .mon { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim), var(--shadow); }
-  .machine.focus .mon {
-    border-color: var(--accent2);
-    box-shadow: 0 0 0 3px rgba(52,211,153,.28), var(--shadow);
-    animation: glow 1.6s ease-in-out infinite;
-  }
+  .machine.snapped .mon { border-color: var(--a1); box-shadow: 0 0 0 2px var(--accent-dim), var(--shadow); }
+  .machine.focus .mon { border-color: var(--a2); animation: glow 1.6s ease-in-out infinite; }
   @keyframes glow {
     0%,100% { box-shadow: 0 0 0 3px rgba(52,211,153,.20), var(--shadow); }
     50%     { box-shadow: 0 0 0 6px rgba(52,211,153,.10), var(--shadow); }
@@ -86,35 +107,56 @@
     position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
     background: var(--chip); border: 1px solid var(--line2); border-radius: 12px;
     padding: 7px 13px; text-align: center; pointer-events: none; white-space: nowrap;
-    box-shadow: var(--shadow); backdrop-filter: blur(6px); min-width: 96px;
+    box-shadow: var(--shadow); backdrop-filter: blur(6px); min-width: 96px; z-index: 5;
   }
   .chip .row { display: flex; align-items: center; justify-content: center; gap: 7px; }
   .chip .nm { font-weight: 700; font-size: 13px; }
   .chip .meta { margin-top: 3px; font-size: 10.5px; color: var(--muted); display: flex; gap: 6px; align-items: center; justify-content: center; }
-  .machine.me .chip .tag { color: var(--accent); }
+  .machine.me .chip .tag { color: var(--a1); }
   .pill {
     font-variant-numeric: tabular-nums; font-weight: 650; font-size: 10px;
     padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line2); color: var(--muted);
   }
   .pill.good { color: var(--good); border-color: rgba(52,211,153,.4); }
-  .pill.ok   { color: var(--accent); border-color: rgba(94,234,212,.4); }
+  .pill.ok   { color: var(--a1); border-color: rgba(94,234,212,.4); }
   .pill.slow { color: var(--warn); border-color: rgba(251,191,36,.4); }
 
-  footer {
-    display: flex; align-items: center; gap: 14px; padding: 12px 24px 18px;
+  footer { display: flex; align-items: stretch; gap: 14px; padding: 12px 22px 16px; }
+  .card {
+    background: linear-gradient(180deg, var(--panel), var(--panel2));
+    border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px;
+    box-shadow: var(--shadow); display: flex; align-items: center; gap: 12px;
   }
+  .card .title { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--faint); font-weight: 700; }
+  #layoutCard { flex: 0 0 auto; }
+  #sharedCard { flex: 1; min-width: 0; }
+  #sharedCard .who { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  #msg { font-size: 12.5px; color: var(--muted); min-height: 17px; max-width: 300px; }
+  #msg.err { color: var(--danger); }
+  #msg.ok { color: var(--a2); }
+  #sharedMsg { font-size: 12px; color: var(--muted); }
+  #sharedMsg.err { color: var(--danger); }
+  .hint { margin-left: auto; color: var(--faint); font-size: 11px; text-align: right; line-height: 1.45; align-self: center; }
+
   button {
-    background: linear-gradient(180deg, var(--accent), var(--accent2));
-    color: #05221d; border: 0; border-radius: 10px; padding: 10px 22px;
-    font-size: 14px; font-weight: 750; cursor: pointer; box-shadow: var(--shadow);
+    background: var(--accent-grad);
+    color: #05221d; border: 0; border-radius: 10px; padding: 9px 18px;
+    font-size: 13.5px; font-weight: 750; cursor: pointer; box-shadow: var(--shadow);
     transition: transform .08s, filter .15s;
   }
-  button:hover { filter: brightness(1.06); }
+  button:hover { filter: brightness(1.07); }
   button:active { transform: translateY(1px); }
-  #msg { font-size: 13px; color: var(--muted); min-height: 18px; }
-  #msg.err { color: var(--danger); }
-  #msg.ok { color: var(--accent2); }
-  .hint { margin-left: auto; color: var(--faint); font-size: 11.5px; text-align: right; line-height: 1.4; }
+  button.ghost {
+    background: transparent; color: var(--text);
+    border: 1.5px solid var(--line2); box-shadow: none; font-weight: 650;
+  }
+  button.ghost:hover { border-color: var(--a1); }
+  button.owner-btn.active { background: var(--accent-grad); color: #05221d; border: 0; }
+  button.small { padding: 6px 13px; font-size: 12.5px; }
+  button.linklike {
+    background: none; border: 0; box-shadow: none; color: var(--faint);
+    font-size: 11px; padding: 2px 4px; text-decoration: underline; font-weight: 500;
+  }
   kbd {
     font: inherit; font-size: 10.5px; background: var(--panel2); border: 1px solid var(--line2);
     border-radius: 5px; padding: 1px 5px; color: var(--muted);
@@ -124,31 +166,69 @@
 <body>
 <header>
   <div class="brand">
-    <h1>kayiver <span>layout</span></h1>
-    <div class="sub">arrange your screens — touching edges become crossings</div>
+    <svg viewBox="0 0 640 640" aria-hidden="true">
+      <defs>
+        <linearGradient id="mk" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#34d399"/>
+        </linearGradient>
+        <path id="mc" d="M0 0 L0 218 L58 164 L95 247 L130 231 L92 149 L172 149 Z"/>
+      </defs>
+      <rect x="286" y="30" width="12" height="580" rx="6" fill="url(#mk)" opacity=".65"/>
+      <use href="#mc" transform="translate(60,200)" fill="url(#mk)" opacity=".2"/>
+      <use href="#mc" transform="translate(172,200)" fill="url(#mk)" opacity=".45"/>
+      <use href="#mc" transform="translate(342,200)" fill="currentColor"/>
+    </svg>
+    <div>
+      <h1>kayıver</h1>
+      <div class="sub">tek klavye &amp; fare, bütün ekranlar — karşıya kayıver</div>
+    </div>
   </div>
   <div class="statusbar" id="statusbar">
-    <div class="stat"><span class="dot" id="hostDot"></span><span id="hostTxt">host offline</span></div>
+    <div class="stat"><span class="dot" id="hostDot"></span><span id="hostTxt">bağlanıyor…</span></div>
     <div class="stat"><span id="focusTxt">—</span></div>
   </div>
 </header>
 
-<div id="canvas"></div>
+<div id="canvas">
+  <div id="pickbar"></div>
+</div>
 
 <footer>
-  <button id="save">Save layout</button>
-  <div id="msg"></div>
+  <div class="card" id="layoutCard">
+    <div>
+      <div class="title">Yerleşim</div>
+      <div id="msg">makineleri sürükleyip yan yana bırak</div>
+    </div>
+    <button id="save">Kaydet</button>
+  </div>
+
+  <div class="card" id="sharedCard">
+    <div style="min-width:0">
+      <div class="title">Ortak monitör</div>
+      <div id="sharedMsg">—</div>
+    </div>
+    <div class="who" id="sharedWho"></div>
+    <div style="margin-left:auto; display:flex; gap:8px; align-items:center" id="sharedActions"></div>
+  </div>
+
   <div class="hint">
-    drag a monitor group flush against another to link them<br>
-    panic escape: triple-tap <kbd>Esc</kbd> to pull the cursor home
+    kenarlar birbirine değince geçiş noktası olur<br>
+    panik: 3× <kbd>Esc</kbd> · ortak monitör: <kbd id="hotkeyHint">⌘⌥M</kbd>
   </div>
 </footer>
 
 <script>
 const SNAP = 18;
 let machines = [];
+let sharedCfg = null;      // {local_monitor, peer, peer_monitor, hotkey} | null
+let sharedLive = {};       // /api/status "shared"
+let picking = null;        // {step: 0|1, local: idx} while selecting
 const canvas = document.getElementById('canvas');
 const msgEl = document.getElementById('msg');
+const myName = () => (machines.find(m => m.me) || {}).name;
+const peerName = () => (machines.find(m => !m.me) || {}).name;
+
+if (!/Mac/.test(navigator.platform)) document.getElementById('hotkeyHint').textContent = 'Ctrl+Alt+M';
 
 function setMsg(m, cls) { msgEl.textContent = m; msgEl.className = cls || ''; }
 
@@ -162,6 +242,7 @@ function bbox(mons) {
 
 async function load() {
   const s = await (await fetch('/api/state')).json();
+  sharedCfg = s.shared_monitor;
   let maxW = 1;
   for (const m of s.machines) maxW = Math.max(maxW, bbox(m.monitors).w);
   const scale = Math.min(0.075, 320 / maxW);
@@ -175,6 +256,8 @@ async function load() {
   placeFromLinks(s.links);
   machines.forEach(makeEl);
   refreshSnap();
+  renderSharedBadges();
+  renderSharedCard();
   poll();
 }
 
@@ -212,7 +295,8 @@ function makeEl(m) {
   const el = document.createElement('div');
   el.className = 'machine' + (m.me ? ' me' : '');
   el.style.width = m.w + 'px'; el.style.height = m.h + 'px';
-  for (const mon of m.monitors) {
+  m.monEls = [];
+  m.monitors.forEach((mon, mi) => {
     const d = document.createElement('div');
     d.className = 'mon';
     d.style.left = ((mon.x - m.bb.x) * m.scale) + 'px';
@@ -220,13 +304,15 @@ function makeEl(m) {
     d.style.width = Math.max(42, mon.w * m.scale) + 'px';
     d.style.height = Math.max(30, mon.h * m.scale) + 'px';
     d.textContent = mon.w + '×' + mon.h;
+    d.addEventListener('click', e => { if (picking) { e.stopPropagation(); pickMonitor(m, mi, d); } });
     el.appendChild(d);
-  }
+    m.monEls.push(d);
+  });
   const chip = document.createElement('div');
   chip.className = 'chip';
   chip.innerHTML =
     '<div class="row"><span class="statedot dot"></span><span class="nm">' + m.name + '</span></div>' +
-    '<div class="meta"><span class="tag">' + (m.me ? 'this machine' : 'paired') + '</span>' +
+    '<div class="meta"><span class="tag">' + (m.me ? 'bu makine' : 'eşleşik') + '</span>' +
     '<span class="lat"></span></div>';
   el.appendChild(chip);
   m.statedot = chip.querySelector('.statedot');
@@ -236,6 +322,7 @@ function makeEl(m) {
   pos(m);
 
   el.addEventListener('pointerdown', e => {
+    if (picking) return; // selection mode: no dragging
     el.setPointerCapture(e.pointerId);
     el.classList.add('dragging');
     const ox = e.clientX - m.x, oy = e.clientY - m.y;
@@ -256,7 +343,6 @@ function clamp(m) {
   m.x = Math.max(0, Math.min(canvas.clientWidth - m.w, m.x));
   m.y = Math.max(0, Math.min(canvas.clientHeight - m.h, m.y));
 }
-function ov(a, b, ax, aw, bx, bw) { return Math.min(a[ax] + a[aw], b[bx] + b[bw]) - Math.max(a[ax], b[bx]); }
 function oV(a, b) { return Math.min(a.y+a.h, b.y+b.h) - Math.max(a.y, b.y); }
 function oH(a, b) { return Math.min(a.x+a.w, b.x+b.w) - Math.max(a.x, b.x); }
 
@@ -288,21 +374,135 @@ function refreshSnap() {
 
 function latClass(ms) { return ms < 6 ? 'good' : ms < 20 ? 'ok' : 'slow'; }
 
+// ------------------------------------------------------ shared monitor ----
+
+function renderSharedBadges() {
+  for (const m of machines) (m.monEls || []).forEach(d => d.classList.remove('shared'));
+  if (!sharedCfg) return;
+  const me = machines.find(m => m.me);
+  const peer = machines.find(m => m.name === sharedCfg.peer);
+  if (me && me.monEls[sharedCfg.local_monitor]) me.monEls[sharedCfg.local_monitor].classList.add('shared');
+  if (peer && peer.monEls[sharedCfg.peer_monitor]) peer.monEls[sharedCfg.peer_monitor].classList.add('shared');
+}
+
+function renderSharedCard() {
+  const msg = document.getElementById('sharedMsg');
+  const who = document.getElementById('sharedWho');
+  const act = document.getElementById('sharedActions');
+  who.innerHTML = ''; act.innerHTML = '';
+  msg.className = '';
+
+  if (!sharedCfg) {
+    msg.textContent = 'İki makineye bağlı tek panel varsa tanıt: görünmeyen taraf masaüstünden düşer, imleç kaybolmaz.';
+    const b = document.createElement('button');
+    b.className = 'small';
+    b.textContent = 'Ortak monitörü seç';
+    b.onclick = startPicking;
+    act.appendChild(b);
+    return;
+  }
+
+  const owner = sharedLive.owner;
+  const err = sharedLive.error;
+  msg.className = err ? 'err' : '';
+  msg.textContent = err ? err
+    : (owner ? 'Panel şu an ' + owner + ' ekranını gösteriyor.' : 'Panel durumu bilinmiyor.');
+
+  for (const m of machines) {
+    const b = document.createElement('button');
+    b.className = 'ghost small owner-btn' + (owner === m.name ? ' active' : '');
+    b.textContent = m.name;
+    b.title = 'Ortak paneli ' + m.name + ' makinesine ver';
+    b.onclick = async () => {
+      const r = await fetch('/api/shared', { method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ owner: m.name }) });
+      if (!r.ok) { msg.className = 'err'; msg.textContent = await r.text(); }
+    };
+    who.appendChild(b);
+  }
+
+  const clear = document.createElement('button');
+  clear.className = 'linklike';
+  clear.textContent = 'ayarı kaldır';
+  clear.onclick = async () => {
+    await fetch('/api/shared-config', { method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ clear: true }) });
+    sharedCfg = null;
+    renderSharedBadges(); renderSharedCard();
+  };
+  act.appendChild(clear);
+}
+
+function startPicking() {
+  if (machines.length < 2) { setMsg('önce bir makine eşleştir', 'err'); return; }
+  picking = { step: 0 };
+  canvas.classList.add('picking');
+  updatePickbar();
+}
+
+function updatePickbar() {
+  const bar = document.getElementById('pickbar');
+  if (!picking) { bar.style.display = 'none'; return; }
+  bar.style.display = 'block';
+  bar.innerHTML = (picking.step === 0
+    ? 'Ortak paneli seç: önce <b>' + myName() + '</b> üzerindeki monitörü tıkla'
+    : 'Şimdi aynı panelin <b>' + peerName() + '</b> üzerindeki karşılığını tıkla')
+    + '<button class="ghost small" onclick="cancelPicking()">vazgeç</button>';
+}
+
+function cancelPicking() {
+  picking = null;
+  canvas.classList.remove('picking');
+  document.querySelectorAll('.mon.picked').forEach(d => d.classList.remove('picked'));
+  updatePickbar();
+}
+window.cancelPicking = cancelPicking;
+
+async function pickMonitor(m, mi, el) {
+  if (picking.step === 0) {
+    if (!m.me) return; // first pick is on this machine
+    picking.local = mi; picking.step = 1;
+    el.classList.add('picked');
+    updatePickbar();
+    return;
+  }
+  if (m.me) return; // second pick is on the peer
+  const body = { local_monitor: picking.local, peer: m.name, peer_monitor: mi, hotkey: true };
+  el.classList.add('picked');
+  const r = await fetch('/api/shared-config', { method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+  if (r.ok) {
+    sharedCfg = body;
+    setMsg('ortak monitör kaydedildi ✓', 'ok');
+  } else {
+    setMsg('kaydedilemedi: ' + await r.text(), 'err');
+  }
+  cancelPicking();
+  renderSharedBadges(); renderSharedCard();
+}
+
+// ---------------------------------------------------------------- poll ----
+
 async function poll() {
   try {
     const st = await (await fetch('/api/status')).json();
     const hostDot = document.getElementById('hostDot');
     hostDot.className = 'dot ' + (st.running ? 'on' : 'off');
-    document.getElementById('hostTxt').textContent = st.running ? 'host running' : 'host offline';
+    document.getElementById('hostTxt').textContent = st.running ? 'kayıver çalışıyor' : 'çalışmıyor';
     document.getElementById('focusTxt').innerHTML = st.focus
-      ? 'cursor on <b>' + st.focus + '</b>'
-      : (st.running ? 'cursor local' : '—');
+      ? 'imleç: <b>' + st.focus + '</b>'
+      : (st.running ? 'imleç bu makinede' : '—');
+
+    const prevOwner = sharedLive.owner, prevErr = sharedLive.error;
+    sharedLive = st.shared || {};
+    if (sharedCfg && (sharedLive.owner !== prevOwner || sharedLive.error !== prevErr)) renderSharedCard();
 
     for (const m of machines) {
       m.el.classList.toggle('focus', st.focus === m.name);
       if (m.me) {
         m.statedot.className = 'statedot dot ' + (st.running ? 'on' : 'idle');
-        m.lat.innerHTML = st.running ? '<span class="pill good">host</span>' : '';
+        m.lat.innerHTML = st.running ? '<span class="pill good">ana makine</span>' : '';
         continue;
       }
       const p = (st.peers || {})[m.name];
@@ -310,15 +510,15 @@ async function poll() {
         m.statedot.className = 'statedot dot on';
         m.lat.innerHTML = p.rtt_ms != null
           ? '<span class="pill ' + latClass(p.rtt_ms) + '">' + p.rtt_ms.toFixed(1) + ' ms</span>'
-          : '<span class="pill ok">linked</span>';
+          : '<span class="pill ok">bağlı</span>';
       } else {
         m.statedot.className = 'statedot dot off';
-        m.lat.innerHTML = '<span class="pill">offline</span>';
+        m.lat.innerHTML = '<span class="pill">çevrimdışı</span>';
       }
     }
   } catch (_) {
     document.getElementById('hostDot').className = 'dot off';
-    document.getElementById('hostTxt').textContent = 'host offline';
+    document.getElementById('hostTxt').textContent = 'ulaşılamıyor';
   }
   setTimeout(poll, 1000);
 }
@@ -326,18 +526,18 @@ async function poll() {
 document.getElementById('save').addEventListener('click', async () => {
   const links = currentLinks();
   if (machines.length > 1 && links.length === 0) {
-    setMsg('nothing touches — drag the machines against each other first', 'err');
+    setMsg('hiçbir kenar değmiyor — makineleri yan yana bırak', 'err');
     return;
   }
   const r = await fetch('/api/layout', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(links),
   });
-  setMsg(r.ok ? 'saved ✓ — applied live within ~2 s' : 'save failed: ' + await r.text(), r.ok ? 'ok' : 'err');
+  setMsg(r.ok ? 'kaydedildi ✓ — ~2 sn içinde uygulanır' : 'kaydedilemedi: ' + await r.text(), r.ok ? 'ok' : 'err');
 });
 
 window.addEventListener('resize', () => machines.forEach(m => { clamp(m); pos(m); }));
-load().catch(e => setMsg('cannot reach kayiver: ' + e, 'err'));
+load().catch(e => setMsg("kayıver'a ulaşılamıyor: " + e, 'err'));
 </script>
 </body>
 </html>

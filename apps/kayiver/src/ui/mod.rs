@@ -305,19 +305,38 @@ fn api_set_shared(body: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// POST /api/shared-config {"local_index":N,"peer":"name","peer_index":M,"hotkey":bool}
-/// — persist which panel is shared. null/absent local_index clears the config.
+/// POST /api/shared-config — persist which panel is shared.
+/// Body: {"local_monitor":N, "peer":"name", "peer_monitor":M, "hotkey":bool}
+/// where the monitor fields are 0-based editor picks (order of the machine's
+/// monitor list); they are converted to each platform's display indexing
+/// (macOS display lists are 1-based, Windows attached order is 0-based).
+/// Body {"clear":true} removes the configuration.
 fn api_shared_config(body: &[u8]) -> Result<()> {
     let v: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
     let mut cfg = Config::load_or_init()?;
-    cfg.shared_monitor.local_index = v.get("local_index").and_then(|x| x.as_u64()).map(|x| x as u32);
-    cfg.shared_monitor.peer_index = v.get("peer_index").and_then(|x| x.as_u64()).map(|x| x as u32);
-    cfg.shared_monitor.peer = v.get("peer").and_then(|x| x.as_str()).map(|s| s.to_string());
+    if v.get("clear").and_then(|x| x.as_bool()).unwrap_or(false) {
+        cfg.shared_monitor.local_index = None;
+        cfg.shared_monitor.peer_index = None;
+        cfg.shared_monitor.peer = None;
+        cfg.save()?;
+        return Ok(());
+    }
+    let local_pick = v.get("local_monitor").and_then(|x| x.as_u64()).context("missing local_monitor")? as u32;
+    let peer_pick = v.get("peer_monitor").and_then(|x| x.as_u64()).context("missing peer_monitor")? as u32;
+    let peer_name = v.get("peer").and_then(|x| x.as_str()).context("missing peer")?.to_string();
+    let peer = cfg
+        .peers
+        .iter()
+        .find(|x| x.name == peer_name)
+        .with_context(|| format!("unknown peer '{peer_name}'"))?;
+
+    let to_platform_index = |os: &str, pick: u32| if os == "macos" { pick + 1 } else { pick };
+    cfg.shared_monitor.local_index = Some(to_platform_index(std::env::consts::OS, local_pick));
+    cfg.shared_monitor.peer_index =
+        Some(to_platform_index(peer.os.as_deref().unwrap_or("windows"), peer_pick));
+    cfg.shared_monitor.peer = Some(peer_name);
     if let Some(h) = v.get("hotkey").and_then(|x| x.as_bool()) {
         cfg.shared_monitor.hotkey = h;
-    }
-    if let Some(p) = &cfg.shared_monitor.peer {
-        anyhow::ensure!(cfg.peers.iter().any(|x| &x.name == p), "unknown peer '{p}'");
     }
     cfg.save()?;
     Ok(())
@@ -339,9 +358,30 @@ fn api_state() -> Result<String> {
             "monitors": if p.screens.is_empty() { &fallback } else { &p.screens },
         }));
     }
+    // Editor-facing view of the shared-monitor config: raw platform indices
+    // converted back to 0-based monitor picks.
+    let from_platform_index = |os: &str, idx: u32| if os == "macos" { idx.saturating_sub(1) } else { idx };
+    let sm = &cfg.shared_monitor;
+    let shared = if sm.configured() {
+        let peer_name = sm.peer.clone().or_else(|| cfg.peers.first().map(|p| p.name.clone()));
+        let peer_os = peer_name
+            .as_ref()
+            .and_then(|n| cfg.peer(n))
+            .and_then(|p| p.os.clone())
+            .unwrap_or_else(|| "windows".into());
+        serde_json::json!({
+            "local_monitor": from_platform_index(std::env::consts::OS, sm.local_index.unwrap()),
+            "peer": peer_name,
+            "peer_monitor": from_platform_index(&peer_os, sm.peer_index.unwrap()),
+            "hotkey": sm.hotkey,
+        })
+    } else {
+        serde_json::Value::Null
+    };
     Ok(serde_json::to_string(&serde_json::json!({
         "machines": machines,
         "links": cfg.layout.links,
+        "shared_monitor": shared,
     }))?)
 }
 
@@ -390,7 +430,7 @@ mod tests {
         let (status, ctype, body) = route("GET / HTTP/1.1", b"");
         assert_eq!(status, "200 OK");
         assert!(ctype.starts_with("text/html"));
-        assert!(String::from_utf8_lossy(&body).contains("kayiver"));
+        assert!(String::from_utf8_lossy(&body).contains("Kayıver"));
     }
 
     #[test]
