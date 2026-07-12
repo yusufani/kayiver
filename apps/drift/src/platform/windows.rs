@@ -86,12 +86,22 @@ pub fn displays() -> Vec<(u32, String, Option<u16>)> {
 }
 
 /// Set the input source (VCP 0x60) of a physical monitor by 0-based index.
+/// Retried a few times — Samsung DDC intermittently ignores writes.
 pub fn set_display_input(index: u32, value: u16) -> Result<()> {
     with_physical_monitors(|mons| {
         use windows::Win32::Devices::Display::SetVCPFeature;
         let pm = mons.get(index as usize).ok_or_else(|| anyhow::anyhow!("display index {index} out of range"))?;
-        let r = unsafe { SetVCPFeature(pm.hPhysicalMonitor, 0x60, value as u32) };
-        anyhow::ensure!(r != 0, "SetVCPFeature failed");
+        let mut ok = false;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            if unsafe { SetVCPFeature(pm.hPhysicalMonitor, 0x60, value as u32) } != 0 {
+                ok = true;
+                break;
+            }
+        }
+        anyhow::ensure!(ok, "SetVCPFeature failed after retries");
         Ok(())
     })
     .unwrap_or_else(|| anyhow::bail!("no physical monitors"))
