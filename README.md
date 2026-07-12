@@ -6,9 +6,13 @@ drift is a lightweight, open-source software KVM. Slide your cursor off the
 edge of one machine's screen and it appears on the next, exactly like moving
 between two monitors of the same computer. Keyboard input follows the cursor.
 
-- **Native feel, no lag** — a single ~4 MB Rust binary per machine, raw OS
+- **Native feel, no lag** — a single ~2.5 MB Rust binary per machine, raw OS
   input APIs (CGEventTap / low-level hooks), relative mouse deltas over
   TCP+`TCP_NODELAY` on your LAN. No Electron, no runtime, no daemon zoo.
+  Measured macOS↔Windows over Wi-Fi: **~5 ms round-trip median (~2.6 ms
+  one-way)**. On a quiet Wi-Fi link expect occasional spikes from adapter
+  power-saving — wired Ethernet or disabling the Wi-Fi adapter's power
+  management flattens them.
 - **No cursor lock-ups** — the machine that owns the physical mouse flips
   into forwarding mode *inside the OS input callback*, so not one event
   leaks or double-applies during a crossing. A triple-tap of `Esc` always
@@ -122,7 +126,9 @@ Only TCP port **24817** (configurable) between the machines is required.
 | Cursor stuck on remote machine | Triple-tap `Esc` — input snaps back to the host. |
 | "CGEventTapCreate failed" on macOS | Grant Accessibility + Input Monitoring to your terminal (or the drift binary), then restart drift. |
 | Not discovered over Wi-Fi | Multicast may be filtered; set `addr` on the client's peer entry (see above). |
+| Occasional lag spikes | Wi-Fi adapter power-saving. Use Ethernet, or disable "Allow the computer to turn off this device" on the adapter. |
 | Keys stuck after crossing | Shouldn't happen (both sides release held keys on every focus change) — file a bug with `RUST_LOG=debug` output. |
+| Need logs from a background instance | Set `DRIFT_LOGFILE=/path/to/drift.log` before launching; every event is written and flushed there. |
 
 ## Documentation
 

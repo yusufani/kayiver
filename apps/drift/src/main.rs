@@ -45,12 +45,25 @@ enum Command {
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info".into());
+    // Optional unbuffered log file (`DRIFT_LOGFILE=/path`): useful for
+    // troubleshooting a background/autostarted instance whose stderr is not
+    // visible. Each event is flushed as it happens.
+    match std::env::var("DRIFT_LOGFILE").ok().and_then(|p| {
+        std::fs::OpenOptions::new().create(true).append(true).open(&p).ok()
+    }) {
+        Some(file) => {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file))
+                .init();
+        }
+        None => {
+            tracing_subscriber::fmt().with_env_filter(filter).init();
+        }
+    }
 
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Run) {
