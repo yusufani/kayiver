@@ -3,10 +3,10 @@
 ## v0.1 — now
 - [x] macOS ⇄ Windows keyboard/mouse sharing, edge crossing, PIN pairing,
       encrypted sessions, mDNS + static-addr discovery, reconnect,
-      autostart, panic escape, `drift doctor`
-- [x] `drift ui` — drag & drop layout editor (embedded, localhost-only),
+      autostart, panic escape, `kayiver doctor`
+- [x] `kayiver ui` — drag & drop layout editor (embedded, localhost-only),
       with live layout hot-reload in the running host
-- [x] mingw cross-compilation (build drift.exe from a Mac)
+- [x] mingw cross-compilation (build kayiver.exe from a Mac)
 
 ## v0.2 — polish the two-desktop experience
 - [ ] Clipboard sync (text first; images later) — follows the same
@@ -17,9 +17,9 @@
 - [ ] React to display reconfiguration without restart (hotplug monitors)
 - [ ] Keyboard hotkey to switch focus without touching the mouse
 - [ ] OS keychain storage for PSKs
-- [ ] `drift status` (IPC to the running instance) + `drift pair` while running
+- [ ] `kayiver status` (IPC to the running instance) + `kayiver pair` while running
 - [ ] Serve the layout UI from the running daemon with live connection
-      status + latency per peer (today `drift ui` is a config editor)
+      status + latency per peer (today `kayiver ui` is a config editor)
 - [ ] Prebuilt binaries (GitHub releases, signed/notarized) + CI
 
 ## v0.3 — more platforms & the shared monitor
@@ -37,5 +37,5 @@
 - [ ] Tray/menu-bar UI (keep the core dependency-free; UI stays optional)
 
 Contributions welcome — the platform backends are intentionally isolated
-behind a small trait-like surface (`apps/drift/src/platform/mod.rs`), and
+behind a small trait-like surface (`apps/kayiver/src/platform/mod.rs`), and
 everything else is portable Rust with unit tests.

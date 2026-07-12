@@ -1,8 +1,8 @@
-# drift
+# kayiver
 
 **Share one keyboard and mouse across your machines — seamlessly.**
 
-drift is a lightweight, open-source software KVM. Slide your cursor off the
+kayiver is a lightweight, open-source software KVM. Slide your cursor off the
 edge of one machine's screen and it appears on the next, exactly like moving
 between two monitors of the same computer. Keyboard input follows the cursor.
 
@@ -21,7 +21,7 @@ between two monitors of the same computer. Keyboard input follows the cursor.
   so a corporate VPN that blocks multicast doesn't break anything.
 - **Secure by default** — one-time PIN pairing (SPAKE2), then every session
   is end-to-end encrypted (Noise `NNpsk0`, ChaCha20-Poly1305).
-- **Autostart** — `drift autostart enable` and it's just *there* after boot.
+- **Autostart** — `kayiver autostart enable` and it's just *there* after boot.
 
 | Platform | Give input (host) | Receive input (client) |
 |----------|:-:|:-:|
@@ -36,7 +36,7 @@ between two monitors of the same computer. Keyboard input follows the cursor.
 Build (Rust 1.85+):
 
 ```sh
-cargo build --release          # -> target/release/drift
+cargo build --release          # -> target/release/kayiver
 ```
 
 Cross-compile a Windows binary from macOS/Linux (no Rust needed on the
@@ -44,56 +44,56 @@ Windows box): install mingw-w64 (`brew install mingw-w64`), then
 
 ```sh
 rustup target add x86_64-pc-windows-gnu
-cargo build --release --target x86_64-pc-windows-gnu   # -> drift.exe
+cargo build --release --target x86_64-pc-windows-gnu   # -> kayiver.exe
 ```
 
 **1. Pair** (once). On the machine that has the keyboard/mouse:
 
 ```sh
-drift pair
+kayiver pair
 # shows a 6-digit PIN and this machine's IP
 ```
 
 On the other machine:
 
 ```sh
-drift join <host-ip>
+kayiver join <host-ip>
 # type the PIN
 ```
 
 **2. Run** both sides:
 
 ```sh
-drift run
+kayiver run
 ```
 
 **3. Arrange your screens** (drag & drop):
 
 ```sh
-drift ui
+kayiver ui
 ```
 
 opens the visual layout editor in your browser — drag the machines to match
 your desk; touching edges become crossings. Saving applies **live** to a
-running host, no restart needed. (Prefer a file? `drift config-path` works
+running host, no restart needed. (Prefer a file? `kayiver config-path` works
 too.)
 
 **4. Make it permanent:**
 
 ```sh
-drift autostart enable
+kayiver autostart enable
 ```
 
 Now push your cursor against the edge between the machines. That's it.
 
 macOS will ask for **Accessibility** and **Input Monitoring** permissions on
-first run (System Settings → Privacy & Security). `drift doctor` shows what's
+first run (System Settings → Privacy & Security). `kayiver doctor` shows what's
 missing.
 
 ## Layout
 
 Pairing creates a default layout (new machine to the right of the host).
-`drift ui` is the comfortable way to change it; under the hood it writes:
+`kayiver ui` is the comfortable way to change it; under the hood it writes:
 
 ```toml
 [[layout.links]]
@@ -122,13 +122,13 @@ Only TCP port **24817** (configurable) between the machines is required.
 
 | Symptom | Fix |
 |---|---|
-| Cursor won't cross | `drift doctor` on both sides: are they connected? Portal edges only arm when the peer is online. |
+| Cursor won't cross | `kayiver doctor` on both sides: are they connected? Portal edges only arm when the peer is online. |
 | Cursor stuck on remote machine | Triple-tap `Esc` — input snaps back to the host. |
-| "CGEventTapCreate failed" on macOS | Grant Accessibility + Input Monitoring to your terminal (or the drift binary), then restart drift. |
+| "CGEventTapCreate failed" on macOS | Grant Accessibility + Input Monitoring to your terminal (or the kayiver binary), then restart kayiver. |
 | Not discovered over Wi-Fi | Multicast may be filtered; set `addr` on the client's peer entry (see above). |
 | Occasional lag spikes | Wi-Fi adapter power-saving. Use Ethernet, or disable "Allow the computer to turn off this device" on the adapter. |
 | Keys stuck after crossing | Shouldn't happen (both sides release held keys on every focus change) — file a bug with `RUST_LOG=debug` output. |
-| Need logs from a background instance | Set `DRIFT_LOGFILE=/path/to/drift.log` before launching; every event is written and flushed there. |
+| Need logs from a background instance | Set `KAYIVER_LOGFILE=/path/to/kayiver.log` before launching; every event is written and flushed there. |
 
 ## Documentation
 

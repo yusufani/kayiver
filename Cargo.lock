@@ -308,41 +308,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "drift"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dirs",
- "drift-core",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "windows",
-]
-
-[[package]]
-name = "drift-core"
-version = "0.1.0"
-dependencies = [
- "base64",
- "dirs",
- "gethostname",
- "mdns-sd",
- "postcard",
- "rand",
- "serde",
- "sha2",
- "snow",
- "spake2",
- "thiserror",
- "tokio",
- "toml",
- "tracing",
-]
-
-[[package]]
 name = "embedded-io"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -541,6 +506,41 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "kayiver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "kayiver-core",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "windows",
+]
+
+[[package]]
+name = "kayiver-core"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "dirs",
+ "gethostname",
+ "mdns-sd",
+ "postcard",
+ "rand",
+ "serde",
+ "sha2",
+ "snow",
+ "spake2",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
+]
 
 [[package]]
 name = "lazy_static"

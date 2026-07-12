@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kayiver — layout</title>
+<style>
+  :root {
+    --bg: #0e1014; --bg2: #14171e; --panel: #1a1e27; --panel2: #212633;
+    --line: #2a3040; --line2: #363d4f;
+    --text: #eaedf3; --muted: #8b93a3; --faint: #5b6472;
+    --accent: #5eead4; --accent2: #34d399; --accent-dim: #0f3b36;
+    --danger: #f87171; --warn: #fbbf24; --good: #34d399;
+    --chip: rgba(14, 16, 20, .82);
+    --shadow: 0 8px 30px rgba(0,0,0,.35);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #eef1f5; --bg2: #f7f9fb; --panel: #ffffff; --panel2: #eef1f6;
+      --line: #d7dce4; --line2: #c2c9d5;
+      --text: #14171d; --muted: #5a6472; --faint: #9aa3b2;
+      --accent: #0d9488; --accent2: #059669; --accent-dim: #ccfbf1;
+      --chip: rgba(255,255,255,.9);
+      --shadow: 0 8px 30px rgba(20,30,60,.12);
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(1200px 600px at 80% -10%, var(--bg2), var(--bg) 60%);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 16px 24px 12px;
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; }
+  .brand h1 { font-size: 19px; letter-spacing: .3px; font-weight: 750; }
+  .brand h1 span {
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .brand .sub { color: var(--muted); font-size: 12.5px; }
+  .statusbar { margin-left: auto; display: flex; align-items: center; gap: 18px; }
+  .stat { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
+  .stat b { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  .dot.on { background: var(--good); box-shadow: 0 0 0 3px rgba(52,211,153,.18); }
+  .dot.off { background: var(--danger); box-shadow: 0 0 0 3px rgba(248,113,113,.15); }
+  .dot.idle { background: var(--warn); }
+
+  #canvas {
+    flex: 1; margin: 6px 24px 4px; position: relative; overflow: hidden;
+    border: 1px solid var(--line); border-radius: 16px;
+    background:
+      radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0) 0 0 / 30px 30px,
+      linear-gradient(180deg, rgba(255,255,255,.015), transparent 40%);
+    touch-action: none;
+  }
+
+  .machine { position: absolute; cursor: grab; user-select: none; transition: filter .15s; }
+  .machine.dragging { cursor: grabbing; z-index: 20; filter: brightness(1.05); }
+  .mon {
+    position: absolute; border-radius: 9px;
+    background: linear-gradient(160deg, var(--panel), var(--panel2));
+    border: 1.5px solid var(--line2); box-shadow: var(--shadow);
+    display: flex; align-items: flex-end; justify-content: flex-end;
+    padding: 5px 7px; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums;
+    transition: border-color .16s, box-shadow .16s, transform .16s;
+  }
+  .machine.me .mon { background: linear-gradient(160deg, var(--panel2), var(--panel)); }
+  .machine.snapped .mon { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim), var(--shadow); }
+  .machine.focus .mon {
+    border-color: var(--accent2);
+    box-shadow: 0 0 0 3px rgba(52,211,153,.28), var(--shadow);
+    animation: glow 1.6s ease-in-out infinite;
+  }
+  @keyframes glow {
+    0%,100% { box-shadow: 0 0 0 3px rgba(52,211,153,.20), var(--shadow); }
+    50%     { box-shadow: 0 0 0 6px rgba(52,211,153,.10), var(--shadow); }
+  }
+
+  .chip {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    background: var(--chip); border: 1px solid var(--line2); border-radius: 12px;
+    padding: 7px 13px; text-align: center; pointer-events: none; white-space: nowrap;
+    box-shadow: var(--shadow); backdrop-filter: blur(6px); min-width: 96px;
+  }
+  .chip .row { display: flex; align-items: center; justify-content: center; gap: 7px; }
+  .chip .nm { font-weight: 700; font-size: 13px; }
+  .chip .meta { margin-top: 3px; font-size: 10.5px; color: var(--muted); display: flex; gap: 6px; align-items: center; justify-content: center; }
+  .machine.me .chip .tag { color: var(--accent); }
+  .pill {
+    font-variant-numeric: tabular-nums; font-weight: 650; font-size: 10px;
+    padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line2); color: var(--muted);
+  }
+  .pill.good { color: var(--good); border-color: rgba(52,211,153,.4); }
+  .pill.ok   { color: var(--accent); border-color: rgba(94,234,212,.4); }
+  .pill.slow { color: var(--warn); border-color: rgba(251,191,36,.4); }
+
+  footer {
+    display: flex; align-items: center; gap: 14px; padding: 12px 24px 18px;
+  }
+  button {
+    background: linear-gradient(180deg, var(--accent), var(--accent2));
+    color: #05221d; border: 0; border-radius: 10px; padding: 10px 22px;
+    font-size: 14px; font-weight: 750; cursor: pointer; box-shadow: var(--shadow);
+    transition: transform .08s, filter .15s;
+  }
+  button:hover { filter: brightness(1.06); }
+  button:active { transform: translateY(1px); }
+  #msg { font-size: 13px; color: var(--muted); min-height: 18px; }
+  #msg.err { color: var(--danger); }
+  #msg.ok { color: var(--accent2); }
+  .hint { margin-left: auto; color: var(--faint); font-size: 11.5px; text-align: right; line-height: 1.4; }
+  kbd {
+    font: inherit; font-size: 10.5px; background: var(--panel2); border: 1px solid var(--line2);
+    border-radius: 5px; padding: 1px 5px; color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>kayiver <span>layout</span></h1>
+    <div class="sub">arrange your screens — touching edges become crossings</div>
+  </div>
+  <div class="statusbar" id="statusbar">
+    <div class="stat"><span class="dot" id="hostDot"></span><span id="hostTxt">host offline</span></div>
+    <div class="stat"><span id="focusTxt">—</span></div>
+  </div>
+</header>
+
+<div id="canvas"></div>
+
+<footer>
+  <button id="save">Save layout</button>
+  <div id="msg"></div>
+  <div class="hint">
+    drag a monitor group flush against another to link them<br>
+    panic escape: triple-tap <kbd>Esc</kbd> to pull the cursor home
+  </div>
+</footer>
+
+<script>
+const SNAP = 18;
+let machines = [];
+const canvas = document.getElementById('canvas');
+const msgEl = document.getElementById('msg');
+
+function setMsg(m, cls) { msgEl.textContent = m; msgEl.className = cls || ''; }
+
+function bbox(mons) {
+  const x = Math.min(...mons.map(m => m.x));
+  const y = Math.min(...mons.map(m => m.y));
+  return { x, y,
+    w: Math.max(...mons.map(m => m.x + m.w)) - x,
+    h: Math.max(...mons.map(m => m.y + m.h)) - y };
+}
+
+async function load() {
+  const s = await (await fetch('/api/state')).json();
+  let maxW = 1;
+  for (const m of s.machines) maxW = Math.max(maxW, bbox(m.monitors).w);
+  const scale = Math.min(0.075, 320 / maxW);
+
+  machines = s.machines.map(m => {
+    const bb = bbox(m.monitors);
+    return { name: m.name, me: m.me, monitors: m.monitors, bb, scale,
+      x: 0, y: 0,
+      w: Math.max(78, bb.w * scale), h: Math.max(52, bb.h * scale) };
+  });
+  placeFromLinks(s.links);
+  machines.forEach(makeEl);
+  refreshSnap();
+  poll();
+}
+
+function placeFromLinks(links) {
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  const by = Object.fromEntries(machines.map(m => [m.name, m]));
+  const placed = new Set();
+  const me = machines.find(m => m.me) || machines[0];
+  me.x = (cw - me.w) / 2; me.y = (ch - me.h) / 2;
+  placed.add(me.name);
+  const q = [me];
+  const OPP = { left: 'right', right: 'left', top: 'bottom', bottom: 'top' };
+  while (q.length) {
+    const cur = q.shift();
+    for (const l of links) {
+      let o = null, e = null;
+      if (l.from === cur.name) { o = by[l.to]; e = l.edge; }
+      else if (l.to === cur.name) { o = by[l.from]; e = OPP[l.edge]; }
+      if (!o || placed.has(o.name)) continue;
+      if (e === 'left')   { o.x = cur.x - o.w; o.y = cur.y + (cur.h - o.h) / 2; }
+      if (e === 'right')  { o.x = cur.x + cur.w; o.y = cur.y + (cur.h - o.h) / 2; }
+      if (e === 'top')    { o.y = cur.y - o.h; o.x = cur.x + (cur.w - o.w) / 2; }
+      if (e === 'bottom') { o.y = cur.y + cur.h; o.x = cur.x + (cur.w - o.w) / 2; }
+      placed.add(o.name); q.push(o);
+    }
+  }
+  let i = 0;
+  for (const m of machines) {
+    if (!placed.has(m.name)) { m.x = 40 + i * (m.w + 30); m.y = ch - m.h - 30; i++; }
+    clamp(m);
+  }
+}
+
+function makeEl(m) {
+  const el = document.createElement('div');
+  el.className = 'machine' + (m.me ? ' me' : '');
+  el.style.width = m.w + 'px'; el.style.height = m.h + 'px';
+  for (const mon of m.monitors) {
+    const d = document.createElement('div');
+    d.className = 'mon';
+    d.style.left = ((mon.x - m.bb.x) * m.scale) + 'px';
+    d.style.top = ((mon.y - m.bb.y) * m.scale) + 'px';
+    d.style.width = Math.max(42, mon.w * m.scale) + 'px';
+    d.style.height = Math.max(30, mon.h * m.scale) + 'px';
+    d.textContent = mon.w + '×' + mon.h;
+    el.appendChild(d);
+  }
+  const chip = document.createElement('div');
+  chip.className = 'chip';
+  chip.innerHTML =
+    '<div class="row"><span class="statedot dot"></span><span class="nm">' + m.name + '</span></div>' +
+    '<div class="meta"><span class="tag">' + (m.me ? 'this machine' : 'paired') + '</span>' +
+    '<span class="lat"></span></div>';
+  el.appendChild(chip);
+  m.statedot = chip.querySelector('.statedot');
+  m.lat = chip.querySelector('.lat');
+  canvas.appendChild(el);
+  m.el = el;
+  pos(m);
+
+  el.addEventListener('pointerdown', e => {
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('dragging');
+    const ox = e.clientX - m.x, oy = e.clientY - m.y;
+    const move = ev => { m.x = ev.clientX - ox; m.y = ev.clientY - oy; clamp(m); pos(m); refreshSnap(); };
+    const up = () => {
+      el.classList.remove('dragging');
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      magnet(m); pos(m); refreshSnap();
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+  });
+}
+
+function pos(m) { m.el.style.left = m.x + 'px'; m.el.style.top = m.y + 'px'; }
+function clamp(m) {
+  m.x = Math.max(0, Math.min(canvas.clientWidth - m.w, m.x));
+  m.y = Math.max(0, Math.min(canvas.clientHeight - m.h, m.y));
+}
+function ov(a, b, ax, aw, bx, bw) { return Math.min(a[ax] + a[aw], b[bx] + b[bw]) - Math.max(a[ax], b[bx]); }
+function oV(a, b) { return Math.min(a.y+a.h, b.y+b.h) - Math.max(a.y, b.y); }
+function oH(a, b) { return Math.min(a.x+a.w, b.x+b.w) - Math.max(a.x, b.x); }
+
+function magnet(m) {
+  for (const o of machines) {
+    if (o === m) continue;
+    if (Math.abs(m.x - (o.x+o.w)) <= SNAP && oV(m,o) > 20) m.x = o.x + o.w;
+    else if (Math.abs(m.x+m.w - o.x) <= SNAP && oV(m,o) > 20) m.x = o.x - m.w;
+    else if (Math.abs(m.y - (o.y+o.h)) <= SNAP && oH(m,o) > 20) m.y = o.y + o.h;
+    else if (Math.abs(m.y+m.h - o.y) <= SNAP && oH(m,o) > 20) m.y = o.y - m.h;
+  }
+}
+
+function currentLinks() {
+  const links = [];
+  for (const a of machines) for (const b of machines) {
+    if (a === b) continue;
+    if (Math.abs(a.x+a.w - b.x) <= SNAP && oV(a,b) > 20) links.push({ from: a.name, edge: 'right', to: b.name });
+    if (Math.abs(a.y+a.h - b.y) <= SNAP && oH(a,b) > 20) links.push({ from: a.name, edge: 'bottom', to: b.name });
+  }
+  return links;
+}
+
+function refreshSnap() {
+  const linked = new Set();
+  for (const l of currentLinks()) { linked.add(l.from); linked.add(l.to); }
+  for (const m of machines) m.el.classList.toggle('snapped', linked.has(m.name));
+}
+
+function latClass(ms) { return ms < 6 ? 'good' : ms < 20 ? 'ok' : 'slow'; }
+
+async function poll() {
+  try {
+    const st = await (await fetch('/api/status')).json();
+    const hostDot = document.getElementById('hostDot');
+    hostDot.className = 'dot ' + (st.running ? 'on' : 'off');
+    document.getElementById('hostTxt').textContent = st.running ? 'host running' : 'host offline';
+    document.getElementById('focusTxt').innerHTML = st.focus
+      ? 'cursor on <b>' + st.focus + '</b>'
+      : (st.running ? 'cursor local' : '—');
+
+    for (const m of machines) {
+      m.el.classList.toggle('focus', st.focus === m.name);
+      if (m.me) {
+        m.statedot.className = 'statedot dot ' + (st.running ? 'on' : 'idle');
+        m.lat.innerHTML = st.running ? '<span class="pill good">host</span>' : '';
+        continue;
+      }
+      const p = (st.peers || {})[m.name];
+      if (p && p.connected) {
+        m.statedot.className = 'statedot dot on';
+        m.lat.innerHTML = p.rtt_ms != null
+          ? '<span class="pill ' + latClass(p.rtt_ms) + '">' + p.rtt_ms.toFixed(1) + ' ms</span>'
+          : '<span class="pill ok">linked</span>';
+      } else {
+        m.statedot.className = 'statedot dot off';
+        m.lat.innerHTML = '<span class="pill">offline</span>';
+      }
+    }
+  } catch (_) {
+    document.getElementById('hostDot').className = 'dot off';
+    document.getElementById('hostTxt').textContent = 'host offline';
+  }
+  setTimeout(poll, 1000);
+}
+
+document.getElementById('save').addEventListener('click', async () => {
+  const links = currentLinks();
+  if (machines.length > 1 && links.length === 0) {
+    setMsg('nothing touches — drag the machines against each other first', 'err');
+    return;
+  }
+  const r = await fetch('/api/layout', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(links),
+  });
+  setMsg(r.ok ? 'saved ✓ — applied live within ~2 s' : 'save failed: ' + await r.text(), r.ok ? 'ok' : 'err');
+});
+
+window.addEventListener('resize', () => machines.forEach(m => { clamp(m); pos(m); }));
+load().catch(e => setMsg('cannot reach kayiver: ' + e, 'err'));
+</script>
+</body>
+</html>

@@ -3,19 +3,19 @@
 ## Components
 
 ```
-drift/
-├── crates/drift-core     platform-agnostic library (fully unit-testable)
+kayiver/
+├── crates/kayiver-core     platform-agnostic library (fully unit-testable)
 │   ├── proto             wire messages, HID-based input model
 │   ├── layout            virtual screen arrangement, edge/"portal" math
 │   ├── config            config.toml load/save
 │   ├── pairing           SPAKE2 PIN pairing -> per-peer PSK
 │   ├── secure            Noise NNpsk0 encrypted transport
-│   ├── discovery         mDNS advertise/browse (_drift-kvm._tcp)
+│   ├── discovery         mDNS advertise/browse (_kayiver._tcp)
 │   └── wire              u16-length-prefixed framing
-└── apps/drift            the binary
+└── apps/kayiver            the binary
     ├── engine/host       input router (the machine with the kb/mouse)
     ├── engine/client     input applier (screen-only machines)
-    ├── engine/pairing    `drift pair` / `drift join` CLI flows
+    ├── engine/pairing    `kayiver pair` / `kayiver join` CLI flows
     ├── platform/{macos,windows,stub}   capture + injection backends
     ├── keymap            HID usage <-> native virtual-key tables
     └── autostart         LaunchAgent / registry Run key
@@ -100,14 +100,14 @@ else and UDP would buy nothing measurable while costing ordering,
 loss-handling and NAT/VPN behavior. Every message is tiny (a mouse move is
 ~6 bytes + 16-byte AEAD tag + 2-byte frame header), so there is no
 fragmentation and no head-of-line blocking in practice. If a future
-measurement disagrees, the transport is isolated in `drift-core::secure`
+measurement disagrees, the transport is isolated in `kayiver-core::secure`
 and can grow a UDP path without touching the engines.
 
 Mouse motion is sent **relative** (raw deltas), which is also what makes
 crossing feel native: OS pointer acceleration is applied exactly once, on
 the receiving side's absolute-position accumulation, and multi-monitor
 setups *within* one machine keep working natively since the local OS handles
-its own internal edges with zero drift involvement.
+its own internal edges with zero kayiver involvement.
 
 ## Connection lifecycle
 

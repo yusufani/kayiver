@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- kayiver app icon — a cursor gliding through a screen edge -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b2230"/>
+      <stop offset="1" stop-color="#0a0d13"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5eead4"/>
+      <stop offset="1" stop-color="#34d399"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"  stop-color="#5eead4" stop-opacity="0"/>
+      <stop offset=".28" stop-color="#5eead4" stop-opacity=".95"/>
+      <stop offset=".72" stop-color="#34d399" stop-opacity=".95"/>
+      <stop offset="1"  stop-color="#34d399" stop-opacity="0"/>
+    </linearGradient>
+    <!-- classic pointer, tip at (0,0), ~248x355 -->
+    <path id="cur" d="M0 0 L0 313 L83 236 L137 355 L187 331 L133 214 L248 214 Z"/>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="14" stdDeviation="22" flood-color="#000" flood-opacity=".45"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="232" fill="url(#bg)"/>
+
+  <!-- the portal edge being crossed -->
+  <rect x="468" y="150" width="14" height="724" rx="7" fill="url(#edge)"/>
+
+  <!-- kayiver trail: ghosts left behind on the previous screen -->
+  <use href="#cur" transform="translate(178,338)" fill="url(#accent)" opacity=".16"
+       stroke="url(#accent)" stroke-width="24" stroke-linejoin="round"/>
+  <use href="#cur" transform="translate(338,338)" fill="url(#accent)" opacity=".38"
+       stroke="url(#accent)" stroke-width="24" stroke-linejoin="round"/>
+
+  <!-- the cursor, arrived on the new screen -->
+  <g filter="url(#soft)">
+    <use href="#cur" transform="translate(548,338)" fill="#ffffff"
+         stroke="#ffffff" stroke-width="24" stroke-linejoin="round"/>
+  </g>
+</svg>

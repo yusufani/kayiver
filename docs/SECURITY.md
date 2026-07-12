@@ -1,22 +1,22 @@
 # Security
 
-Input events are keystrokes — i.e. passwords — so drift treats the network
+Input events are keystrokes — i.e. passwords — so kayiver treats the network
 as hostile even though it only runs on your LAN/VPN.
 
 ## Pairing (trust bootstrap)
 
-`drift pair` / `drift join` run **SPAKE2** (Ed25519 group) over the 6-digit
+`kayiver pair` / `kayiver join` run **SPAKE2** (Ed25519 group) over the 6-digit
 PIN, followed by direction-tagged key confirmation
-(`SHA256(key ‖ "drift-pair-confirm-{display,input}")`).
+(`SHA256(key ‖ "kayiver-pair-confirm-{display,input}")`).
 
 Why a 6-digit PIN is enough here: SPAKE2 is a PAKE — the PIN never travels
 on the wire and a transcript gives an attacker **zero** offline information.
 The only attack is an *online* guess, each costing one full exchange, and
-`drift pair` accepts exactly one attempt per displayed code (a failed
+`kayiver pair` accepts exactly one attempt per displayed code (a failed
 attempt burns the code). A man-in-the-middle without the PIN fails key
 confirmation and the user sees the pairing fail.
 
-The result is a per-peer 32-byte PSK (`SHA256(key ‖ "drift-session-psk-v1")`),
+The result is a per-peer 32-byte PSK (`SHA256(key ‖ "kayiver-session-psk-v1")`),
 stored in `config.toml` on both sides.
 
 ## Sessions
@@ -36,7 +36,7 @@ Every session runs **Noise `NNpsk0_25519_ChaChaPoly_BLAKE2s`**:
 
 - The `Intro::Session { name }` frame (host needs it to select the PSK
   before the handshake). An eavesdropper learns machine names and that
-  drift is in use — never input data.
+  kayiver is in use — never input data.
 - mDNS advertisements (inherently public on the LAN).
 
 ## Residual risks & choices

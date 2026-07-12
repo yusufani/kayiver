@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/drift-core", "apps/drift"]
+members = ["crates/kayiver-core", "apps/kayiver"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/yusufani/drift"
+repository = "https://github.com/yusufani/kayiver"
 
 [profile.release]
 lto = "thin"

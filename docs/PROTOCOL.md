@@ -9,7 +9,7 @@ so a mouse move is ~6 bytes).
 
 1. **Intro** (plaintext, client → host, one frame):
    `Intro::Session { name }` — lets the host select the right PSK.
-   `Intro::Pair` — only valid against `drift pair`, rejected by a running host.
+   `Intro::Pair` — only valid against `kayiver pair`, rejected by a running host.
 2. **Handshake**: Noise `NNpsk0_25519_ChaChaPoly_BLAKE2s`, client initiates.
    Two frames (`-> psk, e` / `<- e, ee`). Both sides must hold the PSK from
    pairing; a mismatch fails AEAD verification and the connection drops.
@@ -49,11 +49,11 @@ After `Intro::Pair`:
 
 | # | Frame | Notes |
 |---|---|---|
-| 1 | SPAKE2 message (both directions) | group Ed25519, identity `drift-kvm-pairing-v1`, password = 6-digit PIN |
+| 1 | SPAKE2 message (both directions) | group Ed25519, identity `kayiver-kvm-pairing-v1`, password = 6-digit PIN |
 | 2 | `SHA256(key ‖ role-tag)` (both) | key confirmation, direction-tagged (display/input) to kill reflection |
 | 3 | `PairInfo { name, port }` (both) | exchanged after confirmation |
 
-Session PSK = `SHA256(key ‖ "drift-session-psk-v1")`, stored base64 in the
+Session PSK = `SHA256(key ‖ "kayiver-session-psk-v1")`, stored base64 in the
 config of both machines.
 
 ## Versioning

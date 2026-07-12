@@ -1,0 +1,305 @@
+mod autostart;
+mod engine;
+mod keymap;
+mod platform;
+mod ui;
+
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use kayiver_core::config::{Config, Mode};
+
+#[derive(Parser)]
+#[command(name = "kayiver", version, about = "Share one keyboard & mouse across your machines, seamlessly.")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum DisplayAction {
+    /// List displays and their current input-source (VCP 0x60) value.
+    List,
+    /// Set a display's input source: `kayiver display set <index> <value>`.
+    Set { index: u32, value: u16 },
+    /// Remove a display from this machine's desktop (mirror it away on macOS,
+    /// detach on Windows) so the cursor can't wander onto a panel that's
+    /// physically showing the other machine.
+    Disable { index: u32 },
+    /// Re-add a previously disabled display to the desktop.
+    Enable { index: u32 },
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Run kayiver with the configured role (default subcommand).
+    Run,
+    /// Pair a new device: run this on the machine WITH the keyboard/mouse.
+    /// Displays a PIN and waits for the other machine to `kayiver join`.
+    Pair,
+    /// Join a host: run this on the new screen-only machine.
+    Join {
+        /// Host address, e.g. 192.168.1.20 or 192.168.1.20:24817
+        address: String,
+    },
+    /// Open the visual layout editor (drag & drop your screens).
+    Ui {
+        /// Don't open the browser automatically.
+        #[arg(long)]
+        no_open: bool,
+    },
+    /// Check permissions, config and screen geometry.
+    Doctor,
+    /// Start kayiver automatically at login.
+    Autostart {
+        #[arg(value_parser = ["enable", "disable"])]
+        action: String,
+    },
+    /// List monitors and their current input source, or switch one.
+    /// Use this to find the VCP input value for `display.peer_input`.
+    Display {
+        #[command(subcommand)]
+        action: Option<DisplayAction>,
+    },
+    /// Shared monitor: show who owns the panel, or hand it to a machine.
+    /// `kayiver monitor <machine>` / `kayiver monitor toggle` — enables the
+    /// display on that machine and detaches it on the other one.
+    Monitor {
+        /// Machine name or "toggle". Omit to print the current state.
+        target: Option<String>,
+    },
+    /// Print the config file path.
+    ConfigPath,
+    /// Hidden: inject an absolute cursor move to verify injection reaches the
+    /// visible desktop (used to diagnose service/scheduled-task launches).
+    #[command(hide = true)]
+    InjectTest,
+    /// Hidden (Windows): relaunch `kayiver run` in the active console session on
+    /// the visible desktop. Only works when invoked as SYSTEM.
+    #[command(hide = true)]
+    LaunchSession,
+}
+
+fn main() -> Result<()> {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info".into());
+    // Optional unbuffered log file (`KAYIVER_LOGFILE=/path`): useful for
+    // troubleshooting a background/autostarted instance whose stderr is not
+    // visible. Each event is flushed as it happens.
+    match std::env::var("KAYIVER_LOGFILE").ok().and_then(|p| {
+        std::fs::OpenOptions::new().create(true).append(true).open(&p).ok()
+    }) {
+        Some(file) => {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file))
+                .init();
+        }
+        None => {
+            tracing_subscriber::fmt().with_env_filter(filter).init();
+        }
+    }
+
+    // Platform init before anything reads screen geometry (Windows DPI).
+    platform::init();
+
+    let cli = Cli::parse();
+    match cli.command.unwrap_or(Command::Run) {
+        Command::Run => run(),
+        Command::Pair => engine::pairing::pair_as_display(),
+        Command::Join { address } => engine::pairing::join(&address),
+        Command::Ui { no_open } => ui::run(!no_open),
+        Command::Doctor => doctor(),
+        Command::Autostart { action } => autostart::apply(action == "enable"),
+        Command::Display { action } => display_cmd(action),
+        Command::Monitor { target } => monitor_cmd(target),
+        Command::ConfigPath => {
+            println!("{}", Config::path().display());
+            Ok(())
+        }
+        Command::InjectTest => inject_test(),
+        Command::LaunchSession => {
+            #[cfg(target_os = "windows")]
+            {
+                platform::launch_in_active_session()?;
+                println!("launched kayiver run in the active session");
+                Ok(())
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                anyhow::bail!("launch-session is Windows-only")
+            }
+        }
+    }
+}
+
+fn run() -> Result<()> {
+    let cfg = Config::load_or_init()?;
+    if cfg.peers.is_empty() {
+        // A host can run before its first pairing (useful to verify
+        // permissions and capture stability); a client has nothing to do.
+        eprintln!("No paired devices yet.");
+        eprintln!("  On the machine with the keyboard/mouse:  kayiver pair");
+        eprintln!("  On the other machine:                    kayiver join <that-machine-ip>");
+        if cfg.mode == Mode::Client {
+            std::process::exit(2);
+        }
+        eprintln!("Running as host anyway — input stays local until a device pairs.");
+    }
+    platform::ensure_permissions()?;
+    match cfg.mode {
+        Mode::Host => engine::host::run(cfg),
+        Mode::Client => engine::client::run(cfg),
+    }
+}
+
+fn display_cmd(action: Option<DisplayAction>) -> Result<()> {
+    match action.unwrap_or(DisplayAction::List) {
+        DisplayAction::List => {
+            let displays = platform::displays();
+            let mut report = String::new();
+            if displays.is_empty() {
+                report.push_str("No DDC/CI-capable displays found.\n");
+                #[cfg(target_os = "macos")]
+                report.push_str("(Install the helper: brew install m1ddc)\n");
+            } else {
+                report.push_str("displays (input value = VCP 0x60 source):\n");
+                for (idx, name, input) in displays {
+                    let cur = input.map(|v| v.to_string()).unwrap_or_else(|| "?".into());
+                    report.push_str(&format!("  [{idx}] {name:24} current input = {cur}\n"));
+                }
+            }
+            print!("{report}");
+            // Also to a file so a session-launched run is inspectable.
+            let _ = std::fs::write(Config::path().with_file_name("displays.txt"), report);
+            Ok(())
+        }
+        DisplayAction::Set { index, value } => {
+            platform::set_display_input(index, value)?;
+            println!("set display {index} input -> {value}");
+            Ok(())
+        }
+        DisplayAction::Disable { index } => {
+            platform::set_display_enabled(index, false)?;
+            println!("display {index} removed from this machine's desktop");
+            Ok(())
+        }
+        DisplayAction::Enable { index } => {
+            platform::set_display_enabled(index, true)?;
+            println!("display {index} re-added to this machine's desktop");
+            Ok(())
+        }
+    }
+}
+
+/// Talk to the running kayiver's local API (the layout-editor server).
+fn local_api(method: &str, path: &str, body: Option<&str>) -> Result<(u16, String)> {
+    use std::io::{Read, Write};
+    let addr = format!("127.0.0.1:{}", ui::UI_PORT);
+    let mut stream = std::net::TcpStream::connect_timeout(
+        &addr.parse().unwrap(),
+        std::time::Duration::from_secs(2),
+    )
+    .map_err(|_| anyhow::anyhow!("kayiver is not running (nothing listening on {addr})"))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+    let body = body.unwrap_or("");
+    let req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(req.as_bytes())?;
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp)?;
+    let status: u16 = resp
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let payload = resp.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+    Ok((status, payload))
+}
+
+fn monitor_cmd(target: Option<String>) -> Result<()> {
+    match target {
+        None => {
+            let (_, body) = local_api("GET", "/api/status", None)?;
+            let v: serde_json::Value = serde_json::from_str(&body)?;
+            let sh = &v["shared"];
+            if !sh["configured"].as_bool().unwrap_or(false) {
+                println!("shared monitor: not configured");
+                println!("  set it up in the editor ({}) or add [shared_monitor] to config.toml", ui::url());
+                return Ok(());
+            }
+            println!(
+                "shared monitor: showing {}",
+                sh["owner"].as_str().unwrap_or("?")
+            );
+            if let Some(p) = sh["peer"].as_str() {
+                println!("  shared with  : {p}");
+            }
+            if let Some(e) = sh["error"].as_str() {
+                println!("  last error   : {e}");
+            }
+            Ok(())
+        }
+        Some(t) => {
+            let body = serde_json::json!({ "owner": t }).to_string();
+            let (status, payload) = local_api("POST", "/api/shared", Some(&body))?;
+            anyhow::ensure!(status == 200, "kayiver said: {payload}");
+            println!("shared monitor -> {t}");
+            Ok(())
+        }
+    }
+}
+
+fn inject_test() -> Result<()> {
+    // platform::init() already ran in main (DPI + input-desktop attach).
+    let before = platform::cursor_pos();
+    let bounds = platform::desktop_bounds();
+    // Target the primary monitor (first in the list) center, which is always
+    // a real visible point, rather than the whole-desktop bbox (which can land
+    // on an offset/secondary monitor).
+    let primary = platform::monitors().into_iter().next().unwrap_or(bounds);
+    let target = (primary.x + primary.w / 2, primary.y + primary.h / 2);
+    let mut inj = platform::Injector::new()?;
+    inj.mouse_to(target.0, target.1, 0, 0);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let after = platform::cursor_pos();
+    let moved = after != before;
+    let report = format!(
+        "inject-test: bounds={bounds:?} target={target:?} before={before:?} after={after:?}\ncursor moved: {moved}\n"
+    );
+    print!("{report}");
+    // Also write next to the config so a detached (session-launched) run can be
+    // inspected from outside.
+    let out = Config::path().with_file_name("injtest.txt");
+    let _ = std::fs::write(out, report);
+    Ok(())
+}
+
+fn doctor() -> Result<()> {
+    let cfg = Config::load_or_init()?;
+    println!("kayiver doctor");
+    println!("  config file : {}", Config::path().display());
+    println!("  machine name: {}", cfg.name);
+    println!("  mode        : {:?}", cfg.mode);
+    println!("  port        : {}", cfg.port);
+    let b = platform::desktop_bounds();
+    println!("  desktop     : {}x{} at ({}, {})", b.w, b.h, b.x, b.y);
+    if cfg.peers.is_empty() {
+        println!("  peers       : none (run `kayiver pair` / `kayiver join`)");
+    }
+    for p in &cfg.peers {
+        println!(
+            "  peer        : {} (addr: {})",
+            p.name,
+            p.addr.as_deref().unwrap_or("mDNS discovery")
+        );
+    }
+    for e in cfg.layout.portals(&cfg.name) {
+        let (to, _) = cfg.layout.target(&cfg.name, e).unwrap();
+        println!("  portal      : {} edge -> {}", e, to);
+    }
+    platform::doctor_permissions();
+    Ok(())
+}
