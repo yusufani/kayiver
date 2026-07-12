@@ -205,12 +205,12 @@ fn display_cmd(action: Option<DisplayAction>) -> Result<()> {
             Ok(())
         }
         DisplayAction::Disable { index } => {
-            platform::set_display_enabled(index, false)?;
+            log_display_action("disable", index, platform::set_display_enabled(index, false))?;
             println!("display {index} removed from this machine's desktop");
             Ok(())
         }
         DisplayAction::Enable { index } => {
-            platform::set_display_enabled(index, true)?;
+            log_display_action("enable", index, platform::set_display_enabled(index, true))?;
             println!("display {index} re-added to this machine's desktop");
             Ok(())
         }
@@ -248,6 +248,17 @@ fn monitor_cmd(target: Option<String>) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Mirror the outcome to a file next to the config, so a session-launched
+/// (headless) invocation can be inspected remotely.
+fn log_display_action(what: &str, index: u32, res: Result<()>) -> Result<()> {
+    let msg = match &res {
+        Ok(()) => format!("{what} {index}: ok\n"),
+        Err(e) => format!("{what} {index}: ERROR {e:#}\n"),
+    };
+    let _ = std::fs::write(Config::path().with_file_name("display_action.txt"), msg);
+    res
 }
 
 fn remote_cmd(action: &str) -> Result<()> {

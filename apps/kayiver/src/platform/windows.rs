@@ -335,13 +335,27 @@ fn enable_display(index: u32) -> Result<()> {
     dm.dmFields = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY;
 
     unsafe {
-        let r = ChangeDisplaySettingsExW(
+        let mut r = ChangeDisplaySettingsExW(
             PCWSTR(wname.as_ptr()),
             Some(&dm),
             None,
             CDS_UPDATEREGISTRY | CDS_NORESET,
             None,
         );
+        if r != DISP_CHANGE_SUCCESSFUL {
+            // Windows may have rearranged the remaining displays over the
+            // saved position; retry to the right of the current desktop.
+            let b = desktop_bounds();
+            dm.Anonymous1.Anonymous2.dmPosition.x = b.right();
+            dm.Anonymous1.Anonymous2.dmPosition.y = 0;
+            r = ChangeDisplaySettingsExW(
+                PCWSTR(wname.as_ptr()),
+                Some(&dm),
+                None,
+                CDS_UPDATEREGISTRY | CDS_NORESET,
+                None,
+            );
+        }
         anyhow::ensure!(r == DISP_CHANGE_SUCCESSFUL, "attach {name} failed: {r:?}");
         let r = ChangeDisplaySettingsExW(PCWSTR::null(), None, None, CDS_TYPE(0), None);
         anyhow::ensure!(r == DISP_CHANGE_SUCCESSFUL, "applying topology failed: {r:?}");
