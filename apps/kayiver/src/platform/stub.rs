@@ -22,10 +22,6 @@ pub fn displays() -> Vec<(u32, String, Option<u16>)> {
     vec![]
 }
 
-pub fn set_display_input(_index: u32, _value: u16) -> anyhow::Result<()> {
-    anyhow::bail!("display switching not supported on this platform")
-}
-
 pub fn set_display_enabled(_index: u32, _enabled: bool) -> anyhow::Result<()> {
     anyhow::bail!("display enable/disable not supported on this platform")
 }

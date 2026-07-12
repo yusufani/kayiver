@@ -143,9 +143,6 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
                     state.active = false;
                     state.injector.release_all();
                     platform::indicator::set_state(true, false);
-                    // Hand the shared monitor back to the host's input while
-                    // this machine is still displayed (its DDC link works now).
-                    switch_shared_display(cfg);
                     info!("pushed through {edge} edge -> returning control to host");
                     writer.send(&Msg::CursorLeft { edge, ratio }).await?;
                 }
@@ -166,20 +163,6 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
             other => warn!("unexpected message: {other:?}"),
         }
     }
-}
-
-/// Switch the shared monitor to the host's input (DDC auto-switch), off-thread.
-fn switch_shared_display(cfg: &Config) {
-    if !cfg.display.auto_switch {
-        return;
-    }
-    let Some(value) = cfg.display.peer_input else { return };
-    let index = cfg.display.display_index.unwrap_or(0);
-    std::thread::spawn(move || {
-        if let Err(e) = platform::set_display_input(index, value) {
-            warn!("display switch failed: {e:#}");
-        }
-    });
 }
 
 struct ClientState {

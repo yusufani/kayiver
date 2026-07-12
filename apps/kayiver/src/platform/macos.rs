@@ -307,27 +307,6 @@ pub fn display_disabled(index: u32) -> Option<bool> {
     Some(unsafe { CGDisplayIsInMirrorSet(target) } != 0)
 }
 
-/// Set the input source (VCP 0x60) of a display by 1-based m1ddc index.
-/// Samsung DDC is flaky, so send the command a few times with small gaps.
-pub fn set_display_input(index: u32, value: u16) -> anyhow::Result<()> {
-    let m = m1ddc_path().ok_or_else(|| anyhow::anyhow!("m1ddc not installed (brew install m1ddc)"))?;
-    let mut last = String::new();
-    for attempt in 0..3 {
-        if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        match std::process::Command::new(m)
-            .args(["display", &index.to_string(), "set", "input", &value.to_string()])
-            .output()
-        {
-            Ok(o) if o.status.success() => return Ok(()),
-            Ok(o) => last = String::from_utf8_lossy(&o.stderr).to_string(),
-            Err(e) => last = e.to_string(),
-        }
-    }
-    anyhow::bail!("m1ddc set input failed after retries: {last}")
-}
-
 pub fn ensure_permissions() -> Result<()> {
     if permissions_ok() {
         return Ok(());

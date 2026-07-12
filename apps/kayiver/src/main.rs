@@ -19,10 +19,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum DisplayAction {
-    /// List displays and their current input-source (VCP 0x60) value.
+    /// List this machine's displays.
     List,
-    /// Set a display's input source: `kayiver display set <index> <value>`.
-    Set { index: u32, value: u16 },
     /// Remove a display from this machine's desktop (mirror it away on macOS,
     /// detach on Windows) so the cursor can't wander onto a panel that's
     /// physically showing the other machine.
@@ -60,8 +58,8 @@ enum Command {
         #[arg(value_parser = ["enable", "disable"])]
         action: String,
     },
-    /// List monitors and their current input source, or switch one.
-    /// Use this to find the VCP input value for `display.peer_input`.
+    /// List monitors, or detach/re-attach one from this machine's desktop
+    /// (the shared-monitor mechanism; see `kayiver monitor`).
     Display {
         #[command(subcommand)]
         action: Option<DisplayAction>,
@@ -184,24 +182,18 @@ fn display_cmd(action: Option<DisplayAction>) -> Result<()> {
             let displays = platform::displays();
             let mut report = String::new();
             if displays.is_empty() {
-                report.push_str("No DDC/CI-capable displays found.\n");
+                report.push_str("No displays found.\n");
                 #[cfg(target_os = "macos")]
                 report.push_str("(Install the helper: brew install m1ddc)\n");
             } else {
-                report.push_str("displays (input value = VCP 0x60 source):\n");
-                for (idx, name, input) in displays {
-                    let cur = input.map(|v| v.to_string()).unwrap_or_else(|| "?".into());
-                    report.push_str(&format!("  [{idx}] {name:24} current input = {cur}\n"));
+                report.push_str("displays:\n");
+                for (idx, name, _input) in displays {
+                    report.push_str(&format!("  [{idx}] {name}\n"));
                 }
             }
             print!("{report}");
             // Also to a file so a session-launched run is inspectable.
             let _ = std::fs::write(Config::path().with_file_name("displays.txt"), report);
-            Ok(())
-        }
-        DisplayAction::Set { index, value } => {
-            platform::set_display_input(index, value)?;
-            println!("set display {index} input -> {value}");
             Ok(())
         }
         DisplayAction::Disable { index } => {
