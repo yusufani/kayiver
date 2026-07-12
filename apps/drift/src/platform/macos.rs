@@ -214,6 +214,56 @@ fn prompt_accessibility() {
 /// spelunking, no restart required in the common case.
 pub fn init() {} // nothing to do on macOS
 
+// --------------------------------------------------------------- DDC/CI ----
+// Apple Silicon DDC goes through IOAVService, which the `m1ddc` helper wraps.
+// We shell out to it (kept simple and robust); `drift doctor` warns if absent.
+
+fn m1ddc_path() -> Option<&'static str> {
+    for p in ["/opt/homebrew/bin/m1ddc", "/usr/local/bin/m1ddc"] {
+        if std::path::Path::new(p).exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// (index, name, current input-source VCP value) for each external display.
+pub fn displays() -> Vec<(u32, String, Option<u16>)> {
+    let Some(m) = m1ddc_path() else { return vec![] };
+    let out = match std::process::Command::new(m).args(["display", "list"]).output() {
+        Ok(o) => o,
+        Err(_) => return vec![],
+    };
+    let list = String::from_utf8_lossy(&out.stdout);
+    let mut result = Vec::new();
+    for line in list.lines() {
+        // "[1] LC32G5xT (UUID)"
+        if let Some(rest) = line.trim().strip_prefix('[') {
+            if let Some((idx, name)) = rest.split_once(']') {
+                if let Ok(i) = idx.trim().parse::<u32>() {
+                    let cur = std::process::Command::new(m)
+                        .args(["display", &i.to_string(), "get", "input"])
+                        .output()
+                        .ok()
+                        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u16>().ok());
+                    result.push((i, name.trim().to_string(), cur));
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Set the input source (VCP 0x60) of a display by 1-based m1ddc index.
+pub fn set_display_input(index: u32, value: u16) -> anyhow::Result<()> {
+    let m = m1ddc_path().ok_or_else(|| anyhow::anyhow!("m1ddc not installed (brew install m1ddc)"))?;
+    let out = std::process::Command::new(m)
+        .args(["display", &index.to_string(), "set", "input", &value.to_string()])
+        .output()?;
+    anyhow::ensure!(out.status.success(), "m1ddc set input failed: {}", String::from_utf8_lossy(&out.stderr));
+    Ok(())
+}
+
 pub fn ensure_permissions() -> Result<()> {
     if permissions_ok() {
         return Ok(());

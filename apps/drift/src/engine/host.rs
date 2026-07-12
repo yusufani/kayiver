@@ -185,6 +185,9 @@ impl Router {
                         info!("cursor -> {peer} (via {edge} edge)");
                         self.focus = Some(peer);
                         self.send_to_focus(Msg::Enter { edge: entry_edge, ratio });
+                        // Hand the shared monitor to the peer's input (this
+                        // machine is still displayed, so its DDC link works).
+                        switch_shared_display(&self.cfg);
                     }
                     _ => {
                         // Race: peer vanished between the portal check and now.
@@ -331,6 +334,22 @@ async fn watch_layout(layout: SharedLayout, evt_tx: UnboundedSender<SessionEvent
             Err(e) => warn!("config changed but reload failed: {e}"),
         }
     }
+}
+
+/// If DDC auto-switch is on, tell the shared monitor to select the peer's
+/// input. Runs on a detached thread so the ~100 ms DDC round trip never
+/// stalls input forwarding.
+pub(crate) fn switch_shared_display(cfg: &Config) {
+    if !cfg.display.auto_switch {
+        return;
+    }
+    let Some(value) = cfg.display.peer_input else { return };
+    let index = cfg.display.display_index.unwrap_or(0);
+    std::thread::spawn(move || {
+        if let Err(e) = crate::platform::set_display_input(index, value) {
+            debug!("display switch failed: {e:#}");
+        }
+    });
 }
 
 async fn accept_loop(listener: TcpListener, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, evt_tx: UnboundedSender<SessionEvent>) {

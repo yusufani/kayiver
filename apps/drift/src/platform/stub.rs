@@ -18,6 +18,14 @@ pub fn monitors() -> Vec<Rect> {
     vec![desktop_bounds()]
 }
 
+pub fn displays() -> Vec<(u32, String, Option<u16>)> {
+    vec![]
+}
+
+pub fn set_display_input(_index: u32, _value: u16) -> anyhow::Result<()> {
+    anyhow::bail!("display switching not supported on this platform")
+}
+
 pub fn init() {}
 
 pub fn ensure_permissions() -> Result<()> {

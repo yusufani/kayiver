@@ -59,6 +59,27 @@ pub struct Config {
     pub peers: Vec<Peer>,
     #[serde(default)]
     pub layout: Layout,
+    #[serde(default)]
+    pub display: DisplaySwitch,
+}
+
+/// DDC/CI switching for a monitor physically shared with the peer (one panel,
+/// two input cables). When the cursor hands off to the peer, this machine —
+/// which is the one currently displayed, so its DDC link works — tells the
+/// shared monitor to select the peer's input.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DisplaySwitch {
+    /// Master on/off.
+    #[serde(default)]
+    pub auto_switch: bool,
+    /// VCP 0x60 (input-source) value that selects the PEER's input on the
+    /// shared monitor. Discover it with `drift display list` on the peer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_input: Option<u16>,
+    /// Which display to switch. macOS: m1ddc display index (1-based). Windows:
+    /// physical-monitor index (0-based). None = the first external display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_index: Option<u32>,
 }
 
 fn default_port() -> u16 {
@@ -81,6 +102,7 @@ impl Default for Config {
             port: DEFAULT_PORT,
             peers: Vec::new(),
             layout: Layout::default(),
+            display: DisplaySwitch::default(),
         }
     }
 }
@@ -145,6 +167,7 @@ mod tests {
             layout: Layout {
                 links: vec![Link { from: "mac-studio".into(), edge: Edge::Right, to: "win".into() }],
             },
+            display: DisplaySwitch::default(),
         };
         let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), screens: vec![] };
         peer.set_psk(&[9u8; 32]);

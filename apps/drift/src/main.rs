@@ -16,6 +16,14 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum DisplayAction {
+    /// List displays and their current input-source (VCP 0x60) value.
+    List,
+    /// Set a display's input source: `drift display set <index> <value>`.
+    Set { index: u32, value: u16 },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Run drift with the configured role (default subcommand).
     Run,
@@ -39,6 +47,12 @@ enum Command {
     Autostart {
         #[arg(value_parser = ["enable", "disable"])]
         action: String,
+    },
+    /// List monitors and their current input source, or switch one.
+    /// Use this to find the VCP input value for `display.peer_input`.
+    Display {
+        #[command(subcommand)]
+        action: Option<DisplayAction>,
     },
     /// Print the config file path.
     ConfigPath,
@@ -84,6 +98,7 @@ fn main() -> Result<()> {
         Command::Ui { no_open } => ui::run(!no_open),
         Command::Doctor => doctor(),
         Command::Autostart { action } => autostart::apply(action == "enable"),
+        Command::Display { action } => display_cmd(action),
         Command::ConfigPath => {
             println!("{}", Config::path().display());
             Ok(())
@@ -121,6 +136,35 @@ fn run() -> Result<()> {
     match cfg.mode {
         Mode::Host => engine::host::run(cfg),
         Mode::Client => engine::client::run(cfg),
+    }
+}
+
+fn display_cmd(action: Option<DisplayAction>) -> Result<()> {
+    match action.unwrap_or(DisplayAction::List) {
+        DisplayAction::List => {
+            let displays = platform::displays();
+            let mut report = String::new();
+            if displays.is_empty() {
+                report.push_str("No DDC/CI-capable displays found.\n");
+                #[cfg(target_os = "macos")]
+                report.push_str("(Install the helper: brew install m1ddc)\n");
+            } else {
+                report.push_str("displays (input value = VCP 0x60 source):\n");
+                for (idx, name, input) in displays {
+                    let cur = input.map(|v| v.to_string()).unwrap_or_else(|| "?".into());
+                    report.push_str(&format!("  [{idx}] {name:24} current input = {cur}\n"));
+                }
+            }
+            print!("{report}");
+            // Also to a file so a session-launched run is inspectable.
+            let _ = std::fs::write(Config::path().with_file_name("displays.txt"), report);
+            Ok(())
+        }
+        DisplayAction::Set { index, value } => {
+            platform::set_display_input(index, value)?;
+            println!("set display {index} input -> {value}");
+            Ok(())
+        }
     }
 }
 

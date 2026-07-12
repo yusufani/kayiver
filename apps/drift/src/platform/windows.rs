@@ -60,6 +60,82 @@ pub fn desktop_bounds() -> Rect {
     }
 }
 
+// --------------------------------------------------------------- DDC/CI ----
+
+/// Enumerate physical monitors and read each one's current input source
+/// (VCP 0x60). Index is a stable 0-based order across the call.
+pub fn displays() -> Vec<(u32, String, Option<u16>)> {
+    with_physical_monitors(|mons| {
+        use windows::Win32::Devices::Display::GetVCPFeatureAndVCPFeatureReply;
+        let mut out = Vec::new();
+        for (i, pm) in mons.iter().enumerate() {
+            // PHYSICAL_MONITOR is packed; copy the name array out unaligned.
+            let desc: [u16; 128] = unsafe { std::ptr::addr_of!(pm.szPhysicalMonitorDescription).read_unaligned() };
+            let name = String::from_utf16_lossy(&desc)
+                .trim_end_matches('\0')
+                .trim()
+                .to_string();
+            let mut cur: u32 = 0;
+            let mut max: u32 = 0;
+            let ok = unsafe { GetVCPFeatureAndVCPFeatureReply(pm.hPhysicalMonitor, 0x60, None, &mut cur, Some(&mut max)) };
+            out.push((i as u32, name, if ok != 0 { Some(cur as u16) } else { None }));
+        }
+        out
+    })
+    .unwrap_or_default()
+}
+
+/// Set the input source (VCP 0x60) of a physical monitor by 0-based index.
+pub fn set_display_input(index: u32, value: u16) -> Result<()> {
+    with_physical_monitors(|mons| {
+        use windows::Win32::Devices::Display::SetVCPFeature;
+        let pm = mons.get(index as usize).ok_or_else(|| anyhow::anyhow!("display index {index} out of range"))?;
+        let r = unsafe { SetVCPFeature(pm.hPhysicalMonitor, 0x60, value as u32) };
+        anyhow::ensure!(r != 0, "SetVCPFeature failed");
+        Ok(())
+    })
+    .unwrap_or_else(|| anyhow::bail!("no physical monitors"))
+}
+
+/// Run `f` with the list of physical monitors, cleaning them up after.
+fn with_physical_monitors<T>(f: impl FnOnce(&[windows::Win32::Devices::Display::PHYSICAL_MONITOR]) -> T) -> Option<T> {
+    use windows::Win32::Devices::Display::{
+        DestroyPhysicalMonitors, GetNumberOfPhysicalMonitorsFromHMONITOR,
+        GetPhysicalMonitorsFromHMONITOR, PHYSICAL_MONITOR,
+    };
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{LPARAM, RECT};
+    use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
+
+    unsafe extern "system" fn cb(m: HMONITOR, _dc: HDC, _rc: *mut RECT, out: LPARAM) -> BOOL {
+        (*(out.0 as *mut Vec<HMONITOR>)).push(m);
+        BOOL(1)
+    }
+    let mut handles: Vec<HMONITOR> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(None, None, Some(cb), LPARAM(&mut handles as *mut _ as isize));
+    }
+    let mut all: Vec<PHYSICAL_MONITOR> = Vec::new();
+    for h in handles {
+        let mut n: u32 = 0;
+        if unsafe { GetNumberOfPhysicalMonitorsFromHMONITOR(h, &mut n) }.is_err() || n == 0 {
+            continue;
+        }
+        let mut v = vec![PHYSICAL_MONITOR::default(); n as usize];
+        if unsafe { GetPhysicalMonitorsFromHMONITOR(h, &mut v) }.is_ok() {
+            all.extend(v);
+        }
+    }
+    if all.is_empty() {
+        return None;
+    }
+    let result = f(&all);
+    unsafe {
+        let _ = DestroyPhysicalMonitors(&all);
+    }
+    Some(result)
+}
+
 /// Every physical display, in virtual-screen coordinates.
 pub fn monitors() -> Vec<Rect> {
     use windows::core::BOOL;
