@@ -40,8 +40,16 @@ struct MenuIds {
 /// `kayiver run` (host mode): engine on a background thread, tray + window
 /// shell on the main thread. Never returns.
 pub fn run_host(cfg: Config) -> Result<()> {
+    // Serve the editor right away (independent of permissions) so the window
+    // has content immediately; it shows "not running" until the host is up.
+    // The host's own serve_forever then just fails to re-bind (harmless).
+    std::thread::Builder::new().name("kayiver-ui".into()).spawn(|| {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _ = rt.block_on(crate::ui::serve_forever());
+    })?;
+
     // Permissions are waited on here (not on the main thread) so the tray +
-    // window appear immediately; the editor just shows "not running" until the
+    // window appear immediately; the editor shows "not running" until the
     // permissions are granted and the host comes up.
     std::thread::Builder::new().name("kayiver-engine".into()).spawn(move || {
         if let Err(e) = crate::platform::ensure_permissions().and_then(|_| crate::engine::host::run(cfg)) {

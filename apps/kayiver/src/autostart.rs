@@ -13,6 +13,11 @@ pub fn apply(enable: bool) -> Result<()> {
     Ok(())
 }
 
+/// Whether login autostart is currently configured.
+pub fn is_enabled() -> bool {
+    imp::is_enabled()
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
     use anyhow::{Context, Result};
@@ -71,6 +76,10 @@ mod imp {
         }
         Ok(())
     }
+
+    pub fn is_enabled() -> bool {
+        plist_path().map(|p| p.exists()).unwrap_or(false)
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -102,6 +111,14 @@ mod imp {
         );
         Ok(())
     }
+
+    pub fn is_enabled() -> bool {
+        std::process::Command::new("reg")
+            .args(["query", RUN_KEY, "/v", VALUE])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -111,5 +128,9 @@ mod imp {
 
     pub fn apply(_enable: bool, _exe: &Path) -> Result<()> {
         anyhow::bail!("autostart is not implemented for this platform yet")
+    }
+
+    pub fn is_enabled() -> bool {
+        false
     }
 }

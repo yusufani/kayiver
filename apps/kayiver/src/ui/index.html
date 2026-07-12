@@ -17,6 +17,7 @@
     --chip: rgba(11, 14, 20, .84);
     --shadow: 0 10px 32px rgba(0,0,0,.38);
     --cursor-main: #ffffff;
+    --ovl: rgba(0,0,0,.55);
   }
   @media (prefers-color-scheme: light) {
     :root {
@@ -28,6 +29,7 @@
       --chip: rgba(255,255,255,.92);
       --shadow: 0 10px 32px rgba(20,30,60,.12);
       --cursor-main: #14171d;
+      --ovl: rgba(20,30,60,.35);
     }
   }
   * { box-sizing: border-box; margin: 0; }
@@ -44,7 +46,7 @@
 
   header { display: flex; align-items: center; gap: 14px; padding: 14px 22px 10px; }
   .brand { display: flex; align-items: center; gap: 11px; }
-  .brand svg { width: 30px; height: 30px; color: var(--cursor-main); }
+  .brand svg.logo { width: 30px; height: 30px; color: var(--cursor-main); }
   .brand h1 {
     font-size: 21px; font-weight: 800; letter-spacing: .2px; line-height: 1;
     background: var(--accent-grad);
@@ -58,6 +60,13 @@
   .dot.on { background: var(--good); box-shadow: 0 0 0 3px rgba(52,211,153,.18); }
   .dot.off { background: var(--danger); box-shadow: 0 0 0 3px rgba(248,113,113,.15); }
   .dot.idle { background: var(--warn); }
+  .iconbtn {
+    background: transparent; border: 1.5px solid var(--line2); color: var(--muted);
+    width: 34px; height: 34px; border-radius: 9px; cursor: pointer; box-shadow: none;
+    display: flex; align-items: center; justify-content: center; padding: 0;
+  }
+  .iconbtn:hover { border-color: var(--a1); color: var(--text); }
+  .iconbtn svg { width: 18px; height: 18px; }
 
   #canvas {
     flex: 1; margin: 4px 22px; position: relative; overflow: hidden;
@@ -67,15 +76,6 @@
       linear-gradient(180deg, rgba(255,255,255,.015), transparent 40%);
     touch-action: none;
   }
-  #canvas.picking { cursor: crosshair; outline: 2px dashed var(--a2); outline-offset: -6px; }
-  #pickbar {
-    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
-    background: var(--chip); border: 1px solid var(--line2); border-radius: 999px;
-    padding: 8px 18px; font-size: 13px; box-shadow: var(--shadow);
-    backdrop-filter: blur(8px); display: none; z-index: 40; white-space: nowrap;
-  }
-  #pickbar b { color: var(--a2); }
-  #pickbar button { margin-left: 10px; }
 
   .machine { position: absolute; cursor: grab; user-select: none; transition: filter .15s; }
   .machine.dragging { cursor: grabbing; z-index: 20; filter: brightness(1.06); }
@@ -87,14 +87,12 @@
     padding: 5px 7px; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums;
     transition: border-color .16s, box-shadow .16s;
   }
-  #canvas.picking .mon { cursor: crosshair; }
-  #canvas.picking .mon:hover { border-color: var(--a1); }
   .mon.shared::before {
     content: "ortak"; position: absolute; top: -9px; left: 8px;
     background: var(--accent-grad); color: #052e24; font-size: 9px; font-weight: 800;
     padding: 1px 8px; border-radius: 999px; letter-spacing: .4px;
   }
-  .mon.picked { border-color: var(--a2); box-shadow: 0 0 0 3px var(--accent-dim), var(--shadow); }
+  .mon.overlap { border-color: var(--a2); box-shadow: 0 0 0 3px var(--accent-dim), var(--shadow); }
   .machine.me .mon { background: linear-gradient(160deg, var(--panel2), var(--panel)); }
   .machine.snapped .mon { border-color: var(--a1); box-shadow: 0 0 0 2px var(--accent-dim), var(--shadow); }
   .machine.focus .mon { border-color: var(--a2); animation: glow 1.6s ease-in-out infinite; }
@@ -121,6 +119,12 @@
   .pill.ok   { color: var(--a1); border-color: rgba(94,234,212,.4); }
   .pill.slow { color: var(--warn); border-color: rgba(251,191,36,.4); }
 
+  /* floating "make this the shared panel" button over an overlap */
+  #sharedBtn {
+    position: absolute; z-index: 30; display: none; transform: translate(-50%, -50%);
+    white-space: nowrap; padding: 8px 15px; font-size: 12.5px;
+  }
+
   footer { display: flex; align-items: stretch; gap: 14px; padding: 12px 22px 16px; }
   .card {
     background: linear-gradient(180deg, var(--panel), var(--panel2));
@@ -134,7 +138,7 @@
   #msg { font-size: 12.5px; color: var(--muted); min-height: 17px; max-width: 300px; }
   #msg.err { color: var(--danger); }
   #msg.ok { color: var(--a2); }
-  #sharedMsg { font-size: 12px; color: var(--muted); }
+  #sharedMsg { font-size: 12px; color: var(--muted); max-width: 280px; }
   #sharedMsg.err { color: var(--danger); }
   .hint { margin-left: auto; color: var(--faint); font-size: 11px; text-align: right; line-height: 1.45; align-self: center; }
 
@@ -146,27 +150,48 @@
   }
   button:hover { filter: brightness(1.07); }
   button:active { transform: translateY(1px); }
-  button.ghost {
-    background: transparent; color: var(--text);
-    border: 1.5px solid var(--line2); box-shadow: none; font-weight: 650;
-  }
+  button.ghost { background: transparent; color: var(--text); border: 1.5px solid var(--line2); box-shadow: none; font-weight: 650; }
   button.ghost:hover { border-color: var(--a1); }
   button.owner-btn.active { background: var(--accent-grad); color: #05221d; border: 0; }
   button.small { padding: 6px 13px; font-size: 12.5px; }
-  button.linklike {
-    background: none; border: 0; box-shadow: none; color: var(--faint);
-    font-size: 11px; padding: 2px 4px; text-decoration: underline; font-weight: 500;
+  button.linklike { background: none; border: 0; box-shadow: none; color: var(--faint); font-size: 11px; padding: 2px 4px; text-decoration: underline; font-weight: 500; }
+  kbd { font: inherit; font-size: 10.5px; background: var(--panel2); border: 1px solid var(--line2); border-radius: 5px; padding: 1px 5px; color: var(--muted); }
+
+  /* settings modal */
+  #overlay {
+    position: fixed; inset: 0; background: var(--ovl); backdrop-filter: blur(3px);
+    display: none; align-items: center; justify-content: center; z-index: 100;
   }
-  kbd {
-    font: inherit; font-size: 10.5px; background: var(--panel2); border: 1px solid var(--line2);
-    border-radius: 5px; padding: 1px 5px; color: var(--muted);
+  #settings {
+    width: min(460px, 92vw); max-height: 86vh; overflow: auto;
+    background: linear-gradient(180deg, var(--panel), var(--panel2));
+    border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow);
+    padding: 22px 24px;
   }
+  #settings h2 { font-size: 17px; font-weight: 800; margin-bottom: 4px; }
+  #settings .subttl { color: var(--muted); font-size: 12.5px; margin-bottom: 18px; }
+  .srow { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-top: 1px solid var(--line); }
+  .srow:first-of-type { border-top: 0; }
+  .srow .lbl { flex: 1; min-width: 0; }
+  .srow .lbl b { font-weight: 650; }
+  .srow .lbl small { display: block; color: var(--faint); font-size: 11.5px; margin-top: 2px; }
+  .token { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; word-break: break-all;
+    background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; margin-top: 6px; color: var(--muted); }
+  /* toggle switch */
+  .switch { position: relative; width: 42px; height: 24px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; inset: 0; background: var(--line2); border-radius: 999px; transition: .18s; cursor: pointer; }
+  .slider::before { content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .18s; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+  .switch input:checked + .slider { background: var(--a2); }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
+  #settings .foot { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
+  #setMsg { font-size: 12px; color: var(--muted); min-height: 16px; flex: 1; }
 </style>
 </head>
 <body>
 <header>
   <div class="brand">
-    <svg viewBox="0 0 640 640" aria-hidden="true">
+    <svg class="logo" viewBox="0 0 640 640" aria-hidden="true">
       <defs>
         <linearGradient id="mk" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#34d399"/>
@@ -186,11 +211,17 @@
   <div class="statusbar" id="statusbar">
     <div class="stat"><span class="dot" id="hostDot"></span><span id="hostTxt">bağlanıyor…</span></div>
     <div class="stat"><span id="focusTxt">—</span></div>
+    <button class="iconbtn" id="gear" title="Ayarlar" aria-label="Ayarlar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
   </div>
 </header>
 
 <div id="canvas">
-  <div id="pickbar"></div>
+  <button id="sharedBtn"></button>
 </div>
 
 <footer>
@@ -212,23 +243,65 @@
   </div>
 
   <div class="hint">
-    kenarlar birbirine değince geçiş noktası olur<br>
+    kenarlar değince geçiş · bir monitörü diğerinin üstüne bırak = ortak panel<br>
     panik: 3× <kbd>Esc</kbd> · ortak monitör: <kbd id="hotkeyHint">⌘⌥M</kbd>
   </div>
 </footer>
 
+<!-- settings modal -->
+<div id="overlay">
+  <div id="settings">
+    <h2>Ayarlar</h2>
+    <div class="subttl" id="setSub">—</div>
+
+    <div class="srow">
+      <div class="lbl"><b>Ortak monitör kısayolu</b>
+        <small><kbd id="hkLabel">⌘⌥M</kbd> ile paneli el değiştir</small></div>
+      <label class="switch"><input type="checkbox" id="setHotkey"><span class="slider"></span></label>
+    </div>
+
+    <div class="srow">
+      <div class="lbl"><b>Girişte başlat</b>
+        <small>oturum açılınca kayıver kendiliğinden çalışsın</small></div>
+      <label class="switch"><input type="checkbox" id="setAutostart"><span class="slider"></span></label>
+    </div>
+
+    <div class="srow" style="flex-wrap:wrap">
+      <div class="lbl"><b>Telefon / LAN kumandası</b>
+        <small>Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)</small></div>
+      <label class="switch"><input type="checkbox" id="setRemote"><span class="slider"></span></label>
+      <div class="token" id="remoteInfo" style="display:none; width:100%"></div>
+    </div>
+
+    <div class="srow">
+      <div class="lbl"><b>Config dosyası</b>
+        <small id="cfgPath" class="token" style="margin-top:6px"></small></div>
+    </div>
+
+    <div class="foot">
+      <div id="setMsg"></div>
+      <button class="ghost small" id="setClose">Kapat</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const SNAP = 18;
+const OVERLAP_MIN = 0.30;   // min interior-overlap ratio to count as "same panel"
 let machines = [];
 let sharedCfg = null;      // {local_monitor, peer, peer_monitor, hotkey} | null
 let sharedLive = {};       // /api/status "shared"
-let picking = null;        // {step: 0|1, local: idx} while selecting
+let settings = {};         // /api/settings
+let candidate = null;      // {meMon, peer, peerMon, cx, cy} while overlapping
 const canvas = document.getElementById('canvas');
 const msgEl = document.getElementById('msg');
+const sharedBtn = document.getElementById('sharedBtn');
 const myName = () => (machines.find(m => m.me) || {}).name;
-const peerName = () => (machines.find(m => !m.me) || {}).name;
 
-if (!/Mac/.test(navigator.platform)) document.getElementById('hotkeyHint').textContent = 'Ctrl+Alt+M';
+if (!/Mac/.test(navigator.platform)) {
+  document.getElementById('hotkeyHint').textContent = 'Ctrl+Alt+M';
+  document.getElementById('hkLabel').textContent = 'Ctrl+Alt+M';
+}
 
 function setMsg(m, cls) { msgEl.textContent = m; msgEl.className = cls || ''; }
 
@@ -296,15 +369,20 @@ function makeEl(m) {
   el.className = 'machine' + (m.me ? ' me' : '');
   el.style.width = m.w + 'px'; el.style.height = m.h + 'px';
   m.monEls = [];
-  m.monitors.forEach((mon, mi) => {
+  m.monOff = [];
+  m.monitors.forEach((mon) => {
+    const off = {
+      ox: (mon.x - m.bb.x) * m.scale,
+      oy: (mon.y - m.bb.y) * m.scale,
+      w: Math.max(42, mon.w * m.scale),
+      h: Math.max(30, mon.h * m.scale),
+    };
+    m.monOff.push(off);
     const d = document.createElement('div');
     d.className = 'mon';
-    d.style.left = ((mon.x - m.bb.x) * m.scale) + 'px';
-    d.style.top = ((mon.y - m.bb.y) * m.scale) + 'px';
-    d.style.width = Math.max(42, mon.w * m.scale) + 'px';
-    d.style.height = Math.max(30, mon.h * m.scale) + 'px';
+    d.style.left = off.ox + 'px'; d.style.top = off.oy + 'px';
+    d.style.width = off.w + 'px'; d.style.height = off.h + 'px';
     d.textContent = mon.w + '×' + mon.h;
-    d.addEventListener('click', e => { if (picking) { e.stopPropagation(); pickMonitor(m, mi, d); } });
     el.appendChild(d);
     m.monEls.push(d);
   });
@@ -322,16 +400,20 @@ function makeEl(m) {
   pos(m);
 
   el.addEventListener('pointerdown', e => {
-    if (picking) return; // selection mode: no dragging
     el.setPointerCapture(e.pointerId);
     el.classList.add('dragging');
     const ox = e.clientX - m.x, oy = e.clientY - m.y;
-    const move = ev => { m.x = ev.clientX - ox; m.y = ev.clientY - oy; clamp(m); pos(m); refreshSnap(); };
+    const move = ev => {
+      m.x = ev.clientX - ox; m.y = ev.clientY - oy; clamp(m); pos(m);
+      refreshSnap(); updateOverlap();
+    };
     const up = () => {
       el.classList.remove('dragging');
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
-      magnet(m); pos(m); refreshSnap();
+      // Only edge-snap when there's no shared-panel overlap in progress.
+      if (!candidate) magnet(m);
+      pos(m); refreshSnap(); updateOverlap();
     };
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', up);
@@ -376,6 +458,71 @@ function latClass(ms) { return ms < 6 ? 'good' : ms < 20 ? 'ok' : 'slow'; }
 
 // ------------------------------------------------------ shared monitor ----
 
+function monRect(m, i) {
+  const o = m.monOff[i];
+  return { x: m.x + o.ox, y: m.y + o.oy, w: o.w, h: o.h };
+}
+function interArea(a, b) {
+  const w = Math.min(a.x+a.w, b.x+b.w) - Math.max(a.x, b.x);
+  const h = Math.min(a.y+a.h, b.y+b.h) - Math.max(a.y, b.y);
+  return (w > 0 && h > 0) ? w*h : 0;
+}
+
+/// Find the best monitor overlap that involves THIS machine and a peer.
+function updateOverlap() {
+  const me = machines.find(m => m.me);
+  document.querySelectorAll('.mon.overlap').forEach(d => d.classList.remove('overlap'));
+  candidate = null;
+  if (!me) { sharedBtn.style.display = 'none'; return; }
+  let best = null;
+  for (let i = 0; i < me.monitors.length; i++) {
+    const ra = monRect(me, i);
+    for (const o of machines) {
+      if (o === me) continue;
+      for (let j = 0; j < o.monitors.length; j++) {
+        const rb = monRect(o, j);
+        const area = interArea(ra, rb);
+        if (area <= 0) continue;
+        const ratio = area / Math.min(ra.w*ra.h, rb.w*rb.h);
+        if (ratio >= OVERLAP_MIN && (!best || ratio > best.ratio)) {
+          const cx = Math.max(ra.x, rb.x) + (Math.min(ra.x+ra.w, rb.x+rb.w) - Math.max(ra.x, rb.x))/2;
+          const cy = Math.max(ra.y, rb.y) + (Math.min(ra.y+ra.h, rb.y+rb.h) - Math.max(ra.y, rb.y))/2;
+          best = { meMon: i, peer: o.name, peerMon: j, cx, cy, ratio, meEl: me.monEls[i], peerEl: o.monEls[j] };
+        }
+      }
+    }
+  }
+  if (!best) { sharedBtn.style.display = 'none'; return; }
+  candidate = best;
+  best.meEl.classList.add('overlap');
+  best.peerEl.classList.add('overlap');
+  const already = sharedCfg && sharedCfg.peer === best.peer &&
+                  sharedCfg.local_monitor === best.meMon && sharedCfg.peer_monitor === best.peerMon;
+  sharedBtn.textContent = already ? 'ortak panel ✓ (kaldır)' : 'ortak panel yap';
+  sharedBtn.dataset.remove = already ? '1' : '';
+  sharedBtn.style.left = best.cx + 'px';
+  sharedBtn.style.top = best.cy + 'px';
+  sharedBtn.style.display = 'block';
+}
+
+sharedBtn.addEventListener('click', async () => {
+  if (!candidate) return;
+  if (sharedBtn.dataset.remove === '1') {
+    await fetch('/api/shared-config', { method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ clear: true }) });
+    sharedCfg = null;
+    setMsg('ortak panel kaldırıldı', 'ok');
+  } else {
+    const body = { local_monitor: candidate.meMon, peer: candidate.peer, peer_monitor: candidate.peerMon,
+                   hotkey: settings.hotkey !== false };
+    const r = await fetch('/api/shared-config', { method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    if (r.ok) { sharedCfg = body; setMsg('ortak panel kaydedildi ✓', 'ok'); }
+    else { setMsg('kaydedilemedi: ' + await r.text(), 'err'); return; }
+  }
+  updateOverlap(); renderSharedBadges(); renderSharedCard();
+});
+
 function renderSharedBadges() {
   for (const m of machines) (m.monEls || []).forEach(d => d.classList.remove('shared'));
   if (!sharedCfg) return;
@@ -389,24 +536,15 @@ function renderSharedCard() {
   const msg = document.getElementById('sharedMsg');
   const who = document.getElementById('sharedWho');
   const act = document.getElementById('sharedActions');
-  who.innerHTML = ''; act.innerHTML = '';
-  msg.className = '';
+  who.innerHTML = ''; act.innerHTML = ''; msg.className = '';
 
   if (!sharedCfg) {
-    msg.textContent = 'İki makineye bağlı tek panel varsa tanıt: görünmeyen taraf masaüstünden düşer, imleç kaybolmaz.';
-    const b = document.createElement('button');
-    b.className = 'small';
-    b.textContent = 'Ortak monitörü seç';
-    b.onclick = startPicking;
-    act.appendChild(b);
+    msg.textContent = 'İki makineye bağlı tek panel varsa: o paneli bir makinede tutup diğerinin karşılık gelen monitörünün üstüne bırak.';
     return;
   }
-
-  const owner = sharedLive.owner;
-  const err = sharedLive.error;
+  const owner = sharedLive.owner, err = sharedLive.error;
   msg.className = err ? 'err' : '';
-  msg.textContent = err ? err
-    : (owner ? 'Panel şu an ' + owner + ' ekranını gösteriyor.' : 'Panel durumu bilinmiyor.');
+  msg.textContent = err ? err : (owner ? 'Panel şu an ' + owner + ' ekranını gösteriyor.' : 'Panel durumu bilinmiyor.');
 
   for (const m of machines) {
     const b = document.createElement('button');
@@ -415,71 +553,20 @@ function renderSharedCard() {
     b.title = 'Ortak paneli ' + m.name + ' makinesine ver';
     b.onclick = async () => {
       const r = await fetch('/api/shared', { method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ owner: m.name }) });
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ owner: m.name }) });
       if (!r.ok) { msg.className = 'err'; msg.textContent = await r.text(); }
     };
     who.appendChild(b);
   }
-
   const clear = document.createElement('button');
   clear.className = 'linklike';
   clear.textContent = 'ayarı kaldır';
   clear.onclick = async () => {
     await fetch('/api/shared-config', { method: 'POST',
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ clear: true }) });
-    sharedCfg = null;
-    renderSharedBadges(); renderSharedCard();
+    sharedCfg = null; updateOverlap(); renderSharedBadges(); renderSharedCard();
   };
   act.appendChild(clear);
-}
-
-function startPicking() {
-  if (machines.length < 2) { setMsg('önce bir makine eşleştir', 'err'); return; }
-  picking = { step: 0 };
-  canvas.classList.add('picking');
-  updatePickbar();
-}
-
-function updatePickbar() {
-  const bar = document.getElementById('pickbar');
-  if (!picking) { bar.style.display = 'none'; return; }
-  bar.style.display = 'block';
-  bar.innerHTML = (picking.step === 0
-    ? 'Ortak paneli seç: önce <b>' + myName() + '</b> üzerindeki monitörü tıkla'
-    : 'Şimdi aynı panelin <b>' + peerName() + '</b> üzerindeki karşılığını tıkla')
-    + '<button class="ghost small" onclick="cancelPicking()">vazgeç</button>';
-}
-
-function cancelPicking() {
-  picking = null;
-  canvas.classList.remove('picking');
-  document.querySelectorAll('.mon.picked').forEach(d => d.classList.remove('picked'));
-  updatePickbar();
-}
-window.cancelPicking = cancelPicking;
-
-async function pickMonitor(m, mi, el) {
-  if (picking.step === 0) {
-    if (!m.me) return; // first pick is on this machine
-    picking.local = mi; picking.step = 1;
-    el.classList.add('picked');
-    updatePickbar();
-    return;
-  }
-  if (m.me) return; // second pick is on the peer
-  const body = { local_monitor: picking.local, peer: m.name, peer_monitor: mi, hotkey: true };
-  el.classList.add('picked');
-  const r = await fetch('/api/shared-config', { method: 'POST',
-    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
-  if (r.ok) {
-    sharedCfg = body;
-    setMsg('ortak monitör kaydedildi ✓', 'ok');
-  } else {
-    setMsg('kaydedilemedi: ' + await r.text(), 'err');
-  }
-  cancelPicking();
-  renderSharedBadges(); renderSharedCard();
 }
 
 // ---------------------------------------------------------------- poll ----
@@ -535,6 +622,61 @@ document.getElementById('save').addEventListener('click', async () => {
   });
   setMsg(r.ok ? 'kaydedildi ✓ — ~2 sn içinde uygulanır' : 'kaydedilemedi: ' + await r.text(), r.ok ? 'ok' : 'err');
 });
+
+// -------------------------------------------------------------- settings ----
+
+const overlay = document.getElementById('overlay');
+const setMsgEl = document.getElementById('setMsg');
+
+async function openSettings() {
+  try {
+    settings = await (await fetch('/api/settings')).json();
+  } catch (e) { settings = {}; }
+  document.getElementById('setSub').textContent =
+    (settings.name || '?') + ' · ' + (settings.mode || '?') + ' · port ' + (settings.port || '?');
+  document.getElementById('setHotkey').checked = settings.hotkey !== false;
+  document.getElementById('setAutostart').checked = !!settings.autostart;
+  document.getElementById('setRemote').checked = !!settings.remote_enabled;
+  document.getElementById('cfgPath').textContent = settings.config_path || '';
+  renderRemoteInfo();
+  setMsgEl.textContent = '';
+  overlay.style.display = 'flex';
+}
+function closeSettings() { overlay.style.display = 'none'; }
+
+function renderRemoteInfo() {
+  const box = document.getElementById('remoteInfo');
+  if (settings.remote_enabled && settings.remote_token) {
+    box.style.display = 'block';
+    box.innerHTML = 'port <b>' + settings.remote_port + '</b> · token:<br>' + settings.remote_token;
+  } else {
+    box.style.display = 'none';
+  }
+}
+
+async function saveSetting(patch, note) {
+  setMsgEl.textContent = 'kaydediliyor…';
+  try {
+    const r = await fetch('/api/settings', { method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(patch) });
+    if (!r.ok) throw new Error(await r.text());
+    settings = await r.json();
+    renderRemoteInfo();
+    setMsgEl.textContent = note || 'kaydedildi ✓';
+  } catch (e) {
+    setMsgEl.textContent = 'hata: ' + e.message;
+  }
+}
+
+document.getElementById('gear').addEventListener('click', openSettings);
+document.getElementById('setClose').addEventListener('click', closeSettings);
+overlay.addEventListener('click', e => { if (e.target === overlay) closeSettings(); });
+document.getElementById('setHotkey').addEventListener('change', e =>
+  saveSetting({ hotkey: e.target.checked }));
+document.getElementById('setAutostart').addEventListener('change', e =>
+  saveSetting({ autostart: e.target.checked }, e.target.checked ? 'girişte başlatma açıldı' : 'kapatıldı'));
+document.getElementById('setRemote').addEventListener('change', e =>
+  saveSetting({ remote_enabled: e.target.checked }, 'kayıver\'ı yeniden başlatınca aktifleşir'));
 
 window.addEventListener('resize', () => machines.forEach(m => { clamp(m); pos(m); }));
 load().catch(e => setMsg("kayıver'a ulaşılamıyor: " + e, 'err'));

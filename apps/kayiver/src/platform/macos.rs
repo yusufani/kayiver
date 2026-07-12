@@ -95,6 +95,15 @@ extern "C" {
     fn CGRequestPostEventAccess() -> bool;
 }
 
+#[link(name = "IOKit", kind = "framework")]
+extern "C" {
+    // Canonical Input-Monitoring APIs: requesting access is what registers the
+    // app in System Settings → Privacy & Security → Input Monitoring so the
+    // user can toggle it on. `request_type` 1 = kIOHIDRequestTypeListenEvent.
+    fn IOHIDRequestAccess(request_type: u32) -> bool;
+}
+const K_IOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
+
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
@@ -318,6 +327,10 @@ pub fn ensure_permissions() -> Result<()> {
             prompt_accessibility();
         }
         if !CGPreflightListenEventAccess() {
+            // Both requests register the app in the Input Monitoring list;
+            // IOHIDRequestAccess is the canonical one and is what reliably
+            // makes "Kayıver" appear there as a toggle.
+            IOHIDRequestAccess(K_IOHID_REQUEST_TYPE_LISTEN_EVENT);
             CGRequestListenEventAccess();
         }
         if !CGPreflightPostEventAccess() {

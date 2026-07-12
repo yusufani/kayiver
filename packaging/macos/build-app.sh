@@ -47,6 +47,18 @@ if [[ "${1:-}" == "--install" ]]; then
   rm -rf /Applications/Kayiver.app
   cp -R "$APP" /Applications/Kayiver.app
   ln -sf /Applications/Kayiver.app/Contents/MacOS/kayiver /opt/homebrew/bin/kayiver
+
+  # Ad-hoc signatures change cdhash every build, so any prior TCC grant is now
+  # stale and its dead entry can hide the app from the Privacy lists. Clear the
+  # stale entries so the next launch's request shows "Kayıver" cleanly.
+  for svc in Accessibility ListenEvent PostEvent; do
+    tccutil reset "$svc" app.kayiver >/dev/null 2>&1 || true
+  done
+
+  # Register the freshly-copied bundle with LaunchServices so it's known by id.
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+    -f /Applications/Kayiver.app >/dev/null 2>&1 || true
+
   echo "installed to /Applications/Kayiver.app"
   echo "CLI: /opt/homebrew/bin/kayiver -> the app binary"
   echo "NOT: ilk çalıştırmada Erişilebilirlik + Giriş İzleme izinlerini yeniden onaylaman gerekir."

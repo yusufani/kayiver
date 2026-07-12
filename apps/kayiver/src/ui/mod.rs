@@ -367,8 +367,57 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
             Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
         },
+        ("GET", "/api/settings") => match api_get_settings() {
+            Ok(json) => ("200 OK", "application/json", json.into_bytes()),
+            Err(e) => ("500 Internal Server Error", "text/plain", e.to_string().into_bytes()),
+        },
+        ("POST", "/api/settings") => match api_set_settings(body) {
+            Ok(json) => ("200 OK", "application/json", json.into_bytes()),
+            Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+        },
         _ => ("404 Not Found", "text/plain", b"not found".to_vec()),
     }
+}
+
+/// GET /api/settings — current app settings for the editor's settings panel.
+fn api_get_settings() -> Result<String> {
+    let cfg = Config::load_or_init()?;
+    Ok(serde_json::json!({
+        "name": cfg.name,
+        "port": cfg.port,
+        "mode": format!("{:?}", cfg.mode).to_lowercase(),
+        "hotkey": cfg.shared_monitor.hotkey,
+        "remote_enabled": cfg.remote.enabled,
+        "remote_token": cfg.remote.token,
+        "remote_port": UI_PORT + 1,
+        "autostart": crate::autostart::is_enabled(),
+        "config_path": Config::path().display().to_string(),
+    })
+    .to_string())
+}
+
+/// POST /api/settings — update a subset of settings. Any field may be omitted.
+/// {"hotkey":bool, "remote_enabled":bool, "autostart":bool}
+fn api_set_settings(body: &[u8]) -> Result<String> {
+    let v: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
+    let mut cfg = Config::load_or_init()?;
+
+    if let Some(h) = v.get("hotkey").and_then(|x| x.as_bool()) {
+        cfg.shared_monitor.hotkey = h;
+    }
+    if let Some(en) = v.get("remote_enabled").and_then(|x| x.as_bool()) {
+        cfg.remote.enabled = en;
+        if en && cfg.remote.token.as_deref().unwrap_or("").is_empty() {
+            cfg.remote.token = Some(kayiver_core::config::RemoteApi::generate_token());
+        }
+    }
+    cfg.save()?;
+
+    // Autostart is applied immediately (writes a LaunchAgent / registry value).
+    if let Some(on) = v.get("autostart").and_then(|x| x.as_bool()) {
+        crate::autostart::apply(on)?;
+    }
+    api_get_settings()
 }
 
 /// POST /api/shared {"owner": "<machine>" | "toggle"} — hand the shared panel
