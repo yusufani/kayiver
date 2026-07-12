@@ -179,11 +179,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_COMMAND => {
             match (wparam.0 & 0xFFFF) as usize {
-                ID_OPEN => {
-                    let _ = std::process::Command::new("cmd")
-                        .args(["/C", "start", "", "http://127.0.0.1:24818"])
-                        .spawn();
-                }
+                ID_OPEN => open_editor_window(),
                 ID_QUIT => {
                     std::process::exit(0);
                 }
@@ -197,6 +193,37 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
+}
+
+/// Open the (locally served) editor as a chromeless app window using whichever
+/// Chromium browser is installed, so it feels like a native panel instead of a
+/// browser tab. Falls back to the default browser.
+fn open_editor_window() {
+    let url = "http://127.0.0.1:24818";
+    let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+    let pf86 = std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".into());
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let candidates = [
+        format!(r"{pf}\Google\Chrome\Application\chrome.exe"),
+        format!(r"{pf86}\Google\Chrome\Application\chrome.exe"),
+        format!(r"{local}\Google\Chrome\Application\chrome.exe"),
+        format!(r"{pf86}\Microsoft\Edge\Application\msedge.exe"),
+        format!(r"{pf}\Microsoft\Edge\Application\msedge.exe"),
+    ];
+    for c in candidates {
+        if std::path::Path::new(&c).exists() {
+            if std::process::Command::new(&c)
+                .arg(format!("--app={url}"))
+                .arg("--window-size=1040,720")
+                .spawn()
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
+    // Fallback: default browser.
+    let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
 }
 
 unsafe fn show_menu(hwnd: HWND) {

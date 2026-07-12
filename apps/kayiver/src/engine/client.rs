@@ -38,6 +38,17 @@ pub fn run(cfg: Config) -> Result<()> {
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     rt.block_on(async {
+        // Serve the editor locally too, so opening it on the client shows the
+        // arrangement + connection status (it's mostly informational on a
+        // client; layout/shared changes are driven from the host).
+        crate::ui::mark_running();
+        tokio::spawn(async {
+            if let Err(e) = crate::ui::serve_forever().await {
+                debug!("client ui server not started: {e:#}");
+            }
+        });
+        info!("layout editor: {}", crate::ui::url());
+
         let mut backoff = Duration::from_secs(1);
         loop {
             match connect_once(&cfg, &host_peer).await {
@@ -51,6 +62,7 @@ pub fn run(cfg: Config) -> Result<()> {
                 }
             }
             platform::indicator::set_state(false, false);
+            crate::ui::set_connected(&host_peer.name, false);
             tokio::time::sleep(backoff).await;
         }
     })
@@ -103,6 +115,7 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
 
     info!("connected to host '{}' at {addr}; my desktop bounds = {bounds:?}", peer.name);
     platform::indicator::set_state(true, false);
+    crate::ui::set_connected(&peer.name, true);
     let mut state = ClientState {
         injector: Injector::new()?,
         bounds,
