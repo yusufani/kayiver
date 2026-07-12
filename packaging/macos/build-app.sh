@@ -43,23 +43,27 @@ codesign --force --deep --sign - "$APP"
 
 echo "built $APP (v${VERSION})"
 
-if [[ "${1:-}" == "--install" ]]; then
+if [[ "${1:-}" == "--install" || "${1:-}" == "--reset-perms" ]]; then
   rm -rf /Applications/Kayiver.app
   cp -R "$APP" /Applications/Kayiver.app
   ln -sf /Applications/Kayiver.app/Contents/MacOS/kayiver /opt/homebrew/bin/kayiver
-
-  # Ad-hoc signatures change cdhash every build, so any prior TCC grant is now
-  # stale and its dead entry can hide the app from the Privacy lists. Clear the
-  # stale entries so the next launch's request shows "Kayıver" cleanly.
-  for svc in Accessibility ListenEvent PostEvent; do
-    tccutil reset "$svc" app.kayiver >/dev/null 2>&1 || true
-  done
 
   # Register the freshly-copied bundle with LaunchServices so it's known by id.
   /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
     -f /Applications/Kayiver.app >/dev/null 2>&1 || true
 
+  # A stale TCC entry (from an old cdhash) can hide the app from the Privacy
+  # lists. We DON'T reset on every install (that would force re-granting each
+  # time); pass --reset-perms explicitly if the app won't appear / won't take.
+  if [[ "${1:-}" == "--reset-perms" ]]; then
+    for svc in Accessibility ListenEvent PostEvent; do
+      tccutil reset "$svc" app.kayiver >/dev/null 2>&1 || true
+    done
+    echo "TCC entries reset for app.kayiver"
+  fi
+
   echo "installed to /Applications/Kayiver.app"
   echo "CLI: /opt/homebrew/bin/kayiver -> the app binary"
-  echo "NOT: ilk çalıştırmada Erişilebilirlik + Giriş İzleme izinlerini yeniden onaylaman gerekir."
+  echo "NOT: yeni derleme izinleri düşürebilir (ad-hoc imza) — Erişilebilirlik +"
+  echo "     Giriş İzleme'de Kayıver'ı işaretle; grant bir kez verilince kalıcıdır."
 fi
