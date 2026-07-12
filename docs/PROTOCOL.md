@@ -1,4 +1,4 @@
-# Wire protocol (version 1)
+# Wire protocol (version 2)
 
 Transport: TCP, `TCP_NODELAY`, default port **24817**. All frames are
 `u16 big-endian length` + payload, max 65535 bytes. Payloads are
@@ -22,6 +22,8 @@ so a mouse move is ~6 bytes).
 |---|---|---|
 | `Hello { version, name, os, screen: Rect }` | C → H | First encrypted message. Version mismatch = disconnect. |
 | `Welcome { version, name, portal_edges: [Edge] }` | H → C | Which of the client's own desktop edges must report `CursorLeft`. |
+| `DisplayPower { index, on }` | H → C | Shared-monitor flow: attach (`on=true`) or detach one of the client's displays from its desktop. |
+| `DisplayPowerResult { index, on, error }` | C → H | Outcome of a `DisplayPower` request (`error=None` on success). |
 | `Enter { edge, ratio }` | H → C | Cursor enters client's screen through `edge` at `ratio` (0..1 along that edge). Client warps its cursor there and starts applying input. |
 | `Leave` | H → C | Stop applying input; release everything held. |
 | `Input(InputEvent)` | H → C | See below. |

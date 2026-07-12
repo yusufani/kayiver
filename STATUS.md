@@ -1,6 +1,10 @@
-# kayiver — durum & devam notları (2026-07-12)
+# Kayıver — durum & devam notları (2026-07-12, gece)
 
-Bu dosya: **ne nerede**, **ne çalışıyor**, **ne kaldı**. Yeni bir oturumda buradan devam et.
+Bu dosya: **ne nerede**, **ne çalışıyor**, **ne kaldı**. Yeni oturumda buradan devam et.
+
+> **İsim değişti:** drift → **Kayıver** (`kayiver`). Gerekçe ve marka rehberi:
+> `docs/BRANDING.md`. Eski config'ler otomatik migrate edilir; eski LaunchAgent /
+> Run-key / scheduled task kayıtları temizlendi.
 
 ---
 
@@ -8,95 +12,93 @@ Bu dosya: **ne nerede**, **ne çalışıyor**, **ne kaldı**. Yeni bir oturumda 
 
 | Şey | Yer |
 |---|---|
-| **Proje kökü** | `~/Desktop/drift` (git repo, tüm iş commit'li) |
+| **Proje kökü** | `~/Desktop/drift` (klasör adı eski; git repo, tüm iş commit'li) |
 | Rust workspace | `crates/kayiver-core` (lib) + `apps/kayiver` (uygulama) |
 | Platform kodu | `apps/kayiver/src/platform/{macos,windows,stub}.rs` |
 | Motor (host/client) | `apps/kayiver/src/engine/{host,client,pairing}.rs` |
-| UI (web, gömülü) | `apps/kayiver/src/ui/{mod.rs,index.html}` |
-| Windows tray | `apps/kayiver/src/platform/tray_windows.rs` |
-| **Mac binary** | `~/Desktop/drift/target/release/kayiver` — `kayiver` olarak `/opt/homebrew/bin`'e symlink'li (global çalışır) |
+| UI (web, gömülü) | `apps/kayiver/src/ui/{mod.rs,index.html}` — Kayıver markalı, TR |
+| macOS app kabuğu | `apps/kayiver/src/gui.rs` (tao + wry + tray-icon) |
+| **Mac app** | `/Applications/Kayiver.app` (`packaging/macos/build-app.sh --install`) |
+| Mac CLI | `/opt/homebrew/bin/kayiver` → app içindeki binary |
 | **Mac config** | `~/Library/Application Support/kayiver/config.toml` |
-| **Windows exe** | `%LOCALAPPDATA%\kayiver\kayiver.exe` |
-| **Windows config** | `%APPDATA%\kayiver\config.toml` |
-| Windows'a SSH anahtarı | `~/.ssh/kayiver_win_ed25519` |
-| Docs | `docs/` (ARCHITECTURE, PROTOCOL, SECURITY, PLATFORMS, ROADMAP) |
+| **Windows exe** | `C:\Users\yusuf\AppData\Local\kayiver\kayiver.exe` (ikon+versiyon gömülü) |
+| **Windows config** | `%APPDATA%\kayiver\config.toml` (drift'ten migrate edildi) |
+| Windows görevi | Scheduled task **"kayiver"** (SYSTEM, AtLogon + on-demand); eski "drift" görevi silindi |
+| Windows'a SSH | `ssh -i ~/.ssh/drift_win_ed25519 yusuf@192.168.0.13 '<powershell>'` |
+| Marka + ikonlar | `assets/logo/*.svg` (master), `assets/icons/` (`scripts/gen-icons.sh` üretir) |
+| Android companion | `apps/android` (Compose; Android Studio ile derlenir) |
+| Docs | `docs/` (ARCHITECTURE, PROTOCOL v2, SECURITY, PLATFORMS, ROADMAP, BRANDING) |
 
-Derleme: `export PATH="/opt/homebrew/opt/rustup/bin:$PATH"` sonra `cargo build --release`.
-Windows için cross-compile: `cargo build --release --target x86_64-pc-windows-gnu`.
+Derleme: `export PATH="/opt/homebrew/opt/rustup/bin:$PATH"` → `cargo build --release`.
+Windows cross-compile: `cargo build --release --target x86_64-pc-windows-gnu`.
+Mac app paketi: `packaging/macos/build-app.sh [--install]`.
 
 ---
 
 ## Çalışan kurulum (kalıcı)
 
-- **Doğrudan Ethernet kablosu** Mac (`en8`, USB-LAN) ↔ Windows (Realtek). Link-local:
-  Mac **169.254.47.23**, Windows **169.254.253.227**. Gateway YOK → internet Wi-Fi'de kalır.
-  kayiver bu kablodan gidiyor: Windows config `addr = "169.254.47.23:24817"`.
-  Ölçülen RTT: **~1.6ms medyan, max ~3ms, spike yok** (Wi-Fi 5.7ms/spike'lıydı).
-- **Windows istemcisi** SYSTEM zamanlanmış görevi `"kayiver"` ile başlıyor:
-  görev → `kayiver.exe launch-session` → `WTSQueryUserToken`+`CreateProcessAsUserW`
-  (`lpDesktop=winsta0\default`) → `kayiver run` **görünür masaüstünde** (injection çalışsın diye).
-  Trigger: AtLogon + on-demand. **SSH/normal görev enjeksiyon yapamıyor** (session 0 sorunu) —
-  bu yüzden bu mekanizma şart.
-- **Mac host:** `kayiver run` (Accessibility + Input Monitoring izni gerekli; izin başlatan
-  bağlama bağlı — ad-hoc imzalı binary). Gömülü UI: `http://127.0.0.1:24818`.
-- **Eşleştirme yapılı** (SPAKE2 PSK config'lerde). Layout: `mac.right -> yusuf` (yusuf = Windows).
-- **Tray ikonu** (Windows), **app-pencere UI** (Chrome `--app`), **panic escape** (3×Esc).
+- **Doğrudan Ethernet** Mac (`en8`) ↔ Windows: Mac **169.254.47.23**, Windows
+  **169.254.253.227**; Windows config `addr = "169.254.47.23:24817"`. RTT ~1.6 ms.
+- **Windows istemcisi**: task "kayiver" → `kayiver.exe launch-session` (SYSTEM) →
+  `WTSQueryUserToken` + `CreateProcessAsUserW` (`winsta0\default`) → görünür
+  masaüstünde `kayiver run`. SSH'tan başlatma: `Start-ScheduledTask -TaskName kayiver`.
+- **Mac host**: `/Applications/Kayiver.app` (menü çubuğu ikonu; motor arka planda).
+  Gömülü editör: `http://127.0.0.1:24818`, menüden "Kayıver'ı Aç" → yerel pencere.
+  Headless istersen: `kayiver run --no-gui`.
+- Eşleştirme (SPAKE2 PSK) aynen taşındı; makine adları: mac tarafı hostname
+  (`yusufs-macbook-pro`), Windows `yusuf`.
 
-### SSH ile Windows'u sürme (SYSTEM görevleriyle)
-```sh
-ssh -i ~/.ssh/kayiver_win_ed25519 yusuf@192.168.0.13 '<powershell>'
-# istemciyi başlat: Start-ScheduledTask -TaskName "kayiver"
-# oturumda bir komut çalıştır: KAYIVER_LAUNCH_ARGS ile launch-session (bkz. geçmiş)
-```
+## Yeni: Ortak monitör otomasyonu (bu oturumda yazıldı)
 
----
+- **Windows display detach/attach kodlandı**
+  (`windows.rs::set_display_enabled`, `ChangeDisplaySettingsExW`; önceki mod
+  config yanına `display_state_*.json` olarak kaydedilir, geri yüklenir).
+- **Protokol v2**: `DisplayPower{index,on}` (host→client) + `DisplayPowerResult`.
+- **Sahiplik akışı**: `kayiver monitor <makine|toggle|status>` · UI'daki düğmeler ·
+  menü çubuğu · **Cmd/Ctrl+Alt+M** hotkey (host yakalar, iki modda da) ·
+  Android app. Host, yeni sahibin ekranını attach eder, diğerininkini detach.
+- **Config**: `[shared_monitor] local_index / peer / peer_index / hotkey`
+  (editördeki "Ortak monitörü seç" akışı yazar; hot-reload).
+- Açılışta sahip çıkarımı: mac'te panel mirror'daysa sahip = peer.
+- DDC (`display.auto_switch`) Samsung firmware bug'ı yüzünden kapalı duruyor;
+  `kayiver display set` manuel olarak duruyor.
 
-## Ortak monitör (Samsung LC32G5) — durum
+## Yeni: LAN API + Android
 
-- **DDC ile giriş değiştirme GÜVENİLMEZ** (Samsung Odyssey firmware bug'ı, web araştırmasıyla
-  doğrulandı: yazma kabul ediliyor ama uygulanmıyor; okuma da tutarsız). `auto_switch=false` bırakıldı.
-  Bulunan (ama güvenilmez) değerler: Mac index 2 → 18 (Windows'a); Windows index 0 → 5/3/9 (Mac'e).
-- **Yeni yaklaşım (doğru yol): display disable/enable.** Pasif makinede paylaşımlı ekranı
-  OS masaüstünden çıkar → cursor o görünmeyen ekrana kaçmaz.
-  - **Mac tarafı ÇALIŞIYOR** (doğrulandı): `kayiver display disable 2` → masaüstü 5120→2560,
-    `kayiver display enable 2` → 5120. `CGConfigureDisplayMirrorOfDisplay` (public API, geri alınabilir).
-  - Paylaşımlı monitör = Mac'te **index 2**, Windows'ta **index 0**.
-  - **Manuel workflow (şimdi kullanılabilir):** monitörü fiziksel tuşla Windows'a alınca
-    `kayiver display disable 2`; Mac'e alınca `kayiver display enable 2`.
+- `kayiver remote enable` → 0.0.0.0:**24819**, tüm istekler
+  `Authorization: Bearer <token>`. Varsayılan **kapalı**.
+- `apps/android`: durum + ortak monitör kumandası (Compose). Studio ile derle.
 
 ---
 
-## KALAN İŞLER (TODO — öncelik sırası)
+## KALAN İŞLER / doğrulama
 
-1. **Windows display disable/enable** — `apps/kayiver/src/platform/windows.rs::set_display_enabled`
-   şu an stub. `ChangeDisplaySettingsExW` ile detach/attach (DEVMODE'u dosyaya kaydedip
-   geri yüklemek gerek, çünkü enable/disable ayrı process'ler). Index→`\\.\DISPLAYn` eşlemesi.
-2. **Ortak monitör otomasyonu** — "hangisi aktif?" seçimi:
-   - UI'da (veya hotkey) kullanıcı "ortak monitör artık X'i gösteriyor" der.
-   - kayiver o makinede display'i **enable**, diğerinde **disable** eder.
-   - Host↔client **yeni mesaj** gerek (host, client'a "display'ini disable/enable et" desin).
-   - **Hotkey + 5 sn onaylı prompt** ("geçireyim mi?").
-3. **UI'da monitör-bazlı sürükleme** — şu an makine bütün olarak sürükleniyor; kullanıcı
-   tek tek monitörleri sürükleyip **üst üste bırakınca "ortak" işaretlemeli**. (`ui/index.html`
-   per-monitor drag; config'e shared-monitor işareti.)
-4. **Mac menü-çubuğu ikonu** — Windows tray'in karşılığı (NSStatusItem). Dikkat: ana thread'de
-   NSApplication run loop gerekir; şu an ana thread tokio `block_on`'da → yapı değişikliği lazım.
-5. **3 saniyelik geçiş animasyonu** (daha önce istendi, ertelendi) — her ekranda yarı-saydam
-   overlay pencere. macOS NSWindow / Windows layered window. Büyük GUI işi.
-6. **Cleanup:** DDC `auto_switch` config'lerde false; `kayiver display set` komutu duruyor (manuel).
-   Windows'ta test görevleri temizlendi (`kayiver-pos/caps/dlist/dset/injtest` vb. silindi, sadece
-   `kayiver` görevi kaldı).
+1. **[KULLANICI] macOS izin onayı** — Kayiver.app yeni binary olduğu için
+   Erişilebilirlik + Giriş İzleme bir kez yeniden onaylanmalı (System Settings
+   açık bekliyor). Onaylanınca motor kendiliğinden başlar.
+2. **Uçtan uca ortak monitör testi** — izinden sonra: editörde "Ortak monitörü
+   seç" (Mac index 2 ↔ Windows index 0 panel), sonra `kayiver monitor yusuf` /
+   `kayiver monitor <mac-adı>` gidiş-dönüş; Windows detach/attach'i gerçek
+   donanımda doğrula (kod cross-compile edildi ama canlıda denenmedi).
+3. **3 sn geçiş animasyonu** (eski istek) — yarı saydam overlay pencere; büyük
+   GUI işi, yapılmadı.
+4. Android app'i Studio'da bir kez derleyip APK almak (SDK bu Mac'te yok).
+5. İstersen repo klasörünü `~/Desktop/kayiver`e taşı (dokümanlarda path
+   `~/Desktop/drift`; taşırsan `/opt/homebrew/bin/kayiver` symlink'ini güncelle).
 
 ---
 
 ## Önemli teknik notlar (tekrar keşfetme)
 
-- **macOS TCC:** izin binary'nin cdhash'ine bağlı → her rebuild izni geçersiz kılar. Binary
-  ad-hoc imzalı (`codesign --force --sign -`). Rebuild sonrası host yeniden başlarken izin
-  gerekebilir; process başlangıçta izinleri cache'liyor → gerekirse `kayiver run`'ı tekrar başlat.
-- **Windows injection:** SADECE `winsta0\default` input desktop'ında çalışır. Zamanlanmış görev
-  (Interactive bile olsa) yanlış desktop'a düşüyor → `launch-session` (SYSTEM + CreateProcessAsUser) şart.
-- **DPI:** Windows'ta `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` — olmazsa ölçekli
-  ekranda enjeksiyon yanlış yere gider.
-- **Log:** `KAYIVER_LOGFILE=<path>` env → flush'lı log dosyası (arka plan instance'ı için).
-- **Cross-compile:** `snow` crate'te `ring`/`std` KAPALI (pure-Rust crypto), yoksa mingw derlemez.
+- **macOS TCC**: izin binary cdhash'ine bağlı → her rebuild/`--install` izni
+  düşürebilir; `kayiver doctor` durumu gösterir.
+- **Windows injection**: yalnız `winsta0\default`ta çalışır → SYSTEM
+  `launch-session` mekanizması şart (görev: "kayiver").
+- **Windows display detach**: indeks = attach'li ekranlar içindeki 0-tabanlı
+  sıra; enable, state dosyasından (yoksa en iyi moddan) geri yükler; son
+  ekran detach edilmez.
+- **DPI**: `PER_MONITOR_AWARE_V2` şart (windows.rs::init).
+- **Log**: `KAYIVER_LOGFILE=<path>`; uzaktan tek komut: `KAYIVER_LAUNCH_ARGS`.
+- **Cross-compile**: `snow` pure-Rust modda (ring yok); winres, mingw
+  `x86_64-w64-mingw32-windres/ar` kullanır (build.rs ayarlıyor).
+- **mDNS**: servis tipi artık `_kayiver._tcp.local.`.

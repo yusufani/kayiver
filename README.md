@@ -1,10 +1,13 @@
-# kayiver
+<p align="center"><img src="assets/icons/kayiver-256.png" width="96" alt="Kayıver"></p>
 
-**Share one keyboard and mouse across your machines — seamlessly.**
+# Kayıver
 
-kayiver is a lightweight, open-source software KVM. Slide your cursor off the
+**Karşıya kayıver — one keyboard & mouse, every screen.**
+
+Kayıver is a lightweight, open-source software KVM. Slide your cursor off the
 edge of one machine's screen and it appears on the next, exactly like moving
 between two monitors of the same computer. Keyboard input follows the cursor.
+(The name is Turkish: *"kayıvermek"* — to just glide over.)
 
 - **Native feel, no lag** — a single ~2.5 MB Rust binary per machine, raw OS
   input APIs (CGEventTap / low-level hooks), relative mouse deltas over
@@ -21,6 +24,15 @@ between two monitors of the same computer. Keyboard input follows the cursor.
   so a corporate VPN that blocks multicast doesn't break anything.
 - **Secure by default** — one-time PIN pairing (SPAKE2), then every session
   is end-to-end encrypted (Noise `NNpsk0`, ChaCha20-Poly1305).
+- **Shared-monitor aware** — one panel cabled to both machines? Mark it in
+  the editor; when you flip the panel's input, `kayiver monitor <machine>`
+  (or Cmd/Ctrl+Alt+M, the menu-bar item, the editor, or the Android app)
+  attaches the display on the visible machine and detaches it on the hidden
+  one, so the cursor never wanders onto a screen nobody can see.
+- **Real apps** — a menu-bar app with a native editor window on macOS
+  (`packaging/macos/build-app.sh --install` → `Kayiver.app`), tray icon +
+  embedded-icon exe on Windows, and an Android companion
+  ([apps/android](apps/android)) for remote status + shared-monitor handoff.
 - **Autostart** — `kayiver autostart enable` and it's just *there* after boot.
 
 | Platform | Give input (host) | Receive input (client) |
@@ -73,10 +85,11 @@ kayiver run
 kayiver ui
 ```
 
-opens the visual layout editor in your browser — drag the machines to match
-your desk; touching edges become crossings. Saving applies **live** to a
-running host, no restart needed. (Prefer a file? `kayiver config-path` works
-too.)
+opens the visual layout editor — a native window on macOS, browser app-window
+elsewhere. Drag the machines to match your desk; touching edges become
+crossings, and "Ortak monitörü seç" marks a physically shared panel. Saving
+applies **live** to a running host, no restart needed. (Prefer a file?
+`kayiver config-path` works too.)
 
 **4. Make it permanent:**
 
