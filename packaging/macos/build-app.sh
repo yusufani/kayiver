@@ -37,9 +37,37 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc signature: macOS TCC (Accessibility / Input Monitoring) tracks the
-# binary by cdhash, so every rebuild needs the permissions re-approved once.
-codesign --force --deep --sign - "$APP"
+# Sign with a stable, self-signed local identity so TCC (Accessibility / Input
+# Monitoring) grants PERSIST across rebuilds: the grant is keyed on the code
+# signature's designated requirement (identifier + certificate), which stays
+# the same as long as we sign with the same cert. Ad-hoc (`-`) changes the
+# cdhash every build and would force re-approving permissions each time.
+SIGN_ID="Kayiver Self-Signed"
+ensure_signing_identity() {
+  if security find-certificate -c "$SIGN_ID" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "creating a local signing identity ($SIGN_ID)…"
+  local tmp; tmp=$(mktemp -d)
+  openssl req -x509 -newkey rsa:2048 -keyout "$tmp/k.key" -out "$tmp/k.crt" -days 3650 -nodes \
+    -subj "/CN=$SIGN_ID" \
+    -addext "keyUsage=critical,digitalSignature" \
+    -addext "extendedKeyUsage=critical,codeSigning" \
+    -addext "basicConstraints=critical,CA:FALSE" >/dev/null 2>&1
+  openssl pkcs12 -export -inkey "$tmp/k.key" -in "$tmp/k.crt" -out "$tmp/k.p12" \
+    -passout pass:kayiver -name "$SIGN_ID" -legacy >/dev/null 2>&1
+  # -A: let codesign use the key without a per-launch keychain prompt.
+  security import "$tmp/k.p12" -k ~/Library/Keychains/login.keychain-db \
+    -P kayiver -T /usr/bin/codesign -A >/dev/null 2>&1
+  rm -rf "$tmp"
+}
+
+if ensure_signing_identity && codesign --force --deep --sign "$SIGN_ID" "$APP" 2>/dev/null; then
+  echo "signed with stable identity: $SIGN_ID (permissions persist across rebuilds)"
+else
+  echo "stable signing unavailable — falling back to ad-hoc (permissions reset each build)"
+  codesign --force --deep --sign - "$APP"
+fi
 
 echo "built $APP (v${VERSION})"
 
@@ -64,6 +92,6 @@ if [[ "${1:-}" == "--install" || "${1:-}" == "--reset-perms" ]]; then
 
   echo "installed to /Applications/Kayiver.app"
   echo "CLI: /opt/homebrew/bin/kayiver -> the app binary"
-  echo "NOT: yeni derleme izinleri düşürebilir (ad-hoc imza) — Erişilebilirlik +"
-  echo "     Giriş İzleme'de Kayıver'ı işaretle; grant bir kez verilince kalıcıdır."
+  echo "NOT: ilk kez stable imzaya geçildiyse Erişilebilirlik + Giriş İzleme'de"
+  echo "     Kayıver'ı bir kez işaretle; sonraki derlemeler grant'ı korur."
 fi

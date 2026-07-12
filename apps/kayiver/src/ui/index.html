@@ -18,6 +18,7 @@
     --shadow: 0 10px 32px rgba(0,0,0,.38);
     --cursor-main: #ffffff;
     --ovl: rgba(0,0,0,.55);
+    --tile: #1a1f2b;
   }
   @media (prefers-color-scheme: light) {
     :root {
@@ -30,6 +31,7 @@
       --shadow: 0 10px 32px rgba(20,30,60,.12);
       --cursor-main: #14171d;
       --ovl: rgba(20,30,60,.35);
+      --tile: #ffffff;
     }
   }
   * { box-sizing: border-box; margin: 0; }
@@ -53,13 +55,15 @@
     -webkit-background-clip: text; background-clip: text; color: transparent;
   }
   .brand .sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
-  .statusbar { margin-left: auto; display: flex; align-items: center; gap: 16px; }
+  .statusbar { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+  .legend { display: flex; gap: 12px; align-items: center; }
+  .legchip { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .legdot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
   .stat { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
   .stat b { color: var(--text); font-weight: 650; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
   .dot.on { background: var(--good); box-shadow: 0 0 0 3px rgba(52,211,153,.18); }
   .dot.off { background: var(--danger); box-shadow: 0 0 0 3px rgba(248,113,113,.15); }
-  .dot.idle { background: var(--warn); }
   .iconbtn {
     background: transparent; border: 1.5px solid var(--line2); color: var(--muted);
     width: 34px; height: 34px; border-radius: 9px; cursor: pointer; box-shadow: none;
@@ -77,51 +81,48 @@
     touch-action: none;
   }
 
-  .machine { position: absolute; cursor: grab; user-select: none; transition: filter .15s; }
-  .machine.dragging { cursor: grabbing; z-index: 20; filter: brightness(1.06); }
+  /* one monitor = one draggable tile, tinted by its machine */
   .mon {
-    position: absolute; border-radius: 9px;
-    background: linear-gradient(160deg, var(--panel), var(--panel2));
-    border: 1.5px solid var(--line2); box-shadow: var(--shadow);
-    display: flex; align-items: flex-end; justify-content: flex-end;
-    padding: 5px 7px; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums;
-    transition: border-color .16s, box-shadow .16s;
+    position: absolute; border-radius: 10px; cursor: grab; user-select: none;
+    background: var(--tile);
+    border: 2px solid var(--mc, var(--line2));
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    transition: box-shadow .15s, filter .15s, transform .05s;
   }
-  .mon.shared::before {
-    content: "ortak"; position: absolute; top: -9px; left: 8px;
+  .mon::before {
+    content: ""; position: absolute; inset: 0;
+    background: var(--mg, transparent); pointer-events: none;
+  }
+  .mon.dragging { cursor: grabbing; z-index: 30; filter: brightness(1.06); }
+  .mon .name {
+    position: absolute; top: 6px; left: 8px; font-size: 11px; font-weight: 750;
+    color: var(--mc); letter-spacing: .2px; max-width: calc(100% - 16px);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .mon .res {
+    position: absolute; bottom: 5px; right: 8px; font-size: 10px;
+    color: var(--faint); font-variant-numeric: tabular-nums;
+  }
+  .mon .sdot { position: absolute; top: 8px; right: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+  .mon .sdot.on { background: var(--good); }
+  .mon .sdot.off { background: var(--danger); }
+  .mon.snapped { box-shadow: 0 0 0 2px var(--mc), var(--shadow); }
+  .mon.focus { animation: glow 1.6s ease-in-out infinite; }
+  @keyframes glow {
+    0%,100% { box-shadow: 0 0 0 3px rgba(52,211,153,.30), var(--shadow); }
+    50%     { box-shadow: 0 0 0 6px rgba(52,211,153,.12), var(--shadow); }
+  }
+  .mon.overlap { box-shadow: 0 0 0 3px var(--a2), var(--shadow); }
+  .mon.shared .badge { display: block; }
+  .mon .badge {
+    display: none; position: absolute; top: -1px; left: 50%; transform: translate(-50%, -55%);
     background: var(--accent-grad); color: #052e24; font-size: 9px; font-weight: 800;
     padding: 1px 8px; border-radius: 999px; letter-spacing: .4px;
   }
-  .mon.overlap { border-color: var(--a2); box-shadow: 0 0 0 3px var(--accent-dim), var(--shadow); }
-  .machine.me .mon { background: linear-gradient(160deg, var(--panel2), var(--panel)); }
-  .machine.snapped .mon { border-color: var(--a1); box-shadow: 0 0 0 2px var(--accent-dim), var(--shadow); }
-  .machine.focus .mon { border-color: var(--a2); animation: glow 1.6s ease-in-out infinite; }
-  @keyframes glow {
-    0%,100% { box-shadow: 0 0 0 3px rgba(52,211,153,.20), var(--shadow); }
-    50%     { box-shadow: 0 0 0 6px rgba(52,211,153,.10), var(--shadow); }
-  }
 
-  .chip {
-    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-    background: var(--chip); border: 1px solid var(--line2); border-radius: 12px;
-    padding: 7px 13px; text-align: center; pointer-events: none; white-space: nowrap;
-    box-shadow: var(--shadow); backdrop-filter: blur(6px); min-width: 96px; z-index: 5;
-  }
-  .chip .row { display: flex; align-items: center; justify-content: center; gap: 7px; }
-  .chip .nm { font-weight: 700; font-size: 13px; }
-  .chip .meta { margin-top: 3px; font-size: 10.5px; color: var(--muted); display: flex; gap: 6px; align-items: center; justify-content: center; }
-  .machine.me .chip .tag { color: var(--a1); }
-  .pill {
-    font-variant-numeric: tabular-nums; font-weight: 650; font-size: 10px;
-    padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line2); color: var(--muted);
-  }
-  .pill.good { color: var(--good); border-color: rgba(52,211,153,.4); }
-  .pill.ok   { color: var(--a1); border-color: rgba(94,234,212,.4); }
-  .pill.slow { color: var(--warn); border-color: rgba(251,191,36,.4); }
-
-  /* floating "make this the shared panel" button over an overlap */
   #sharedBtn {
-    position: absolute; z-index: 30; display: none; transform: translate(-50%, -50%);
+    position: absolute; z-index: 40; display: none; transform: translate(-50%, -50%);
     white-space: nowrap; padding: 8px 15px; font-size: 12.5px;
   }
 
@@ -157,17 +158,8 @@
   button.linklike { background: none; border: 0; box-shadow: none; color: var(--faint); font-size: 11px; padding: 2px 4px; text-decoration: underline; font-weight: 500; }
   kbd { font: inherit; font-size: 10.5px; background: var(--panel2); border: 1px solid var(--line2); border-radius: 5px; padding: 1px 5px; color: var(--muted); }
 
-  /* settings modal */
-  #overlay {
-    position: fixed; inset: 0; background: var(--ovl); backdrop-filter: blur(3px);
-    display: none; align-items: center; justify-content: center; z-index: 100;
-  }
-  #settings {
-    width: min(460px, 92vw); max-height: 86vh; overflow: auto;
-    background: linear-gradient(180deg, var(--panel), var(--panel2));
-    border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow);
-    padding: 22px 24px;
-  }
+  #overlay { position: fixed; inset: 0; background: var(--ovl); backdrop-filter: blur(3px); display: none; align-items: center; justify-content: center; z-index: 100; }
+  #settings { width: min(460px, 92vw); max-height: 86vh; overflow: auto; background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); padding: 22px 24px; }
   #settings h2 { font-size: 17px; font-weight: 800; margin-bottom: 4px; }
   #settings .subttl { color: var(--muted); font-size: 12.5px; margin-bottom: 18px; }
   .srow { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-top: 1px solid var(--line); }
@@ -175,9 +167,7 @@
   .srow .lbl { flex: 1; min-width: 0; }
   .srow .lbl b { font-weight: 650; }
   .srow .lbl small { display: block; color: var(--faint); font-size: 11.5px; margin-top: 2px; }
-  .token { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; word-break: break-all;
-    background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; margin-top: 6px; color: var(--muted); }
-  /* toggle switch */
+  .token { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; word-break: break-all; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; margin-top: 6px; color: var(--muted); }
   .switch { position: relative; width: 42px; height: 24px; flex: none; }
   .switch input { opacity: 0; width: 0; height: 0; }
   .slider { position: absolute; inset: 0; background: var(--line2); border-radius: 999px; transition: .18s; cursor: pointer; }
@@ -193,9 +183,7 @@
   <div class="brand">
     <svg class="logo" viewBox="0 0 640 640" aria-hidden="true">
       <defs>
-        <linearGradient id="mk" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#34d399"/>
-        </linearGradient>
+        <linearGradient id="mk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#34d399"/></linearGradient>
         <path id="mc" d="M0 0 L0 218 L58 164 L95 247 L130 231 L92 149 L172 149 Z"/>
       </defs>
       <rect x="286" y="30" width="12" height="580" rx="6" fill="url(#mk)" opacity=".65"/>
@@ -205,12 +193,12 @@
     </svg>
     <div>
       <h1>kayıver</h1>
-      <div class="sub">tek klavye &amp; fare, bütün ekranlar — karşıya kayıver</div>
+      <div class="sub">tek klavye &amp; fare, bütün ekranlar — her monitörü ayrı sürükle</div>
     </div>
   </div>
   <div class="statusbar" id="statusbar">
+    <div class="legend" id="legend"></div>
     <div class="stat"><span class="dot" id="hostDot"></span><span id="hostTxt">bağlanıyor…</span></div>
-    <div class="stat"><span id="focusTxt">—</span></div>
     <button class="iconbtn" id="gear" title="Ayarlar" aria-label="Ayarlar">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3"/>
@@ -220,257 +208,211 @@
   </div>
 </header>
 
-<div id="canvas">
-  <button id="sharedBtn"></button>
-</div>
+<div id="canvas"><button id="sharedBtn"></button></div>
 
 <footer>
   <div class="card" id="layoutCard">
-    <div>
-      <div class="title">Yerleşim</div>
-      <div id="msg">makineleri sürükleyip yan yana bırak</div>
-    </div>
+    <div><div class="title">Yerleşim</div><div id="msg">her monitörü ayrı ayrı sürükle; kenarlar değince geçiş olur</div></div>
     <button id="save">Kaydet</button>
   </div>
-
   <div class="card" id="sharedCard">
-    <div style="min-width:0">
-      <div class="title">Ortak monitör</div>
-      <div id="sharedMsg">—</div>
-    </div>
+    <div style="min-width:0"><div class="title">Ortak monitör</div><div id="sharedMsg">—</div></div>
     <div class="who" id="sharedWho"></div>
     <div style="margin-left:auto; display:flex; gap:8px; align-items:center" id="sharedActions"></div>
   </div>
-
   <div class="hint">
-    kenarlar değince geçiş · bir monitörü diğerinin üstüne bırak = ortak panel<br>
+    bir monitörü diğer makinenin monitörüne <b>değdir</b> = geçiş · <b>üstüne bırak</b> = ortak panel<br>
     panik: 3× <kbd>Esc</kbd> · ortak monitör: <kbd id="hotkeyHint">⌘⌥M</kbd>
   </div>
 </footer>
 
-<!-- settings modal -->
 <div id="overlay">
   <div id="settings">
     <h2>Ayarlar</h2>
     <div class="subttl" id="setSub">—</div>
-
     <div class="srow">
-      <div class="lbl"><b>Ortak monitör kısayolu</b>
-        <small><kbd id="hkLabel">⌘⌥M</kbd> ile paneli el değiştir</small></div>
+      <div class="lbl"><b>Ortak monitör kısayolu</b><small><kbd id="hkLabel">⌘⌥M</kbd> ile paneli el değiştir</small></div>
       <label class="switch"><input type="checkbox" id="setHotkey"><span class="slider"></span></label>
     </div>
-
     <div class="srow">
-      <div class="lbl"><b>Girişte başlat</b>
-        <small>oturum açılınca kayıver kendiliğinden çalışsın</small></div>
+      <div class="lbl"><b>Girişte başlat</b><small>oturum açılınca kayıver kendiliğinden çalışsın</small></div>
       <label class="switch"><input type="checkbox" id="setAutostart"><span class="slider"></span></label>
     </div>
-
     <div class="srow" style="flex-wrap:wrap">
-      <div class="lbl"><b>Telefon / LAN kumandası</b>
-        <small>Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)</small></div>
+      <div class="lbl"><b>Telefon / LAN kumandası</b><small>Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)</small></div>
       <label class="switch"><input type="checkbox" id="setRemote"><span class="slider"></span></label>
       <div class="token" id="remoteInfo" style="display:none; width:100%"></div>
     </div>
-
-    <div class="srow">
-      <div class="lbl"><b>Config dosyası</b>
-        <small id="cfgPath" class="token" style="margin-top:6px"></small></div>
-    </div>
-
-    <div class="foot">
-      <div id="setMsg"></div>
-      <button class="ghost small" id="setClose">Kapat</button>
-    </div>
+    <div class="srow"><div class="lbl"><b>Config dosyası</b><small id="cfgPath" class="token" style="margin-top:6px"></small></div></div>
+    <div class="foot"><div id="setMsg"></div><button class="ghost small" id="setClose">Kapat</button></div>
   </div>
 </div>
 
 <script>
-const SNAP = 18;
-const OVERLAP_MIN = 0.30;   // min interior-overlap ratio to count as "same panel"
-let machines = [];
-let sharedCfg = null;      // {local_monitor, peer, peer_monitor, hotkey} | null
-let sharedLive = {};       // /api/status "shared"
-let settings = {};         // /api/settings
-let candidate = null;      // {meMon, peer, peerMon, cx, cy} while overlapping
+const SNAP = 16;
+const OVERLAP_MIN = 0.30;
+// machine colors: index 0 = me (teal), then distinct hues for peers.
+const COLORS = [
+  { c: '#5eead4', g: 'rgba(94,234,212,.12)' },
+  { c: '#60a5fa', g: 'rgba(96,165,250,.13)' },
+  { c: '#f0abfc', g: 'rgba(240,171,252,.13)' },
+  { c: '#fbbf24', g: 'rgba(251,191,36,.13)' },
+  { c: '#fb7185', g: 'rgba(251,113,133,.13)' },
+];
+let machines = [];     // {name, me, colorIdx}
+let mons = [];         // per-monitor tiles
+let sharedCfg = null;
+let sharedLive = {};
+let settings = {};
+let candidate = null;
 const canvas = document.getElementById('canvas');
 const msgEl = document.getElementById('msg');
 const sharedBtn = document.getElementById('sharedBtn');
-const myName = () => (machines.find(m => m.me) || {}).name;
+const machineByName = n => machines.find(m => m.name === n);
+const colorOf = name => COLORS[(machineByName(name) || {}).colorIdx % COLORS.length] || COLORS[0];
 
 if (!/Mac/.test(navigator.platform)) {
   document.getElementById('hotkeyHint').textContent = 'Ctrl+Alt+M';
   document.getElementById('hkLabel').textContent = 'Ctrl+Alt+M';
 }
-
 function setMsg(m, cls) { msgEl.textContent = m; msgEl.className = cls || ''; }
 
-function bbox(mons) {
-  const x = Math.min(...mons.map(m => m.x));
-  const y = Math.min(...mons.map(m => m.y));
-  return { x, y,
-    w: Math.max(...mons.map(m => m.x + m.w)) - x,
-    h: Math.max(...mons.map(m => m.y + m.h)) - y };
+function bbox(rects) {
+  const x = Math.min(...rects.map(r => r.x));
+  const y = Math.min(...rects.map(r => r.y));
+  return { x, y, w: Math.max(...rects.map(r => r.x + r.w)) - x, h: Math.max(...rects.map(r => r.y + r.h)) - y };
 }
+
+// ---------------------------------------------------------------- build ----
 
 let stateSig = '';
-// Signature of the parts that require a full rebuild (machine set + monitor
-// shapes). Positions/links don't count — only topology.
-function stateSignature(s) {
-  return JSON.stringify(s.machines.map(m => [m.name, m.me, m.monitors]));
-}
+function stateSignature(s) { return JSON.stringify(s.machines.map(m => [m.name, m.me, m.monitors])); }
 
 function buildFromState(s) {
-  // Remove any existing machine elements (keep #sharedBtn).
-  document.querySelectorAll('.machine').forEach(e => e.remove());
-  sharedBtn.style.display = 'none';
-  candidate = null;
+  document.querySelectorAll('.mon').forEach(e => e.remove());
+  sharedBtn.style.display = 'none'; candidate = null;
   sharedCfg = s.shared_monitor;
+
+  // assign colors: me first
+  const ordered = [...s.machines].sort((a, b) => (b.me ? 1 : 0) - (a.me ? 1 : 0));
+  machines = ordered.map((m, i) => ({ name: m.name, me: m.me, colorIdx: i }));
+
   let maxW = 1;
   for (const m of s.machines) maxW = Math.max(maxW, bbox(m.monitors).w);
   const scale = Math.min(0.075, 320 / maxW);
 
-  machines = s.machines.map(m => {
+  // per-machine cluster origins from the saved links
+  const clusterPos = placeMachines(s.machines, s.links, scale);
+
+  mons = [];
+  for (const m of s.machines) {
     const bb = bbox(m.monitors);
-    return { name: m.name, me: m.me, monitors: m.monitors, bb, scale,
-      x: 0, y: 0,
-      w: Math.max(78, bb.w * scale), h: Math.max(52, bb.h * scale) };
-  });
-  placeFromLinks(s.links);
-  machines.forEach(makeEl);
-  refreshSnap();
-  renderSharedBadges();
-  renderSharedCard();
+    m.monitors.forEach((mon, idx) => {
+      mons.push({
+        machine: m.name, me: m.me, idx,
+        realW: mon.w, realH: mon.h,
+        w: Math.max(46, mon.w * scale), h: Math.max(32, mon.h * scale),
+        x: clusterPos[m.name].x + (mon.x - bb.x) * scale,
+        y: clusterPos[m.name].y + (mon.y - bb.y) * scale,
+      });
+    });
+  }
+  mons.forEach(makeTile);
+  mons.forEach(t => clamp(t));
+  mons.forEach(pos);
+  refreshSnap(); renderSharedBadges(); renderSharedCard(); renderLegend();
 }
 
-async function load() {
-  const s = await (await fetch('/api/state')).json();
-  stateSig = stateSignature(s);
-  buildFromState(s);
-  poll();
-}
-
-// Rebuild the canvas if a peer's monitor layout changed (e.g. it reconnected
-// and reported its real displays). Skipped while dragging.
-async function refreshStateIfChanged() {
-  if (document.querySelector('.machine.dragging')) return;
-  try {
-    const s = await (await fetch('/api/state')).json();
-    const g = stateSignature(s);
-    if (g !== stateSig) { stateSig = g; buildFromState(s); }
-  } catch (_) {}
-}
-
-function placeFromLinks(links) {
+// Position each machine cluster: me centered, others by link adjacency, rest in a row.
+function placeMachines(smachines, links, scale) {
   const cw = canvas.clientWidth, ch = canvas.clientHeight;
-  const by = Object.fromEntries(machines.map(m => [m.name, m]));
-  const placed = new Set();
-  const me = machines.find(m => m.me) || machines[0];
-  me.x = (cw - me.w) / 2; me.y = (ch - me.h) / 2;
-  placed.add(me.name);
-  const q = [me];
+  const size = {};
+  for (const m of smachines) { const b = bbox(m.monitors); size[m.name] = { w: Math.max(78, b.w * scale), h: Math.max(52, b.h * scale) }; }
+  const posn = {};
+  const meM = smachines.find(m => m.me) || smachines[0];
+  posn[meM.name] = { x: (cw - size[meM.name].w) / 2, y: (ch - size[meM.name].h) / 2 };
+  const placed = new Set([meM.name]);
   const OPP = { left: 'right', right: 'left', top: 'bottom', bottom: 'top' };
+  const q = [meM.name];
   while (q.length) {
     const cur = q.shift();
     for (const l of links) {
       let o = null, e = null;
-      if (l.from === cur.name) { o = by[l.to]; e = l.edge; }
-      else if (l.to === cur.name) { o = by[l.from]; e = OPP[l.edge]; }
-      if (!o || placed.has(o.name)) continue;
-      if (e === 'left')   { o.x = cur.x - o.w; o.y = cur.y + (cur.h - o.h) / 2; }
-      if (e === 'right')  { o.x = cur.x + cur.w; o.y = cur.y + (cur.h - o.h) / 2; }
-      if (e === 'top')    { o.y = cur.y - o.h; o.x = cur.x + (cur.w - o.w) / 2; }
-      if (e === 'bottom') { o.y = cur.y + cur.h; o.x = cur.x + (cur.w - o.w) / 2; }
-      placed.add(o.name); q.push(o);
+      if (l.from === cur) { o = l.to; e = l.edge; }
+      else if (l.to === cur) { o = l.from; e = OPP[l.edge]; }
+      if (!o || placed.has(o) || !size[o]) continue;
+      const c = posn[cur], sc = size[cur], so = size[o];
+      if (e === 'left')   { posn[o] = { x: c.x - so.w, y: c.y + (sc.h - so.h) / 2 }; }
+      if (e === 'right')  { posn[o] = { x: c.x + sc.w, y: c.y + (sc.h - so.h) / 2 }; }
+      if (e === 'top')    { posn[o] = { x: c.x + (sc.w - so.w) / 2, y: c.y - so.h }; }
+      if (e === 'bottom') { posn[o] = { x: c.x + (sc.w - so.w) / 2, y: c.y + sc.h }; }
+      placed.add(o); q.push(o);
     }
   }
   let i = 0;
-  for (const m of machines) {
-    if (!placed.has(m.name)) { m.x = 40 + i * (m.w + 30); m.y = ch - m.h - 30; i++; }
-    clamp(m);
-  }
+  for (const m of smachines) if (!placed.has(m.name)) { posn[m.name] = { x: 40 + i * (size[m.name].w + 40), y: ch - size[m.name].h - 30 }; i++; }
+  return posn;
 }
 
-function makeEl(m) {
+function makeTile(t) {
   const el = document.createElement('div');
-  el.className = 'machine' + (m.me ? ' me' : '');
-  el.style.width = m.w + 'px'; el.style.height = m.h + 'px';
-  m.monEls = [];
-  m.monOff = [];
-  m.monitors.forEach((mon) => {
-    const off = {
-      ox: (mon.x - m.bb.x) * m.scale,
-      oy: (mon.y - m.bb.y) * m.scale,
-      w: Math.max(42, mon.w * m.scale),
-      h: Math.max(30, mon.h * m.scale),
-    };
-    m.monOff.push(off);
-    const d = document.createElement('div');
-    d.className = 'mon';
-    d.style.left = off.ox + 'px'; d.style.top = off.oy + 'px';
-    d.style.width = off.w + 'px'; d.style.height = off.h + 'px';
-    d.textContent = mon.w + '×' + mon.h;
-    el.appendChild(d);
-    m.monEls.push(d);
-  });
-  const chip = document.createElement('div');
-  chip.className = 'chip';
-  chip.innerHTML =
-    '<div class="row"><span class="statedot dot"></span><span class="nm">' + m.name + '</span></div>' +
-    '<div class="meta"><span class="tag">' + (m.me ? 'bu makine' : 'eşleşik') + '</span>' +
-    '<span class="lat"></span></div>';
-  el.appendChild(chip);
-  m.statedot = chip.querySelector('.statedot');
-  m.lat = chip.querySelector('.lat');
+  el.className = 'mon' + (t.me ? ' me' : '');
+  const col = colorOf(t.machine);
+  el.style.setProperty('--mc', col.c);
+  el.style.setProperty('--mg', col.g);
+  el.style.width = t.w + 'px'; el.style.height = t.h + 'px';
+  el.innerHTML =
+    '<span class="badge">ortak</span>' +
+    '<span class="name">' + t.machine + '</span>' +
+    '<span class="sdot"></span>' +
+    '<span class="res">' + t.realW + '×' + t.realH + '</span>';
   canvas.appendChild(el);
-  m.el = el;
-  pos(m);
+  t.el = el; t.sdot = el.querySelector('.sdot');
 
   el.addEventListener('pointerdown', e => {
     el.setPointerCapture(e.pointerId);
     el.classList.add('dragging');
-    const ox = e.clientX - m.x, oy = e.clientY - m.y;
-    const move = ev => {
-      m.x = ev.clientX - ox; m.y = ev.clientY - oy; clamp(m); pos(m);
-      refreshSnap(); updateOverlap();
-    };
+    const ox = e.clientX - t.x, oy = e.clientY - t.y;
+    const move = ev => { t.x = ev.clientX - ox; t.y = ev.clientY - oy; clamp(t); pos(t); refreshSnap(); updateOverlap(); };
     const up = () => {
       el.classList.remove('dragging');
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
-      // Only edge-snap when there's no shared-panel overlap in progress.
-      if (!candidate) magnet(m);
-      pos(m); refreshSnap(); updateOverlap();
+      if (!candidate) magnet(t);
+      pos(t); refreshSnap(); updateOverlap();
     };
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', up);
   });
 }
 
-function pos(m) { m.el.style.left = m.x + 'px'; m.el.style.top = m.y + 'px'; }
-function clamp(m) {
-  m.x = Math.max(0, Math.min(canvas.clientWidth - m.w, m.x));
-  m.y = Math.max(0, Math.min(canvas.clientHeight - m.h, m.y));
+function pos(t) { t.el.style.left = t.x + 'px'; t.el.style.top = t.y + 'px'; }
+function clamp(t) {
+  t.x = Math.max(0, Math.min(canvas.clientWidth - t.w, t.x));
+  t.y = Math.max(0, Math.min(canvas.clientHeight - t.h, t.y));
 }
-function oV(a, b) { return Math.min(a.y+a.h, b.y+b.h) - Math.max(a.y, b.y); }
-function oH(a, b) { return Math.min(a.x+a.w, b.x+b.w) - Math.max(a.x, b.x); }
+function vOver(a, b) { return Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y); }
+function hOver(a, b) { return Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x); }
 
-function magnet(m) {
-  for (const o of machines) {
-    if (o === m) continue;
-    if (Math.abs(m.x - (o.x+o.w)) <= SNAP && oV(m,o) > 20) m.x = o.x + o.w;
-    else if (Math.abs(m.x+m.w - o.x) <= SNAP && oV(m,o) > 20) m.x = o.x - m.w;
-    else if (Math.abs(m.y - (o.y+o.h)) <= SNAP && oH(m,o) > 20) m.y = o.y + o.h;
-    else if (Math.abs(m.y+m.h - o.y) <= SNAP && oH(m,o) > 20) m.y = o.y - m.h;
+// snap a tile's edges to any other tile (tidy alignment, any machine)
+function magnet(t) {
+  for (const o of mons) {
+    if (o === t) continue;
+    if (Math.abs(t.x - (o.x + o.w)) <= SNAP && vOver(t, o) > 14) t.x = o.x + o.w;
+    else if (Math.abs(t.x + t.w - o.x) <= SNAP && vOver(t, o) > 14) t.x = o.x - t.w;
+    if (Math.abs(t.y - (o.y + o.h)) <= SNAP && hOver(t, o) > 14) t.y = o.y + o.h;
+    else if (Math.abs(t.y + t.h - o.y) <= SNAP && hOver(t, o) > 14) t.y = o.y - t.h;
   }
 }
 
+// machine-level links, derived from adjacency of monitors of DIFFERENT machines
 function currentLinks() {
-  const links = [];
-  for (const a of machines) for (const b of machines) {
-    if (a === b) continue;
-    if (Math.abs(a.x+a.w - b.x) <= SNAP && oV(a,b) > 20) links.push({ from: a.name, edge: 'right', to: b.name });
-    if (Math.abs(a.y+a.h - b.y) <= SNAP && oH(a,b) > 20) links.push({ from: a.name, edge: 'bottom', to: b.name });
+  const seen = new Set(), links = [];
+  const add = (from, edge, to) => { const k = from + edge + to; if (!seen.has(k)) { seen.add(k); links.push({ from, edge, to }); } };
+  for (const a of mons) for (const b of mons) {
+    if (a.machine === b.machine) continue;
+    if (Math.abs(a.x + a.w - b.x) <= SNAP && vOver(a, b) > 14) add(a.machine, 'right', b.machine);
+    if (Math.abs(a.y + a.h - b.y) <= SNAP && hOver(a, b) > 14) add(a.machine, 'bottom', b.machine);
   }
   return links;
 }
@@ -478,85 +420,88 @@ function currentLinks() {
 function refreshSnap() {
   const linked = new Set();
   for (const l of currentLinks()) { linked.add(l.from); linked.add(l.to); }
-  for (const m of machines) m.el.classList.toggle('snapped', linked.has(m.name));
+  // highlight the monitors actually touching another machine
+  for (const t of mons) t.el.classList.remove('snapped');
+  for (const a of mons) for (const b of mons) {
+    if (a.machine === b.machine) continue;
+    const adjX = Math.abs(a.x + a.w - b.x) <= SNAP && vOver(a, b) > 14;
+    const adjY = Math.abs(a.y + a.h - b.y) <= SNAP && hOver(a, b) > 14;
+    const adjX2 = Math.abs(b.x + b.w - a.x) <= SNAP && vOver(a, b) > 14;
+    const adjY2 = Math.abs(b.y + b.h - a.y) <= SNAP && hOver(a, b) > 14;
+    if (adjX || adjY || adjX2 || adjY2) { a.el.classList.add('snapped'); b.el.classList.add('snapped'); }
+  }
 }
 
-function latClass(ms) { return ms < 6 ? 'good' : ms < 20 ? 'ok' : 'slow'; }
+function renderLegend() {
+  const el = document.getElementById('legend');
+  el.innerHTML = '';
+  for (const m of machines) {
+    const col = COLORS[m.colorIdx % COLORS.length];
+    const d = document.createElement('div'); d.className = 'legchip';
+    d.innerHTML = '<span class="legdot" style="background:' + col.c + '"></span>' + m.name + (m.me ? ' (bu makine)' : '');
+    el.appendChild(d);
+  }
+}
 
 // ------------------------------------------------------ shared monitor ----
 
-function monRect(m, i) {
-  const o = m.monOff[i];
-  return { x: m.x + o.ox, y: m.y + o.oy, w: o.w, h: o.h };
-}
 function interArea(a, b) {
-  const w = Math.min(a.x+a.w, b.x+b.w) - Math.max(a.x, b.x);
-  const h = Math.min(a.y+a.h, b.y+b.h) - Math.max(a.y, b.y);
-  return (w > 0 && h > 0) ? w*h : 0;
+  const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  return (w > 0 && h > 0) ? w * h : 0;
 }
-
-/// Find the best monitor overlap that involves THIS machine and a peer.
 function updateOverlap() {
-  const me = machines.find(m => m.me);
-  document.querySelectorAll('.mon.overlap').forEach(d => d.classList.remove('overlap'));
+  mons.forEach(t => t.el.classList.remove('overlap'));
   candidate = null;
-  if (!me) { sharedBtn.style.display = 'none'; return; }
   let best = null;
-  for (let i = 0; i < me.monitors.length; i++) {
-    const ra = monRect(me, i);
-    for (const o of machines) {
-      if (o === me) continue;
-      for (let j = 0; j < o.monitors.length; j++) {
-        const rb = monRect(o, j);
-        const area = interArea(ra, rb);
-        if (area <= 0) continue;
-        const ratio = area / Math.min(ra.w*ra.h, rb.w*rb.h);
-        if (ratio >= OVERLAP_MIN && (!best || ratio > best.ratio)) {
-          const cx = Math.max(ra.x, rb.x) + (Math.min(ra.x+ra.w, rb.x+rb.w) - Math.max(ra.x, rb.x))/2;
-          const cy = Math.max(ra.y, rb.y) + (Math.min(ra.y+ra.h, rb.y+rb.h) - Math.max(ra.y, rb.y))/2;
-          best = { meMon: i, peer: o.name, peerMon: j, cx, cy, ratio, meEl: me.monEls[i], peerEl: o.monEls[j] };
-        }
+  for (const a of mons) {
+    if (!a.me) continue;
+    for (const b of mons) {
+      if (b.me || b.machine === a.machine) continue;
+      const area = interArea(a, b);
+      if (area <= 0) continue;
+      const ratio = area / Math.min(a.w * a.h, b.w * b.h);
+      if (ratio >= OVERLAP_MIN && (!best || ratio > best.ratio)) {
+        const cx = Math.max(a.x, b.x) + (Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) / 2;
+        const cy = Math.max(a.y, b.y) + (Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)) / 2;
+        best = { meMon: a.idx, peer: b.machine, peerMon: b.idx, cx, cy, ratio, a, b };
       }
     }
   }
   if (!best) { sharedBtn.style.display = 'none'; return; }
   candidate = best;
-  best.meEl.classList.add('overlap');
-  best.peerEl.classList.add('overlap');
+  best.a.el.classList.add('overlap'); best.b.el.classList.add('overlap');
   const already = sharedCfg && sharedCfg.peer === best.peer &&
-                  sharedCfg.local_monitor === best.meMon && sharedCfg.peer_monitor === best.peerMon;
+    sharedCfg.local_monitor === best.meMon && sharedCfg.peer_monitor === best.peerMon;
   sharedBtn.textContent = already ? 'ortak panel ✓ (kaldır)' : 'ortak panel yap';
   sharedBtn.dataset.remove = already ? '1' : '';
-  sharedBtn.style.left = best.cx + 'px';
-  sharedBtn.style.top = best.cy + 'px';
+  sharedBtn.style.left = best.cx + 'px'; sharedBtn.style.top = best.cy + 'px';
   sharedBtn.style.display = 'block';
 }
 
 sharedBtn.addEventListener('click', async () => {
   if (!candidate) return;
   if (sharedBtn.dataset.remove === '1') {
-    await fetch('/api/shared-config', { method: 'POST',
-      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ clear: true }) });
-    sharedCfg = null;
-    setMsg('ortak panel kaldırıldı', 'ok');
+    await fetch('/api/shared-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) });
+    sharedCfg = null; setMsg('ortak panel kaldırıldı', 'ok');
   } else {
-    const body = { local_monitor: candidate.meMon, peer: candidate.peer, peer_monitor: candidate.peerMon,
-                   hotkey: settings.hotkey !== false };
-    const r = await fetch('/api/shared-config', { method: 'POST',
-      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    const body = { local_monitor: candidate.meMon, peer: candidate.peer, peer_monitor: candidate.peerMon, hotkey: settings.hotkey !== false };
+    const r = await fetch('/api/shared-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (r.ok) { sharedCfg = body; setMsg('ortak panel kaydedildi ✓', 'ok'); }
     else { setMsg('kaydedilemedi: ' + await r.text(), 'err'); return; }
   }
   updateOverlap(); renderSharedBadges(); renderSharedCard();
 });
 
+function tileOf(machine, idx) { return mons.find(t => t.machine === machine && t.idx === idx); }
 function renderSharedBadges() {
-  for (const m of machines) (m.monEls || []).forEach(d => d.classList.remove('shared'));
+  mons.forEach(t => t.el.classList.remove('shared'));
   if (!sharedCfg) return;
   const me = machines.find(m => m.me);
-  const peer = machines.find(m => m.name === sharedCfg.peer);
-  if (me && me.monEls[sharedCfg.local_monitor]) me.monEls[sharedCfg.local_monitor].classList.add('shared');
-  if (peer && peer.monEls[sharedCfg.peer_monitor]) peer.monEls[sharedCfg.peer_monitor].classList.add('shared');
+  const a = me && tileOf(me.name, sharedCfg.local_monitor);
+  const b = tileOf(sharedCfg.peer, sharedCfg.peer_monitor);
+  if (a) a.el.classList.add('shared');
+  if (b) b.el.classList.add('shared');
 }
 
 function renderSharedCard() {
@@ -564,33 +509,27 @@ function renderSharedCard() {
   const who = document.getElementById('sharedWho');
   const act = document.getElementById('sharedActions');
   who.innerHTML = ''; act.innerHTML = ''; msg.className = '';
-
   if (!sharedCfg) {
-    msg.textContent = 'İki makineye bağlı tek panel varsa: o paneli bir makinede tutup diğerinin karşılık gelen monitörünün üstüne bırak.';
+    msg.textContent = 'Tek panel iki makinede mi? Bir makinenin o monitörünü diğerinin karşılık gelen monitörünün ÜSTÜNE bırak.';
     return;
   }
   const owner = sharedLive.owner, err = sharedLive.error;
   msg.className = err ? 'err' : '';
   msg.textContent = err ? err : (owner ? 'Panel şu an ' + owner + ' ekranını gösteriyor.' : 'Panel durumu bilinmiyor.');
-
   for (const m of machines) {
     const b = document.createElement('button');
     b.className = 'ghost small owner-btn' + (owner === m.name ? ' active' : '');
     b.textContent = m.name;
-    b.title = 'Ortak paneli ' + m.name + ' makinesine ver';
     b.onclick = async () => {
-      const r = await fetch('/api/shared', { method: 'POST',
-        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ owner: m.name }) });
+      const r = await fetch('/api/shared', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: m.name }) });
       if (!r.ok) { msg.className = 'err'; msg.textContent = await r.text(); }
     };
     who.appendChild(b);
   }
   const clear = document.createElement('button');
-  clear.className = 'linklike';
-  clear.textContent = 'ayarı kaldır';
+  clear.className = 'linklike'; clear.textContent = 'ayarı kaldır';
   clear.onclick = async () => {
-    await fetch('/api/shared-config', { method: 'POST',
-      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ clear: true }) });
+    await fetch('/api/shared-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) });
     sharedCfg = null; updateOverlap(); renderSharedBadges(); renderSharedCard();
   };
   act.appendChild(clear);
@@ -598,40 +537,33 @@ function renderSharedCard() {
 
 // ---------------------------------------------------------------- poll ----
 
+async function refreshStateIfChanged() {
+  if (document.querySelector('.mon.dragging')) return;
+  try {
+    const s = await (await fetch('/api/state')).json();
+    const g = stateSignature(s);
+    if (g !== stateSig) { stateSig = g; buildFromState(s); }
+  } catch (_) {}
+}
+
 let pollN = 0;
 async function poll() {
-  // Every ~4 s, pick up monitor-topology changes (peer reconnect etc.).
   if (++pollN % 4 === 0) await refreshStateIfChanged();
   try {
     const st = await (await fetch('/api/status')).json();
-    const hostDot = document.getElementById('hostDot');
-    hostDot.className = 'dot ' + (st.running ? 'on' : 'off');
+    document.getElementById('hostDot').className = 'dot ' + (st.running ? 'on' : 'off');
     document.getElementById('hostTxt').textContent = st.running ? 'kayıver çalışıyor' : 'çalışmıyor';
-    document.getElementById('focusTxt').innerHTML = st.focus
-      ? 'imleç: <b>' + st.focus + '</b>'
-      : (st.running ? 'imleç bu makinede' : '—');
 
     const prevOwner = sharedLive.owner, prevErr = sharedLive.error;
     sharedLive = st.shared || {};
     if (sharedCfg && (sharedLive.owner !== prevOwner || sharedLive.error !== prevErr)) renderSharedCard();
 
-    for (const m of machines) {
-      m.el.classList.toggle('focus', st.focus === m.name);
-      if (m.me) {
-        m.statedot.className = 'statedot dot ' + (st.running ? 'on' : 'idle');
-        m.lat.innerHTML = st.running ? '<span class="pill good">ana makine</span>' : '';
-        continue;
-      }
-      const p = (st.peers || {})[m.name];
-      if (p && p.connected) {
-        m.statedot.className = 'statedot dot on';
-        m.lat.innerHTML = p.rtt_ms != null
-          ? '<span class="pill ' + latClass(p.rtt_ms) + '">' + p.rtt_ms.toFixed(1) + ' ms</span>'
-          : '<span class="pill ok">bağlı</span>';
-      } else {
-        m.statedot.className = 'statedot dot off';
-        m.lat.innerHTML = '<span class="pill">çevrimdışı</span>';
-      }
+    for (const t of mons) {
+      t.el.classList.toggle('focus', st.focus === t.machine);
+      const me = machineByName(t.machine);
+      if (me && me.me) { t.sdot.className = 'sdot ' + (st.running ? 'on' : ''); continue; }
+      const p = (st.peers || {})[t.machine];
+      t.sdot.className = 'sdot ' + (p && p.connected ? 'on' : 'off');
     }
   } catch (_) {
     document.getElementById('hostDot').className = 'dot off';
@@ -642,14 +574,8 @@ async function poll() {
 
 document.getElementById('save').addEventListener('click', async () => {
   const links = currentLinks();
-  if (machines.length > 1 && links.length === 0) {
-    setMsg('hiçbir kenar değmiyor — makineleri yan yana bırak', 'err');
-    return;
-  }
-  const r = await fetch('/api/layout', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(links),
-  });
+  if (machines.length > 1 && links.length === 0) { setMsg('hiçbir monitör değmiyor — bir makinenin monitörünü diğerine değdir', 'err'); return; }
+  const r = await fetch('/api/layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(links) });
   setMsg(r.ok ? 'kaydedildi ✓ — ~2 sn içinde uygulanır' : 'kaydedilemedi: ' + await r.text(), r.ok ? 'ok' : 'err');
 });
 
@@ -657,59 +583,43 @@ document.getElementById('save').addEventListener('click', async () => {
 
 const overlay = document.getElementById('overlay');
 const setMsgEl = document.getElementById('setMsg');
-
 async function openSettings() {
-  try {
-    settings = await (await fetch('/api/settings')).json();
-  } catch (e) { settings = {}; }
-  document.getElementById('setSub').textContent =
-    (settings.name || '?') + ' · ' + (settings.mode || '?') + ' · port ' + (settings.port || '?');
+  try { settings = await (await fetch('/api/settings')).json(); } catch (e) { settings = {}; }
+  document.getElementById('setSub').textContent = (settings.name || '?') + ' · ' + (settings.mode || '?') + ' · port ' + (settings.port || '?');
   document.getElementById('setHotkey').checked = settings.hotkey !== false;
   document.getElementById('setAutostart').checked = !!settings.autostart;
   document.getElementById('setRemote').checked = !!settings.remote_enabled;
   document.getElementById('cfgPath').textContent = settings.config_path || '';
-  renderRemoteInfo();
-  setMsgEl.textContent = '';
-  overlay.style.display = 'flex';
+  renderRemoteInfo(); setMsgEl.textContent = ''; overlay.style.display = 'flex';
 }
 function closeSettings() { overlay.style.display = 'none'; }
-
 function renderRemoteInfo() {
   const box = document.getElementById('remoteInfo');
-  if (settings.remote_enabled && settings.remote_token) {
-    box.style.display = 'block';
-    box.innerHTML = 'port <b>' + settings.remote_port + '</b> · token:<br>' + settings.remote_token;
-  } else {
-    box.style.display = 'none';
-  }
+  if (settings.remote_enabled && settings.remote_token) { box.style.display = 'block'; box.innerHTML = 'port <b>' + settings.remote_port + '</b> · token:<br>' + settings.remote_token; }
+  else box.style.display = 'none';
 }
-
 async function saveSetting(patch, note) {
   setMsgEl.textContent = 'kaydediliyor…';
   try {
-    const r = await fetch('/api/settings', { method: 'POST',
-      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(patch) });
+    const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
     if (!r.ok) throw new Error(await r.text());
-    settings = await r.json();
-    renderRemoteInfo();
-    setMsgEl.textContent = note || 'kaydedildi ✓';
-  } catch (e) {
-    setMsgEl.textContent = 'hata: ' + e.message;
-  }
+    settings = await r.json(); renderRemoteInfo(); setMsgEl.textContent = note || 'kaydedildi ✓';
+  } catch (e) { setMsgEl.textContent = 'hata: ' + e.message; }
 }
-
 document.getElementById('gear').addEventListener('click', openSettings);
 document.getElementById('setClose').addEventListener('click', closeSettings);
 overlay.addEventListener('click', e => { if (e.target === overlay) closeSettings(); });
-document.getElementById('setHotkey').addEventListener('change', e =>
-  saveSetting({ hotkey: e.target.checked }));
-document.getElementById('setAutostart').addEventListener('change', e =>
-  saveSetting({ autostart: e.target.checked }, e.target.checked ? 'girişte başlatma açıldı' : 'kapatıldı'));
-document.getElementById('setRemote').addEventListener('change', e =>
-  saveSetting({ remote_enabled: e.target.checked }, 'kayıver\'ı yeniden başlatınca aktifleşir'));
+document.getElementById('setHotkey').addEventListener('change', e => saveSetting({ hotkey: e.target.checked }));
+document.getElementById('setAutostart').addEventListener('change', e => saveSetting({ autostart: e.target.checked }, e.target.checked ? 'girişte başlatma açıldı' : 'kapatıldı'));
+document.getElementById('setRemote').addEventListener('change', e => saveSetting({ remote_enabled: e.target.checked }, 'kayıver\'ı yeniden başlatınca aktifleşir'));
 
-window.addEventListener('resize', () => machines.forEach(m => { clamp(m); pos(m); }));
-load().catch(e => setMsg("kayıver'a ulaşılamıyor: " + e, 'err'));
+window.addEventListener('resize', () => mons.forEach(t => { clamp(t); pos(t); }));
+(async () => {
+  const s = await (await fetch('/api/state')).json();
+  stateSig = stateSignature(s);
+  buildFromState(s);
+  poll();
+})().catch(e => setMsg("kayıver'a ulaşılamıyor: " + e, 'err'));
 </script>
 </body>
 </html>
