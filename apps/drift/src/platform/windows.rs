@@ -83,6 +83,20 @@ pub fn monitors() -> Vec<Rect> {
     list
 }
 
+/// Make the process per-monitor DPI aware, so `GetSystemMetrics`,
+/// `EnumDisplayMonitors` and `SendInput` all speak the same (physical) pixel
+/// coordinates. Without this, on a scaled display (125/150/175%) the geometry
+/// we read and the coordinates SendInput expects disagree, and the injected
+/// cursor lands in the wrong place. Must run before any geometry is read.
+pub fn init() {
+    use windows::Win32::UI::HiDpi::{
+        SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+}
+
 pub fn ensure_permissions() -> Result<()> {
     Ok(()) // no special permissions needed on Windows
 }

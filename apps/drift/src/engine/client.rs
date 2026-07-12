@@ -97,7 +97,7 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
         other => anyhow::bail!("expected Welcome, got {other:?}"),
     };
 
-    info!("connected to host '{}' at {addr}", peer.name);
+    info!("connected to host '{}' at {addr}; my desktop bounds = {bounds:?}", peer.name);
     let mut state = ClientState {
         injector: Injector::new()?,
         bounds,

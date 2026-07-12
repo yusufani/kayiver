@@ -18,6 +18,8 @@ pub fn monitors() -> Vec<Rect> {
     vec![desktop_bounds()]
 }
 
+pub fn init() {}
+
 pub fn ensure_permissions() -> Result<()> {
     Ok(())
 }

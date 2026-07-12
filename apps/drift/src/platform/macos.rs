@@ -212,6 +212,8 @@ fn prompt_accessibility() {
 /// Fresh-install flow: trigger the native permission prompts and wait until
 /// the user approves, then continue automatically — no manual Settings
 /// spelunking, no restart required in the common case.
+pub fn init() {} // nothing to do on macOS
+
 pub fn ensure_permissions() -> Result<()> {
     if permissions_ok() {
         return Ok(());

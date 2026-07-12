@@ -65,6 +65,9 @@ fn main() -> Result<()> {
         }
     }
 
+    // Platform init before anything reads screen geometry (Windows DPI).
+    platform::init();
+
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => run(),
