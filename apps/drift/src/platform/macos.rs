@@ -82,7 +82,11 @@ extern "C" {
     fn CGDisplayShowCursor(display: u32) -> i32;
     fn CGMainDisplayID() -> u32;
     fn CGGetActiveDisplayList(max: u32, ids: *mut u32, count: *mut u32) -> i32;
+    fn CGGetOnlineDisplayList(max: u32, ids: *mut u32, count: *mut u32) -> i32;
     fn CGDisplayBounds(id: u32) -> CGRect;
+    fn CGBeginDisplayConfiguration(config: *mut *mut c_void) -> i32;
+    fn CGConfigureDisplayMirrorOfDisplay(config: *mut c_void, display: u32, master: u32) -> i32;
+    fn CGCompleteDisplayConfiguration(config: *mut c_void, option: u32) -> i32;
     fn CGPreflightListenEventAccess() -> bool;
     fn CGRequestListenEventAccess() -> bool;
     fn CGPreflightPostEventAccess() -> bool;
@@ -252,6 +256,41 @@ pub fn displays() -> Vec<(u32, String, Option<u16>)> {
         }
     }
     result
+}
+
+/// Online display IDs in a stable order (0-based), matching what m1ddc lists.
+fn online_display_ids() -> Vec<u32> {
+    unsafe {
+        let mut ids = [0u32; 16];
+        let mut count = 0u32;
+        if CGGetOnlineDisplayList(16, ids.as_mut_ptr(), &mut count) != 0 {
+            return vec![];
+        }
+        ids[..count as usize].to_vec()
+    }
+}
+
+/// "Disable" (true=enable) an external display for cursor purposes: disabling
+/// mirrors it onto the main display, so it leaves the extended desktop and the
+/// pointer can no longer wander onto a panel that is physically showing the
+/// other machine. Fully reversible. `index` is 1-based (matches m1ddc/list).
+pub fn set_display_enabled(index: u32, enabled: bool) -> anyhow::Result<()> {
+    let ids = online_display_ids();
+    let target = *ids
+        .get(index.saturating_sub(1) as usize)
+        .ok_or_else(|| anyhow::anyhow!("display index {index} out of range"))?;
+    let main = unsafe { CGMainDisplayID() };
+    anyhow::ensure!(target != main, "refusing to disable the main display");
+    unsafe {
+        let mut config: *mut c_void = std::ptr::null_mut();
+        anyhow::ensure!(CGBeginDisplayConfiguration(&mut config) == 0, "begin config failed");
+        // master = main to mirror (disable); 0 (kCGNullDirectDisplay) to restore.
+        let master = if enabled { 0 } else { main };
+        CGConfigureDisplayMirrorOfDisplay(config, target, master);
+        // option 2 = kCGConfigurePermanently.
+        anyhow::ensure!(CGCompleteDisplayConfiguration(config, 2) == 0, "complete config failed");
+    }
+    Ok(())
 }
 
 /// Set the input source (VCP 0x60) of a display by 1-based m1ddc index.

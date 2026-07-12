@@ -21,6 +21,12 @@ enum DisplayAction {
     List,
     /// Set a display's input source: `drift display set <index> <value>`.
     Set { index: u32, value: u16 },
+    /// Remove a display from this machine's desktop (mirror it away on macOS,
+    /// detach on Windows) so the cursor can't wander onto a panel that's
+    /// physically showing the other machine.
+    Disable { index: u32 },
+    /// Re-add a previously disabled display to the desktop.
+    Enable { index: u32 },
 }
 
 #[derive(Subcommand)]
@@ -163,6 +169,16 @@ fn display_cmd(action: Option<DisplayAction>) -> Result<()> {
         DisplayAction::Set { index, value } => {
             platform::set_display_input(index, value)?;
             println!("set display {index} input -> {value}");
+            Ok(())
+        }
+        DisplayAction::Disable { index } => {
+            platform::set_display_enabled(index, false)?;
+            println!("display {index} removed from this machine's desktop");
+            Ok(())
+        }
+        DisplayAction::Enable { index } => {
+            platform::set_display_enabled(index, true)?;
+            println!("display {index} re-added to this machine's desktop");
             Ok(())
         }
     }
