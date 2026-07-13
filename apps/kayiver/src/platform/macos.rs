@@ -269,12 +269,15 @@ pub fn displays() -> Vec<(u32, String, Option<u16>)> {
     result
 }
 
-/// Online display IDs in a stable order (0-based), matching what m1ddc lists.
+/// Active display IDs in the SAME order as `monitors()` (CGGetActiveDisplayList),
+/// so a shared-monitor index means the same physical display in the editor and
+/// in enable/disable. (Mirrored displays stay in this list, so an index is
+/// stable across a disable/enable cycle.)
 fn online_display_ids() -> Vec<u32> {
     unsafe {
         let mut ids = [0u32; 16];
         let mut count = 0u32;
-        if CGGetOnlineDisplayList(16, ids.as_mut_ptr(), &mut count) != 0 {
+        if CGGetActiveDisplayList(16, ids.as_mut_ptr(), &mut count) != 0 {
             return vec![];
         }
         ids[..count as usize].to_vec()
@@ -285,13 +288,23 @@ fn online_display_ids() -> Vec<u32> {
 /// mirrors it onto the main display, so it leaves the extended desktop and the
 /// pointer can no longer wander onto a panel that is physically showing the
 /// other machine. Fully reversible. `index` is 1-based (matches m1ddc/list).
-pub fn set_display_enabled(index: u32, enabled: bool) -> anyhow::Result<()> {
+pub fn set_display_enabled(index: u32, expect: Option<Rect>, enabled: bool) -> anyhow::Result<()> {
     let ids = online_display_ids();
     let target = *ids
         .get(index.saturating_sub(1) as usize)
         .ok_or_else(|| anyhow::anyhow!("display index {index} out of range"))?;
     let main = unsafe { CGMainDisplayID() };
     anyhow::ensure!(target != main, "refusing to disable the main display");
+    // Safety: only ever disable the exact monitor we mean.
+    if !enabled {
+        if let Some(exp) = expect.filter(|e| e.w != 0 && e.h != 0) {
+            let got = cgrect_to_rect(unsafe { CGDisplayBounds(target) });
+            anyhow::ensure!(
+                kayiver_core::proto::rects_match(got, exp),
+                "safety: display {index} is {got:?}, expected shared panel {exp:?} — refusing to disable the wrong monitor"
+            );
+        }
+    }
     unsafe {
         let mut config: *mut c_void = std::ptr::null_mut();
         anyhow::ensure!(CGBeginDisplayConfiguration(&mut config) == 0, "begin config failed");

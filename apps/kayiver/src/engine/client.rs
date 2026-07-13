@@ -245,11 +245,11 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
                 }
             }
             Msg::Ping(n) => writer.send(&Msg::Pong(n)).await?,
-            Msg::DisplayPower { index, on } => {
+            Msg::DisplayPower { index, expect, on } => {
                 info!("host asks: {} display {index}", if on { "attach" } else { "detach" });
                 let tx = dp_tx.clone();
                 std::thread::spawn(move || {
-                    let error = platform::set_display_enabled(index, on).err().map(|e| format!("{e:#}"));
+                    let error = platform::set_display_enabled(index, Some(expect), on).err().map(|e| format!("{e:#}"));
                     if let Some(e) = &error {
                         warn!("display {index} {}: {e}", if on { "attach" } else { "detach" });
                     }

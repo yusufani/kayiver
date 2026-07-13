@@ -450,7 +450,9 @@ fn api_shared_config(body: &[u8]) -> Result<()> {
     let mut cfg = Config::load_or_init()?;
     if v.get("clear").and_then(|x| x.as_bool()).unwrap_or(false) {
         cfg.shared_monitor.local_index = None;
+        cfg.shared_monitor.local_rect = None;
         cfg.shared_monitor.peer_index = None;
+        cfg.shared_monitor.peer_rect = None;
         cfg.shared_monitor.peer = None;
         cfg.save()?;
         return Ok(());
@@ -458,16 +460,22 @@ fn api_shared_config(body: &[u8]) -> Result<()> {
     let local_pick = v.get("local_monitor").and_then(|x| x.as_u64()).context("missing local_monitor")? as u32;
     let peer_pick = v.get("peer_monitor").and_then(|x| x.as_u64()).context("missing peer_monitor")? as u32;
     let peer_name = v.get("peer").and_then(|x| x.as_str()).context("missing peer")?.to_string();
+    // Capture both monitors' geometry now — it becomes the safety check that
+    // prevents ever detaching the wrong monitor later.
+    let local_rect = crate::platform::monitors().get(local_pick as usize).copied();
     let peer = cfg
         .peers
         .iter()
         .find(|x| x.name == peer_name)
         .with_context(|| format!("unknown peer '{peer_name}'"))?;
+    let peer_rect = peer.screens.get(peer_pick as usize).copied();
 
     let to_platform_index = |os: &str, pick: u32| if os == "macos" { pick + 1 } else { pick };
     cfg.shared_monitor.local_index = Some(to_platform_index(std::env::consts::OS, local_pick));
+    cfg.shared_monitor.local_rect = local_rect;
     cfg.shared_monitor.peer_index =
         Some(to_platform_index(peer.os.as_deref().unwrap_or("windows"), peer_pick));
+    cfg.shared_monitor.peer_rect = peer_rect;
     cfg.shared_monitor.peer = Some(peer_name);
     if let Some(h) = v.get("hotkey").and_then(|x| x.as_bool()) {
         cfg.shared_monitor.hotkey = h;

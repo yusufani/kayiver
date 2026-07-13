@@ -203,12 +203,12 @@ fn display_cmd(action: Option<DisplayAction>) -> Result<()> {
             Ok(())
         }
         DisplayAction::Disable { index } => {
-            log_display_action("disable", index, platform::set_display_enabled(index, false))?;
+            log_display_action("disable", index, platform::set_display_enabled(index, None, false))?;
             println!("display {index} removed from this machine's desktop");
             Ok(())
         }
         DisplayAction::Enable { index } => {
-            log_display_action("enable", index, platform::set_display_enabled(index, true))?;
+            log_display_action("enable", index, platform::set_display_enabled(index, None, true))?;
             println!("display {index} re-added to this machine's desktop");
             Ok(())
         }

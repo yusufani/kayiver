@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -29,6 +29,13 @@ impl Rect {
     pub fn bottom(&self) -> i32 {
         self.y + self.h
     }
+}
+
+/// Do two monitor rects refer to the same physical display? Position anchors
+/// the identity; a small tolerance absorbs rounding / minor mode differences.
+pub fn rects_match(a: Rect, b: Rect) -> bool {
+    let near = |x: i32, y: i32| (x - y).abs() <= 8;
+    near(a.x, b.x) && near(a.y, b.y) && near(a.w, b.w) && near(a.h, b.h)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -86,8 +93,11 @@ pub enum Msg {
     Bye,
     /// host -> client: attach (`on`) or detach one of your displays. Used for
     /// the shared-monitor flow: the machine the panel is NOT showing detaches
-    /// it so its cursor can't wander onto an invisible screen.
-    DisplayPower { index: u32, on: bool },
+    /// it so its cursor can't wander onto an invisible screen. `expect` is the
+    /// geometry of the display we mean — the client refuses to detach if the
+    /// display at `index` doesn't match it, so an index/ordering slip can never
+    /// turn off the wrong monitor.
+    DisplayPower { index: u32, expect: Rect, on: bool },
     /// client -> host: outcome of a `DisplayPower` request.
     DisplayPowerResult { index: u32, on: bool, error: Option<String> },
     /// client -> host: my desktop geometry changed (e.g. a display was

@@ -103,12 +103,19 @@ pub struct SharedMonitor {
     /// `kayiver display list`; Windows: 0-based attached-display order).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_index: Option<u32>,
+    /// This machine's shared monitor geometry — verified before detaching so an
+    /// index slip can never turn off the wrong monitor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_rect: Option<crate::proto::Rect>,
     /// Peer sharing the panel. Defaults to the first paired peer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer: Option<String>,
     /// The peer's own index for the same panel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_index: Option<u32>,
+    /// The peer's shared monitor geometry (same safety check on its side).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_rect: Option<crate::proto::Rect>,
     /// Toggle ownership with Cmd+Alt+M (macOS) / Ctrl+Alt+M (Windows).
     #[serde(default = "default_true")]
     pub hotkey: bool,
@@ -116,7 +123,14 @@ pub struct SharedMonitor {
 
 impl Default for SharedMonitor {
     fn default() -> Self {
-        SharedMonitor { local_index: None, peer: None, peer_index: None, hotkey: true }
+        SharedMonitor {
+            local_index: None,
+            local_rect: None,
+            peer: None,
+            peer_index: None,
+            peer_rect: None,
+            hotkey: true,
+        }
     }
 }
 

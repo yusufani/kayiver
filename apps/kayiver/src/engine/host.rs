@@ -274,19 +274,23 @@ impl Router {
         crate::ui::set_shared_error(None);
 
         // Local side (blocking display reconfigure: off-thread). Skip when the
-        // display is already in the desired state.
+        // display is already in the desired state. `local_rect` is the safety
+        // check: the backend refuses to detach anything but that exact monitor.
         let local_idx = sm.local_index.unwrap();
+        let local_rect = sm.local_rect;
         if platform::display_disabled(local_idx).map(|dis| dis == to_me).unwrap_or(true) {
             std::thread::spawn(move || {
-                if let Err(e) = platform::set_display_enabled(local_idx, to_me) {
+                if let Err(e) = platform::set_display_enabled(local_idx, local_rect, to_me) {
                     warn!("shared monitor, local display: {e:#}");
                     crate::ui::set_shared_error(Some(format!("local display: {e}")));
                 }
             });
         }
 
-        // Peer side: ask it to do the opposite with its own display.
-        let msg = Msg::DisplayPower { index: sm.peer_index.unwrap(), on: !to_me };
+        // Peer side: ask it to do the opposite with its own display; send the
+        // peer's shared-monitor geometry so it can make the same safety check.
+        let peer_rect = sm.peer_rect.unwrap_or(kayiver_core::proto::Rect { x: 0, y: 0, w: 0, h: 0 });
+        let msg = Msg::DisplayPower { index: sm.peer_index.unwrap(), expect: peer_rect, on: !to_me };
         let sent = {
             let sessions = self.sessions.lock().unwrap();
             sessions.get(&peer).map(|tx| tx.send(msg).is_ok()).unwrap_or(false)

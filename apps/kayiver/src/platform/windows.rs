@@ -175,15 +175,15 @@ fn to_wide(s: &str) -> Vec<u16> {
 /// the 0-based position among *attached* displays for disable (matches
 /// `kayiver display list` order); for enable, the saved state file identifies
 /// the device (index is used as a tie-breaker when several are saved).
-pub fn set_display_enabled(index: u32, enabled: bool) -> Result<()> {
+pub fn set_display_enabled(index: u32, expect: Option<Rect>, enabled: bool) -> Result<()> {
     if enabled {
         enable_display(index)
     } else {
-        disable_display(index)
+        disable_display(index, expect)
     }
 }
 
-fn disable_display(index: u32) -> Result<()> {
+fn disable_display(index: u32, expect: Option<Rect>) -> Result<()> {
     use windows::core::PCWSTR;
     use windows::Win32::Graphics::Gdi::{
         ChangeDisplaySettingsExW, EnumDisplaySettingsW, CDS_NORESET, CDS_TYPE,
@@ -191,14 +191,22 @@ fn disable_display(index: u32) -> Result<()> {
         DM_POSITION, ENUM_CURRENT_SETTINGS,
     };
 
-    let devices = display_devices();
-    let attached: Vec<&(String, u32)> =
-        devices.iter().filter(|(_, f)| f & DD_ATTACHED_TO_DESKTOP != 0).collect();
+    // Same ordering as `monitors()` so the editor's index and this index refer
+    // to the exact same physical display.
+    let attached = attached_displays();
     anyhow::ensure!(attached.len() > 1, "refusing to detach the only attached display");
-    let (name, _) = attached
+    let (name, rect) = attached
         .get(index as usize)
         .ok_or_else(|| anyhow::anyhow!("display index {index} out of range (attached: {})", attached.len()))?;
-    let wname = to_wide(name);
+    // Safety: never detach a monitor that isn't the one we mean.
+    if let Some(exp) = expect.filter(|e| e.w != 0 && e.h != 0) {
+        anyhow::ensure!(
+            kayiver_core::proto::rects_match(*rect, exp),
+            "safety: display {index} is {rect:?}, expected shared panel {exp:?} — refusing to detach the wrong monitor"
+        );
+    }
+    let name = name.clone();
+    let wname = to_wide(&name);
 
     // Remember the current mode so enable can restore it exactly.
     let mut cur = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
@@ -211,7 +219,7 @@ fn disable_display(index: u32) -> Result<()> {
         "w": cur.dmPelsWidth, "h": cur.dmPelsHeight,
         "bpp": cur.dmBitsPerPel, "freq": cur.dmDisplayFrequency,
     });
-    std::fs::write(state_path(name), saved.to_string())?;
+    std::fs::write(state_path(&name), saved.to_string())?;
 
     // A zero-size mode with position+size fields set means "detach".
     let mut detach = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
@@ -352,27 +360,38 @@ pub fn display_disabled(_index: u32) -> Option<bool> {
     }))
 }
 
-/// Every physical display, in virtual-screen coordinates.
+/// Attached displays as (device name, rect) in `EnumDisplayDevices` order —
+/// the SAME order `disable_display` indexes into. `monitors()` is built from
+/// this so an index means the exact same physical display in the editor and in
+/// detach/attach (otherwise the wrong monitor gets turned off).
+fn attached_displays() -> Vec<(String, Rect)> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Graphics::Gdi::{EnumDisplaySettingsW, DEVMODEW, ENUM_CURRENT_SETTINGS};
+    let mut out = Vec::new();
+    for (name, flags) in display_devices() {
+        if flags & DD_ATTACHED_TO_DESKTOP == 0 {
+            continue;
+        }
+        let wname = to_wide(&name);
+        let mut dm = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
+        let ok = unsafe { EnumDisplaySettingsW(PCWSTR(wname.as_ptr()), ENUM_CURRENT_SETTINGS, &mut dm) };
+        if ok.as_bool() {
+            let pos = unsafe { dm.Anonymous1.Anonymous2.dmPosition };
+            out.push((name, Rect { x: pos.x, y: pos.y, w: dm.dmPelsWidth as i32, h: dm.dmPelsHeight as i32 }));
+        }
+    }
+    out
+}
+
+/// Every physical display, in virtual-screen coordinates, in the same order as
+/// `disable_display` uses (so the shared-monitor index is consistent).
 pub fn monitors() -> Vec<Rect> {
-    use windows::core::BOOL;
-    use windows::Win32::Foundation::RECT;
-    use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
-
-    unsafe extern "system" fn cb(_m: HMONITOR, _dc: HDC, rc: *mut RECT, out: LPARAM) -> BOOL {
-        let list = &mut *(out.0 as *mut Vec<Rect>);
-        let r = &*rc;
-        list.push(Rect { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top });
-        BOOL(1)
-    }
-
-    let mut list: Vec<Rect> = Vec::new();
-    unsafe {
-        let _ = EnumDisplayMonitors(None, None, Some(cb), LPARAM(&mut list as *mut _ as isize));
-    }
+    let list: Vec<Rect> = attached_displays().into_iter().map(|(_, r)| r).collect();
     if list.is_empty() {
-        list.push(desktop_bounds());
+        vec![desktop_bounds()]
+    } else {
+        list
     }
-    list
 }
 
 /// Make the process per-monitor DPI aware, so `GetSystemMetrics`,

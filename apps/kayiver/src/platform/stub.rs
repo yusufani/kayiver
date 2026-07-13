@@ -22,7 +22,7 @@ pub fn displays() -> Vec<(u32, String, Option<u16>)> {
     vec![]
 }
 
-pub fn set_display_enabled(_index: u32, _enabled: bool) -> anyhow::Result<()> {
+pub fn set_display_enabled(_index: u32, _expect: Option<Rect>, _enabled: bool) -> anyhow::Result<()> {
     anyhow::bail!("display enable/disable not supported on this platform")
 }
 
