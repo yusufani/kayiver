@@ -114,6 +114,8 @@
     50%     { box-shadow: 0 0 0 6px rgba(52,211,153,.12), var(--shadow); }
   }
   .mon.overlap { box-shadow: 0 0 0 3px var(--a2), var(--shadow); }
+  /* stacked shared-panel tiles: same physical screen, piled like cards */
+  .mon.stacked { box-shadow: 0 0 0 2px var(--mc), 0 14px 34px rgba(0,0,0,.5); }
   .mon.shared .badge { display: block; }
   .mon .badge {
     display: none; position: absolute; top: -1px; left: 50%; transform: translate(-50%, -55%);
@@ -324,6 +326,7 @@ function buildFromState(s) {
   mons.forEach(makeTile);
   mons.forEach(t => clamp(t));
   mons.forEach(pos);
+  layoutSharedStack();
   refreshSnap(); renderSharedBadges(); renderSharedCard(); renderLegend();
 }
 
@@ -375,19 +378,56 @@ function makeTile(t) {
 
   el.addEventListener('pointerdown', e => {
     el.setPointerCapture(e.pointerId);
-    el.classList.add('dragging');
-    const ox = e.clientX - t.x, oy = e.clientY - t.y;
-    const move = ev => { t.x = ev.clientX - ox; t.y = ev.clientY - oy; clamp(t); pos(t); refreshSnap(); updateOverlap(); };
+    // Shared-panel tiles are the SAME physical screen → drag the whole stack.
+    const stack = sharedStack();
+    const inStack = stack.includes(t);
+    const group = inStack ? stack : [t];
+    const anchor = group[0];
+    group.forEach(g => g.el.classList.add('dragging'));
+    const ax0 = anchor.x, ay0 = anchor.y, sx = e.clientX, sy = e.clientY;
+    const move = ev => {
+      anchor.x = ax0 + (ev.clientX - sx);
+      anchor.y = ay0 + (ev.clientY - sy);
+      clamp(anchor);
+      if (inStack) layoutSharedStack(); else pos(anchor);
+      refreshSnap(); updateOverlap();
+    };
     const up = () => {
-      el.classList.remove('dragging');
+      group.forEach(g => g.el.classList.remove('dragging'));
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
-      if (!candidate) magnet(t);
-      pos(t); refreshSnap(); updateOverlap();
+      if (!inStack && !candidate) magnet(t);
+      if (inStack) layoutSharedStack(); else pos(anchor);
+      refreshSnap(); updateOverlap();
     };
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', up);
   });
+}
+
+const STACK_OFF = 13;
+// Tiles that are the same physical shared panel (me first = front of stack).
+function sharedStack() {
+  if (!sharedCfg) return [];
+  const me = machines.find(m => m.me);
+  const a = me && tileOf(me.name, sharedCfg.local_monitor);
+  const b = tileOf(sharedCfg.peer, sharedCfg.peer_monitor);
+  return (a && b) ? [a, b] : [];
+}
+// Snap the shared tiles into one stacked pile at the front tile's spot, so a
+// shared panel reads as a single physical screen (A on top, B peeking behind).
+function layoutSharedStack() {
+  mons.forEach(t => { t.el.classList.remove('stacked'); t.el.style.zIndex = ''; });
+  const st = sharedStack();
+  if (st.length < 2) return;
+  const [a, ...rest] = st;
+  clamp(a);
+  rest.forEach((t, i) => {
+    t.x = a.x + STACK_OFF * (i + 1);
+    t.y = a.y + STACK_OFF * (i + 1);
+  });
+  st.forEach((t, i) => { t.el.classList.add('stacked'); t.el.style.zIndex = 20 - i; });
+  st.forEach(pos);
 }
 
 function pos(t) { t.el.style.left = t.x + 'px'; t.el.style.top = t.y + 'px'; }
@@ -494,7 +534,8 @@ sharedBtn.addEventListener('click', async () => {
     if (r.ok) { sharedCfg = body; setMsg('ortak panel kaydedildi ✓', 'ok'); }
     else { setMsg('kaydedilemedi: ' + await r.text(), 'err'); return; }
   }
-  updateOverlap(); renderSharedBadges(); renderSharedCard();
+  sharedBtn.style.display = 'none'; candidate = null;
+  layoutSharedStack(); renderSharedBadges(); renderSharedCard(); refreshSnap();
 });
 
 function tileOf(machine, idx) { return mons.find(t => t.machine === machine && t.idx === idx); }
@@ -534,7 +575,10 @@ function renderSharedCard() {
   clear.className = 'linklike'; clear.textContent = 'ayarı kaldır';
   clear.onclick = async () => {
     await fetch('/api/shared-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) });
-    sharedCfg = null; updateOverlap(); renderSharedBadges(); renderSharedCard();
+    // un-stack: nudge the peer tile off the pile so they're separable again
+    const st = sharedStack();
+    if (st.length > 1) st.slice(1).forEach((t, i) => { t.x += 40 + i * 20; t.y += 40; clamp(t); pos(t); });
+    sharedCfg = null; layoutSharedStack(); updateOverlap(); renderSharedBadges(); renderSharedCard();
   };
   act.appendChild(clear);
 }
