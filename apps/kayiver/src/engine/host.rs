@@ -218,6 +218,12 @@ impl Router {
                 self.send_to_focus(Msg::Input(ev));
             }
             Captured::EdgeHit { edge, ratio } => {
+                // Shared-panel edge → the peer's monitor beyond it (e.g. a
+                // Windows-only screen physically above the shared panel). Takes
+                // precedence over the machine-level layout link.
+                if self.try_shared_edge_cross(edge, ratio) {
+                    return;
+                }
                 match self.layout_target(&self.cfg.name, edge) {
                     Some((peer, entry_edge)) if self.session_exists(&peer) => {
                         info!("cursor -> {peer} (via {edge} edge)");
@@ -381,6 +387,57 @@ impl Router {
 
     fn session_exists(&self, name: &str) -> bool {
         self.sessions.lock().unwrap().contains_key(name)
+    }
+
+    /// If the cursor left through the shared panel's `edge`, and the peer has a
+    /// monitor touching ITS copy of the panel on that same side, cross there —
+    /// so "up from the shared panel" reaches the peer's screen that physically
+    /// sits above it. Returns true if it handled the crossing.
+    fn try_shared_edge_cross(&mut self, edge: Edge, ratio: f32) -> bool {
+        let sm = self.shared.read().unwrap().clone();
+        let (Some(local), Some(prect)) = (sm.local_rect, sm.peer_rect) else { return false };
+        let Some(peer) = shared_peer_name(&self.cfg, &sm) else { return false };
+        if !self.session_exists(&peer) {
+            return false;
+        }
+        // Where did the cursor leave the host desktop? Must be on `local`'s edge.
+        let b = self.ctl.bounds;
+        let (ex, ey) = kayiver_core::layout::point_on_edge(b, edge, ratio, 0);
+        let on_local_edge = match edge {
+            Edge::Top => ey <= local.y && ex >= local.x && ex < local.right(),
+            Edge::Bottom => ey >= local.bottom() - 1 && ex >= local.x && ex < local.right(),
+            Edge::Left => ex <= local.x && ey >= local.y && ey < local.bottom(),
+            Edge::Right => ex >= local.right() - 1 && ey >= local.y && ey < local.bottom(),
+        };
+        if !on_local_edge {
+            return false;
+        }
+        // Relative position along the panel edge (0..1).
+        let f = match edge {
+            Edge::Top | Edge::Bottom => ((ex - local.x) as f32 / local.w.max(1) as f32).clamp(0.0, 1.0),
+            Edge::Left | Edge::Right => ((ey - local.y) as f32 / local.h.max(1) as f32).clamp(0.0, 1.0),
+        };
+        // Find the peer monitor adjacent to peer_rect on the same side.
+        let screens = Config::load_or_init().ok().and_then(|c| c.peer(&peer).map(|p| p.screens.clone())).unwrap_or_default();
+        let adj = screens.into_iter().find(|m| match edge {
+            Edge::Top => (m.bottom() - prect.y).abs() <= 8 && m.x < prect.right() && m.right() > prect.x,
+            Edge::Bottom => (m.y - prect.bottom()).abs() <= 8 && m.x < prect.right() && m.right() > prect.x,
+            Edge::Left => (m.right() - prect.x).abs() <= 8 && m.y < prect.bottom() && m.bottom() > prect.y,
+            Edge::Right => (m.x - prect.right()).abs() <= 8 && m.y < prect.bottom() && m.bottom() > prect.y,
+        });
+        let Some(m) = adj else { return false };
+        // Land near the shared edge of that monitor, at the aligned offset.
+        let (x, y) = match edge {
+            Edge::Top => (m.x + (f * m.w as f32) as i32, m.bottom() - 2),
+            Edge::Bottom => (m.x + (f * m.w as f32) as i32, m.y + 2),
+            Edge::Left => (m.right() - 2, m.y + (f * m.h as f32) as i32),
+            Edge::Right => (m.x + 2, m.y + (f * m.h as f32) as i32),
+        };
+        info!("cursor -> {peer} (shared panel {edge} edge -> adjacent monitor)");
+        crate::ui::set_cross_flash(edge);
+        self.focus = Some(peer);
+        self.send_to_focus(Msg::EnterAt { x, y });
+        true
     }
 
     /// Send key/button releases to the currently focused peer so nothing
