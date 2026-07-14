@@ -438,41 +438,27 @@ impl Router {
             Edge::Left => (m.right() - prect.x).abs() <= 8 && m.y < prect.bottom() && m.bottom() > prect.y,
             Edge::Right => (m.x - prect.right()).abs() <= 8 && m.y < prect.bottom() && m.bottom() > prect.y,
         });
-        let (x, y, how) = match adj {
-            // A peer monitor sits beyond the panel on this side (e.g. C above
-            // B): land near its shared edge, at the aligned offset.
-            Some(m) => {
-                let p = match edge {
-                    Edge::Top => (m.x + (f * m.w as f32) as i32, m.bottom() - 2),
-                    Edge::Bottom => (m.x + (f * m.w as f32) as i32, m.y + 2),
-                    Edge::Left => (m.right() - 2, m.y + (f * m.h as f32) as i32),
-                    Edge::Right => (m.x + 2, m.y + (f * m.h as f32) as i32),
-                };
-                (p.0, p.1, "adjacent monitor")
-            }
-            // No monitor beyond the panel, but the machine-level layout routes
-            // this edge to the shared peer (e.g. B's outer right edge → the
-            // Windows box): hand the panel over. Land on the peer's OWN copy of
-            // the panel at the same relative position, entering from the
-            // opposite edge — never the desktop-wide ratio, which would drift
-            // onto a taller/wider peer's other monitors.
-            None => {
-                let routes_to_peer = self
-                    .layout_target(&self.cfg.name, edge)
-                    .is_some_and(|(target, _)| target == peer);
-                if !routes_to_peer {
-                    return false;
-                }
-                let p = match edge {
-                    Edge::Right => (prect.x + 2, prect.y + (f * prect.h as f32) as i32),
-                    Edge::Left => (prect.right() - 2, prect.y + (f * prect.h as f32) as i32),
-                    Edge::Bottom => (prect.x + (f * prect.w as f32) as i32, prect.y + 2),
-                    Edge::Top => (prect.x + (f * prect.w as f32) as i32, prect.bottom() - 2),
-                };
-                (p.0, p.1, "shared panel handover")
-            }
+        let Some(m) = adj else {
+            // The cursor left the shared panel on a boundary edge with NO peer
+            // monitor beyond it (e.g. B's right/bottom — nothing is physically
+            // there). Don't cross: an edge that leads nowhere is a wall, not a
+            // teleport across the same screen. Return the cursor to the panel
+            // and swallow the crossing so it can't fall through to the machine-
+            // level layout link (which would drift onto the peer's OTHER
+            // monitors). Handover to the peer's panel is the hotkey's job.
+            info!("shared panel {edge} edge leads nowhere — held as a wall");
+            self.return_local_at(edge, ratio);
+            return true;
         };
-        info!("cursor -> {peer} (shared panel {edge} edge -> {how})");
+        // A peer monitor sits beyond the panel on this side (e.g. C above B):
+        // land near its shared edge, at the aligned offset.
+        let (x, y) = match edge {
+            Edge::Top => (m.x + (f * m.w as f32) as i32, m.bottom() - 2),
+            Edge::Bottom => (m.x + (f * m.w as f32) as i32, m.y + 2),
+            Edge::Left => (m.right() - 2, m.y + (f * m.h as f32) as i32),
+            Edge::Right => (m.x + 2, m.y + (f * m.h as f32) as i32),
+        };
+        info!("cursor -> {peer} (shared panel {edge} edge -> adjacent monitor)");
         crate::ui::set_cross_flash(edge);
         self.focus = Some(peer);
         self.send_to_focus(Msg::EnterAt { x, y });
