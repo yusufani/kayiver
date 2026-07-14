@@ -77,6 +77,12 @@ pub struct Config {
     pub shared_monitor: SharedMonitor,
     #[serde(default)]
     pub remote: RemoteApi,
+    /// How long the cursor must rest against a portal edge before it crosses to
+    /// the next machine, in milliseconds. 0 (default) = cross instantly. A small
+    /// dwell (e.g. 2000) prevents accidental crossings when you just brush the
+    /// edge.
+    #[serde(default)]
+    pub edge_dwell_ms: u64,
 }
 
 /// Opt-in LAN exposure of the status/control API (used by the mobile
@@ -177,6 +183,7 @@ impl Default for Config {
             layout: Layout::default(),
             shared_monitor: SharedMonitor::default(),
             remote: RemoteApi::default(),
+            edge_dwell_ms: 0,
         }
     }
 }
@@ -256,6 +263,7 @@ mod tests {
             },
             shared_monitor: SharedMonitor::default(),
             remote: RemoteApi::default(),
+            edge_dwell_ms: 0,
         };
         let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), addrs: vec![], last_good: None, screens: vec![], os: None };
         peer.set_psk(&[9u8; 32]);

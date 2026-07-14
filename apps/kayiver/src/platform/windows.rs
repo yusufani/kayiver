@@ -544,13 +544,16 @@ struct CapState {
     /// computed against this point.
     park: Mutex<(i32, i32)>,
     esc_downs: Mutex<[Option<Instant>; 2]>,
+    /// Portal edge the cursor is currently resting against + since when, for
+    /// the optional crossing dwell. Cleared when it leaves the edge.
+    edge_pending: Mutex<Option<(Edge, Instant)>>,
 }
 
 static STATE: OnceLock<CapState> = OnceLock::new();
 
 pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Result<()> {
     if STATE
-        .set(CapState { ctl, tx, park: Mutex::new((0, 0)), esc_downs: Mutex::new([None, None]) })
+        .set(CapState { ctl, tx, park: Mutex::new((0, 0)), esc_downs: Mutex::new([None, None]), edge_pending: Mutex::new(None) })
         .is_err()
     {
         bail!("capture already started");
@@ -689,8 +692,25 @@ unsafe fn maybe_enter_portal(state: &CapState, x: i32, y: i32) {
     }
     let bounds = state.ctl.bounds;
     let portals = state.ctl.portals.read().unwrap().clone();
+    let dwell = state.ctl.edge_dwell_ms.load(Ordering::Relaxed);
     for edge in portals {
         if touches_edge(bounds, edge, x, y) {
+            // Optional dwell: hold at the edge for `dwell` ms before crossing.
+            if dwell > 0 {
+                let mut pending = state.edge_pending.lock().unwrap();
+                match *pending {
+                    Some((e, since)) if e == edge => {
+                        if since.elapsed() < Duration::from_millis(dwell) {
+                            return; // still charging up
+                        }
+                    }
+                    _ => {
+                        *pending = Some((edge, Instant::now()));
+                        return; // just arrived; start the timer
+                    }
+                }
+            }
+            *state.edge_pending.lock().unwrap() = None;
             state.ctl.forwarding.store(true, Ordering::SeqCst);
             // Park the cursor away from the edge so blocked-event positions
             // never clamp (which would eat outward motion).
@@ -702,6 +722,8 @@ unsafe fn maybe_enter_portal(state: &CapState, x: i32, y: i32) {
             return;
         }
     }
+    // Not touching any portal edge — reset the dwell timer.
+    *state.edge_pending.lock().unwrap() = None;
 }
 
 fn park_point(bounds: Rect, edge: Edge, x: i32, y: i32) -> (i32, i32) {

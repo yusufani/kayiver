@@ -103,6 +103,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     if cfg.shared_monitor.configured() {
         ctl.shared_hotkey.store(cfg.shared_monitor.hotkey, Ordering::SeqCst);
     }
+    ctl.edge_dwell_ms.store(cfg.edge_dwell_ms, Ordering::Relaxed);
     crate::ui::set_shared_state(
         cfg.shared_monitor.configured(),
         shared_peer.clone(),
@@ -578,6 +579,7 @@ async fn watch_layout(
         last = cur;
         match Config::load_or_init() {
             Ok(new_cfg) => {
+                ctl.edge_dwell_ms.store(new_cfg.edge_dwell_ms, Ordering::Relaxed);
                 let changed = {
                     let mut l = layout.write().unwrap();
                     if *l != new_cfg.layout {

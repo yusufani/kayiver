@@ -420,6 +420,7 @@ fn api_get_settings() -> Result<String> {
         "remote_token": cfg.remote.token,
         "remote_port": UI_PORT + 1,
         "autostart": crate::autostart::is_enabled(),
+        "edge_dwell_ms": cfg.edge_dwell_ms,
         "config_path": Config::path().display().to_string(),
     })
     .to_string())
@@ -439,6 +440,9 @@ fn api_set_settings(body: &[u8]) -> Result<String> {
         if en && cfg.remote.token.as_deref().unwrap_or("").is_empty() {
             cfg.remote.token = Some(kayiver_core::config::RemoteApi::generate_token());
         }
+    }
+    if let Some(ms) = v.get("edge_dwell_ms").and_then(|x| x.as_u64()) {
+        cfg.edge_dwell_ms = ms.min(10_000); // cap at 10 s
     }
     cfg.save()?;
 

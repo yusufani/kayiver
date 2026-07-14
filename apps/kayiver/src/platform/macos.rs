@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
-use kayiver_core::layout::{ratio_on_edge, touches_edge};
+use kayiver_core::layout::{ratio_on_edge, touches_edge, Edge};
 use kayiver_core::proto::{InputEvent, MouseButton, Rect};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -448,6 +448,9 @@ struct CaptureState {
     /// Modifier keycodes currently held (for flagsChanged press/release).
     mods_down: Vec<u16>,
     esc_downs: [Option<Instant>; 2],
+    /// While a dwell is configured: which portal edge the cursor is currently
+    /// resting against, and since when. Cleared when it leaves the edge.
+    edge_pending: Option<(Edge, Instant)>,
     /// Where the local cursor is pinned while forwarding. Every swallowed
     /// pointer event warps back here, so the local pointer is rock-solid even
     /// if the OS re-associates the mouse under us.
@@ -466,6 +469,7 @@ pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Res
                 tap: std::ptr::null_mut(),
                 mods_down: Vec::new(),
                 esc_downs: [None, None],
+                edge_pending: None,
                 park: CGPoint { x: 0.0, y: 0.0 },
             }));
 
@@ -601,8 +605,25 @@ unsafe fn maybe_enter_portal(state: &mut CaptureState, x: i32, y: i32) {
     }
     let bounds = state.ctl.bounds;
     let portals = state.ctl.portals.read().unwrap().clone();
+    let dwell = state.ctl.edge_dwell_ms.load(Ordering::Relaxed);
     for edge in portals {
         if touches_edge(bounds, edge, x, y) {
+            // Optional dwell: require the cursor to rest against this edge for
+            // `dwell` ms before crossing, so a quick brush doesn't jump screens.
+            if dwell > 0 {
+                match state.edge_pending {
+                    Some((e, since)) if e == edge => {
+                        if since.elapsed() < Duration::from_millis(dwell) {
+                            return; // still charging up at this edge
+                        }
+                    }
+                    _ => {
+                        state.edge_pending = Some((edge, Instant::now()));
+                        return; // just arrived at the edge; start the timer
+                    }
+                }
+            }
+            state.edge_pending = None;
             // Flip into forwarding *now*, inside the callback: the very next
             // event is already swallowed. Then tell the router.
             // Park a little inside the edge we're leaving through, so the
@@ -618,6 +639,8 @@ unsafe fn maybe_enter_portal(state: &mut CaptureState, x: i32, y: i32) {
             return;
         }
     }
+    // Not touching any portal edge — reset the dwell timer.
+    state.edge_pending = None;
 }
 
 /// Triple-Esc within 900ms yanks input back to the host even if the remote

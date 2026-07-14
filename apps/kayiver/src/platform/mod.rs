@@ -13,7 +13,7 @@
 //! latency trick: no round trip to the router before events are swallowed,
 //! so nothing ever double-applies locally and remotely.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -35,6 +35,10 @@ pub struct CaptureCtl {
     /// When set, Cmd/Ctrl+Alt+M is swallowed and reported as
     /// `Captured::SharedHotkey` (shared-monitor ownership toggle).
     pub shared_hotkey: AtomicBool,
+    /// Milliseconds the cursor must rest against a portal edge before it
+    /// crosses. 0 = cross instantly (the default). A dwell guards against
+    /// accidental crossings from brushing the edge.
+    pub edge_dwell_ms: AtomicU64,
     /// Shared monitor this machine must NOT show right now: the cursor skips
     /// over this rect (never rests on it) so it can't sit on a screen that's
     /// physically displaying the other machine. None = no block.
@@ -49,6 +53,7 @@ impl CaptureCtl {
             portals: RwLock::new(Vec::new()),
             cooldown_until: Mutex::new(Instant::now()),
             shared_hotkey: AtomicBool::new(false),
+            edge_dwell_ms: AtomicU64::new(0),
             blocked: RwLock::new(None),
             bounds,
         }

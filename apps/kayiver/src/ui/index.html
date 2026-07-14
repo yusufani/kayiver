@@ -292,19 +292,30 @@
       </select>
     </div>
     <div class="srow">
-      <div class="lbl"><b>Ortak monitör kısayolu</b><small><kbd id="hkLabel">⌘⌥M</kbd> ile paneli el değiştir</small></div>
+      <div class="lbl"><b id="hkShortLbl">Ortak monitör kısayolu</b><small><kbd id="hkLabel">⌘⌥M</kbd><span id="hkDescS"> ile paneli el değiştir</span></small></div>
       <label class="switch"><input type="checkbox" id="setHotkey"><span class="slider"></span></label>
     </div>
     <div class="srow">
-      <div class="lbl"><b>Girişte başlat</b><small>oturum açılınca kayıver kendiliğinden çalışsın</small></div>
+      <div class="lbl"><b id="dwellLbl">Geçiş gecikmesi</b><small id="dwellDescS">kenarda bu kadar bekleyince karşı ekrana geç (varsayılan: anında)</small></div>
+      <select id="setDwell" style="background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font:inherit;font-size:13px;cursor:pointer">
+        <option value="0">Anında</option>
+        <option value="500">0.5 sn</option>
+        <option value="1000">1 sn</option>
+        <option value="1500">1.5 sn</option>
+        <option value="2000">2 sn</option>
+        <option value="3000">3 sn</option>
+      </select>
+    </div>
+    <div class="srow">
+      <div class="lbl"><b id="autostartLbl">Girişte başlat</b><small id="autostartDescS">oturum açılınca kayıver kendiliğinden çalışsın</small></div>
       <label class="switch"><input type="checkbox" id="setAutostart"><span class="slider"></span></label>
     </div>
     <div class="srow" style="flex-wrap:wrap">
-      <div class="lbl"><b>Telefon / LAN kumandası</b><small>Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)</small></div>
+      <div class="lbl"><b id="remoteLbl">Telefon / LAN kumandası</b><small id="remoteDescS">Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)</small></div>
       <label class="switch"><input type="checkbox" id="setRemote"><span class="slider"></span></label>
       <div class="token" id="remoteInfo" style="display:none; width:100%"></div>
     </div>
-    <div class="srow"><div class="lbl"><b>Config dosyası</b><small id="cfgPath" class="token" style="margin-top:6px"></small></div></div>
+    <div class="srow"><div class="lbl"><b id="cfgFileLbl">Config dosyası</b><small id="cfgPath" class="token" style="margin-top:6px"></small></div></div>
     <div class="foot"><div id="setMsg"></div><button class="ghost small" id="setClose">Kapat</button></div>
   </div>
 </div>
@@ -321,6 +332,8 @@ const I18N = {
     hint1a: "bir monitörü diğer makinenin monitörüne ", hintTouch: "değdir", hint1b: " = geçiş · ",
     hintDrop: "üstüne bırak", hint1c: " = ortak panel", hintPanic: "panik: 3× ", hintShared: " · ortak monitör: ",
     hkShort: "Ortak monitör kısayolu", hkDesc: " ile paneli el değiştir",
+    dwell: "Geçiş gecikmesi", dwellDesc: "kenarda bu kadar bekleyince karşı ekrana geç (varsayılan: anında)",
+    dwellImmediate: "Anında", secShort: "sn",
     autostart: "Girişte başlat", autostartDesc: "oturum açılınca kayıver kendiliğinden çalışsın",
     remote: "Telefon / LAN kumandası", remoteDesc: "Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)",
     cfgFile: "Config dosyası", close: "Kapat", language: "Dil",
@@ -349,6 +362,8 @@ const I18N = {
     hint1a: "touch one machine's monitor to another's ", hintTouch: "= crossing", hint1b: " · ",
     hintDrop: "drop on top", hint1c: " = shared panel", hintPanic: "panic: 3x ", hintShared: " · shared monitor: ",
     hkShort: "Shared-monitor shortcut", hkDesc: " to hand over the panel",
+    dwell: "Crossing delay", dwellDesc: "wait this long at the edge before crossing to the other screen (default: instant)",
+    dwellImmediate: "Instant", secShort: "s",
     autostart: "Start at login", autostartDesc: "run kayiver automatically when you log in",
     remote: "Phone / LAN control", remoteDesc: "token-protected local API for the Android app (takes effect after a restart)",
     cfgFile: "Config file", close: "Close", language: "Language",
@@ -385,18 +400,23 @@ function applyStaticI18n() {
   document.querySelector('.hint').innerHTML =
     t('hint1a') + '<b>' + t('hintTouch') + '</b>' + t('hint1b') + '<b>' + t('hintDrop') + '</b>' + t('hint1c') +
     '<br>' + t('hintPanic') + '<kbd>Esc</kbd>' + t('hintShared') + '<kbd id="hotkeyHint">' + hk() + '</kbd>';
-  // settings modal
+  // settings modal — everything addressed by id, so row order can change freely
   document.querySelector('#settings h2').textContent = t('settings');
-  const ll = document.getElementById('langLbl'); if (ll) ll.textContent = t('language');
-  const rows = document.querySelectorAll('#settings .srow .lbl b');
-  if (rows[1]) rows[1].textContent = t('hkShort');
-  if (rows[2]) rows[2].textContent = t('autostart');
-  if (rows[3]) rows[3].textContent = t('remote');
-  if (rows[4]) rows[4].textContent = t('cfgFile');
-  const smalls = document.querySelectorAll('#settings .srow .lbl small');
-  if (smalls[0]) smalls[0].innerHTML = '<kbd id="hkLabel">' + hk() + '</kbd>' + t('hkDesc');
-  if (smalls[1]) smalls[1].textContent = t('autostartDesc');
-  if (smalls[2]) smalls[2].textContent = t('remoteDesc');
+  const byId = (id, txt) => { const e = document.getElementById(id); if (e) e.textContent = txt; };
+  byId('langLbl', t('language'));
+  byId('hkShortLbl', t('hkShort'));
+  byId('hkDescS', t('hkDesc'));
+  byId('dwellLbl', t('dwell'));
+  byId('dwellDescS', t('dwellDesc'));
+  document.querySelectorAll('#setDwell option').forEach(o => {
+    const v = +o.value;
+    o.textContent = v === 0 ? t('dwellImmediate') : (v / 1000) + ' ' + t('secShort');
+  });
+  byId('autostartLbl', t('autostart'));
+  byId('autostartDescS', t('autostartDesc'));
+  byId('remoteLbl', t('remote'));
+  byId('remoteDescS', t('remoteDesc'));
+  byId('cfgFileLbl', t('cfgFile'));
   set('#setClose', t('close'));
 }
 function hk() { return /Mac/.test(navigator.platform) ? '⌘⌥M' : 'Ctrl+Alt+M'; }
@@ -918,6 +938,7 @@ async function openSettings() {
   document.getElementById('setAutostart').checked = !!settings.autostart;
   document.getElementById('setRemote').checked = !!settings.remote_enabled;
   document.getElementById('setLang').value = lang;
+  document.getElementById('setDwell').value = String(settings.edge_dwell_ms || 0);
   document.getElementById('cfgPath').textContent = settings.config_path || '';
   renderRemoteInfo(); setMsgEl.textContent = ''; overlay.style.display = 'flex';
 }
@@ -936,6 +957,7 @@ async function saveSetting(patch, note) {
   } catch (e) { setMsgEl.textContent = t('errPre') + e.message; }
 }
 document.getElementById('setLang').addEventListener('change', e => setLang(e.target.value));
+document.getElementById('setDwell').addEventListener('change', e => saveSetting({ edge_dwell_ms: +e.target.value }, t('savedOk')));
 document.getElementById('gear').addEventListener('click', openSettings);
 document.getElementById('setClose').addEventListener('click', closeSettings);
 overlay.addEventListener('click', e => { if (e.target === overlay) closeSettings(); });
