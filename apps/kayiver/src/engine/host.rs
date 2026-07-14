@@ -54,9 +54,10 @@ pub fn run(cfg: Config) -> Result<()> {
 
     let ctl = Arc::new(CaptureCtl::new(bounds));
     let (cap_tx, cap_rx) = mpsc::unbounded_channel();
-    platform::start_capture(ctl.clone(), cap_tx).context("input capture failed to start")?;
-    // Keeps the local cursor off a shared monitor that's showing the peer.
-    platform::start_cursor_guard(ctl.clone());
+    platform::start_capture(ctl.clone(), cap_tx.clone()).context("input capture failed to start")?;
+    // Hands control to the peer when the cursor moves onto a shared monitor
+    // that's showing it (via Captured::SharedEnter through the same channel).
+    platform::start_cursor_guard(ctl.clone(), cap_tx);
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(host_main(cfg, ctl, cap_rx))
@@ -239,6 +240,23 @@ impl Router {
                 platform::warp_cursor(b.x + b.w / 2, b.y + b.h / 2);
             }
             Captured::SharedHotkey => self.set_shared_owner("toggle"),
+            Captured::SharedEnter { fx, fy } => {
+                // Local cursor moved onto the shared panel (showing the peer) →
+                // hand control to the peer, onto its copy of the panel.
+                let sm = self.shared.read().unwrap().clone();
+                let peer = shared_peer_name(&self.cfg, &sm);
+                if let (Some(peer), Some(pr)) = (peer, sm.peer_rect) {
+                    if self.session_exists(&peer) {
+                        let x = pr.x + (fx * pr.w as f32) as i32;
+                        let y = pr.y + (fy * pr.h as f32) as i32;
+                        self.ctl.forwarding.store(true, Ordering::SeqCst);
+                        platform::set_forwarding_visuals(true);
+                        self.focus = Some(peer);
+                        self.send_to_focus(Msg::EnterAt { x, y });
+                        info!("cursor -> peer (onto shared panel)");
+                    }
+                }
+            }
         }
     }
 

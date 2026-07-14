@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 use kayiver_core::layout::{point_in, skip_out, Edge};
 use kayiver_core::proto::Rect;
 
+use crate::engine::Captured;
+
 pub struct CaptureCtl {
     /// True while input is being forwarded to a remote machine.
     pub forwarding: AtomicBool,
@@ -53,38 +55,46 @@ impl CaptureCtl {
     }
 }
 
-/// Keep the local cursor out of a "blocked" shared-monitor rect: poll the
-/// cursor and, whenever it lands inside the block, warp it just past the far
-/// edge (in the direction it was moving) so it skips over that monitor as if it
-/// weren't there. Cheap busy-poll on its own thread; a no-op while nothing is
-/// blocked or while input is being forwarded. Works on any platform that has
-/// `cursor_pos` + `warp_cursor`.
-pub fn start_cursor_guard(ctl: Arc<CaptureCtl>) {
+/// Watch the local cursor and, when it moves onto the "blocked" shared-monitor
+/// rect (which is showing the peer), hand control to the peer: emit
+/// `SharedEnter` with the relative hit position and park the cursor just off the
+/// panel so it doesn't sit on an invisible screen. Cheap busy-poll on its own
+/// thread; a no-op while nothing is blocked or while input is already
+/// forwarding. `tx` is the same channel the capture thread feeds the router.
+pub fn start_cursor_guard(ctl: Arc<CaptureCtl>, tx: tokio::sync::mpsc::UnboundedSender<Captured>) {
     std::thread::Builder::new()
         .name("kayiver-cursor-guard".into())
         .spawn(move || {
             let mut prev = cursor_pos();
+            let mut inside = false;
             loop {
                 std::thread::sleep(Duration::from_millis(8));
                 if ctl.forwarding.load(Ordering::SeqCst) {
                     prev = cursor_pos();
+                    inside = false;
                     continue;
                 }
                 let Some(b) = *ctl.blocked.read().unwrap() else {
                     prev = cursor_pos();
+                    inside = false;
                     continue;
                 };
                 let (x, y) = cursor_pos();
                 if point_in(b, x, y) {
-                    let (dx, dy) = (x - prev.0, y - prev.1);
-                    let mut out = skip_out(b, x, y, dx, dy);
-                    // If skipping forward would leave this desktop, bounce back.
-                    if !point_in(ctl.bounds, out.0, out.1) {
-                        out = skip_out(b, x, y, -dx, -dy);
+                    if !inside {
+                        inside = true;
+                        let fx = (x - b.x) as f32 / b.w.max(1) as f32;
+                        let fy = (y - b.y) as f32 / b.h.max(1) as f32;
+                        // Park just outside the edge we came in through so the
+                        // local cursor isn't left sitting on the hidden panel.
+                        let (dx, dy) = (x - prev.0, y - prev.1);
+                        let park = skip_out(b, x, y, -dx, -dy);
+                        warp_cursor(park.0, park.1);
+                        let _ = tx.send(Captured::SharedEnter { fx: fx.clamp(0.0, 1.0), fy: fy.clamp(0.0, 1.0) });
+                        prev = park;
                     }
-                    warp_cursor(out.0, out.1);
-                    prev = out;
                 } else {
+                    inside = false;
                     prev = (x, y);
                 }
             }
