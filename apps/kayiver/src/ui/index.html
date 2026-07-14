@@ -666,26 +666,17 @@ function showSnapGuide(t) {
   snapGuide.style.setProperty('--gc', gcol);
 }
 
-// ---- persistence: remember where the user put each monitor ------------------
-const POS_KEY = 'kayiver-pos-v1';
+// The layout is derived deterministically from real monitor geometry on every
+// load (A left of the panel, C above it — exactly the physical arrangement), so
+// there is nothing to persist and a monitor can never drift to a random spot.
+// An earlier build cached positions in localStorage; that could resurrect a
+// broken arrangement (monitors hidden behind the panel), so we clear it and the
+// save/restore hooks are no-ops.
 let gScale = 1;
-let savedPos = (() => { try { return JSON.parse(localStorage.getItem(POS_KEY)) || {}; } catch (_) { return {}; } })();
-const keyOf = t => t.machine + '#' + t.idx;
-const savedHas = t => !!savedPos[keyOf(t)];
-function savePositions() {
-  const cw = canvas.clientWidth || 1, ch = canvas.clientHeight || 1;
-  const m = {};
-  for (const t of mons) m[keyOf(t)] = { fx: t.x / cw, fy: t.y / ch };
-  savedPos = m;
-  try { localStorage.setItem(POS_KEY, JSON.stringify(m)); } catch (_) {}
-}
-function applySaved() {
-  const cw = canvas.clientWidth, ch = canvas.clientHeight;
-  for (const t of mons) {
-    const s = savedPos[keyOf(t)];
-    if (s) { t.x = s.fx * cw; t.y = s.fy * ch; }
-  }
-}
+try { localStorage.removeItem('kayiver-pos-v1'); } catch (_) {}
+const savedHas = () => false;
+function savePositions() {}
+function applySaved() {}
 
 function pos(t) { t.el.style.left = t.x + 'px'; t.el.style.top = t.y + 'px'; }
 function clamp(t) {
@@ -856,8 +847,8 @@ function renderSharedCard() {
     await fetch('/api/shared-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) });
     // un-merge: nudge the peer half out from under the panel so it's separable
     const p = sharedPair();
-    if (p) { p.b.x = p.a.x + 40; p.b.y = p.a.y + 40; delete savedPos[keyOf(p.b)]; }
-    sharedCfg = null; mergeShared(); mons.forEach(pos); savePositions();
+    if (p) { p.b.x = p.a.x + 40; p.b.y = p.a.y + 40; }
+    sharedCfg = null; mergeShared(); mons.forEach(pos);
     updateOverlap(); renderSharedBadges(); renderSharedCard();
   };
   act.appendChild(clear);
