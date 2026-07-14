@@ -114,13 +114,42 @@
     50%     { box-shadow: 0 0 0 6px rgba(52,211,153,.12), var(--shadow); }
   }
   .mon.overlap { box-shadow: 0 0 0 3px var(--a2), var(--shadow); }
-  /* stacked shared-panel tiles: same physical screen, piled like cards */
-  .mon.stacked { box-shadow: 0 0 0 2px var(--mc), 0 14px 34px rgba(0,0,0,.5); }
+  /* shared panel: ONE physical screen split into a section per machine */
+  .mon.panel { box-shadow: 0 0 0 2px var(--a2), 0 14px 30px rgba(0,0,0,.5); cursor: grab; }
+  .mon.panel .name, .mon.panel .res, .mon.panel .sdot { display: none; }
+  .splitwrap { position: absolute; inset: 0; display: flex; pointer-events: none; z-index: 2; }
+  .splitseg {
+    flex: 1; position: relative; display: flex; align-items: center; justify-content: center;
+    background: var(--sg, transparent);
+    border-right: 1.5px dashed rgba(255,255,255,.22);
+  }
+  .splitseg:last-child { border-right: 0; }
+  .splitseg .segname {
+    font-size: 10px; font-weight: 800; color: var(--sc); letter-spacing: .2px;
+    max-width: calc(100% - 8px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
+  }
+  .panel-badge {
+    position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%); z-index: 3;
+    background: var(--accent-grad); color: #052e24; font-size: 8.5px; font-weight: 800;
+    padding: 1px 9px; border-radius: 999px; letter-spacing: .4px; white-space: nowrap;
+    box-shadow: 0 2px 6px rgba(0,0,0,.4);
+  }
   .mon.shared .badge { display: block; }
+  .mon.panel .badge { display: none; }
   .mon .badge {
     display: none; position: absolute; top: -1px; left: 50%; transform: translate(-50%, -55%);
     background: var(--accent-grad); color: #052e24; font-size: 9px; font-weight: 800;
     padding: 1px 8px; border-radius: 999px; letter-spacing: .4px;
+  }
+  /* animated guide shown while dragging a monitor toward another's edge */
+  #snapGuide {
+    position: absolute; z-index: 36; display: none; border-radius: 3px; pointer-events: none;
+    background: var(--gc, #5eead4); box-shadow: 0 0 12px 2px var(--gc, #5eead4);
+    animation: snappulse .7s ease-in-out infinite;
+  }
+  @keyframes snappulse {
+    0%, 100% { opacity: .45; transform: scale(1); }
+    50%      { opacity: 1; transform: scale(1.06); }
   }
 
   #sharedBtn {
@@ -303,7 +332,7 @@ const I18N = {
     saved: "kaydedildi ✓ — ~2 sn içinde uygulanır", saveFail: "kaydedilemedi: ",
     reach: "kayıver'a ulaşılamıyor: ",
     makeShared: "ortak panel yap", removeShared: "ortak panel ✓ (kaldır)",
-    sharedSaved: "ortak panel kaydedildi ✓", sharedRemoved: "ortak panel kaldırıldı",
+    sharedBadge: "ortak", sharedSaved: "ortak panel kaydedildi ✓", sharedRemoved: "ortak panel kaldırıldı",
     sharedNone: "Tek panel iki makinede mi? Bir makinenin o monitörünü diğerinin karşılık gelen monitörünün ÜSTÜNE bırak.",
     panelShows: "Panel şu an ", panelShowsEnd: " ekranını gösteriyor.", panelUnknown: "Panel durumu bilinmiyor.",
     removeSetting: "ayarı kaldır",
@@ -331,7 +360,7 @@ const I18N = {
     saved: "saved ✓ — applies within ~2 s", saveFail: "save failed: ",
     reach: "can't reach kayiver: ",
     makeShared: "make shared panel", removeShared: "shared panel ✓ (remove)",
-    sharedSaved: "shared panel saved ✓", sharedRemoved: "shared panel removed",
+    sharedBadge: "shared", sharedSaved: "shared panel saved ✓", sharedRemoved: "shared panel removed",
     sharedNone: "One panel on both machines? Drop that monitor onto the matching monitor of the other machine.",
     panelShows: "The panel is showing ", panelShowsEnd: " right now.", panelUnknown: "Panel state unknown.",
     removeSetting: "remove setting",
@@ -431,13 +460,14 @@ function buildFromState(s) {
   // per-machine cluster origins from the saved links
   const clusterPos = placeMachines(s.machines, s.links, scale);
 
+  gScale = scale;
   mons = [];
   for (const m of s.machines) {
     const bb = bbox(m.monitors);
     m.monitors.forEach((mon, idx) => {
       mons.push({
         machine: m.name, me: m.me, idx,
-        realW: mon.w, realH: mon.h,
+        realW: mon.w, realH: mon.h, realX: mon.x, realY: mon.y,
         w: Math.max(46, mon.w * scale), h: Math.max(32, mon.h * scale),
         x: clusterPos[m.name].x + (mon.x - bb.x) * scale,
         y: clusterPos[m.name].y + (mon.y - bb.y) * scale,
@@ -453,9 +483,10 @@ function buildFromState(s) {
     const dy = (canvas.clientHeight - (maxy - miny)) / 2 - miny;
     mons.forEach(t => { t.x += dx; t.y += dy; });
   }
+  applySaved();               // restore whatever the user last arranged
   mons.forEach(t => clamp(t));
+  mergeShared();              // fold the shared pair into one split panel
   mons.forEach(pos);
-  layoutSharedStack();
   refreshSnap(); renderSharedBadges(); renderSharedCard(); renderLegend();
 }
 
@@ -506,27 +537,41 @@ function makeTile(t) {
   t.el = el; t.sdot = el.querySelector('.sdot');
 
   el.addEventListener('pointerdown', e => {
+    if (t.el.style.display === 'none') return; // hidden peer half of a panel
     el.setPointerCapture(e.pointerId);
-    // Shared-panel tiles are the SAME physical screen → drag the whole stack.
-    const stack = sharedStack();
-    const inStack = stack.includes(t);
-    const group = inStack ? stack : [t];
-    const anchor = group[0];
+    const sp = sharedPair();
+    // Grabbing the split panel pans the whole arrangement (it's the shared
+    // screen — everything hangs off it). Grabbing any other monitor moves just
+    // that one, with a live snap guide toward neighbouring edges.
+    const isPanel = sp && t === sp.a;
+    const group = isPanel ? mons.filter(g => g.el.style.display !== 'none') : [t];
+    const start = group.map(g => ({ g, x: g.x, y: g.y }));
+    const a0 = { x: t.x, y: t.y };
+    const sx = e.clientX, sy = e.clientY;
     group.forEach(g => g.el.classList.add('dragging'));
-    const ax0 = anchor.x, ay0 = anchor.y, sx = e.clientX, sy = e.clientY;
     const move = ev => {
-      anchor.x = ax0 + (ev.clientX - sx);
-      anchor.y = ay0 + (ev.clientY - sy);
-      clamp(anchor);
-      if (inStack) layoutSharedStack(); else pos(anchor);
+      const ddx = ev.clientX - sx, ddy = ev.clientY - sy;
+      if (isPanel) {
+        // clamp by the panel tile, shift everyone by the same corrected delta
+        let nx = a0.x + ddx, ny = a0.y + ddy;
+        nx = Math.max(0, Math.min(canvas.clientWidth - t.w, nx));
+        ny = Math.max(0, Math.min(canvas.clientHeight - t.h, ny));
+        const cdx = nx - a0.x, cdy = ny - a0.y;
+        start.forEach(s => { s.g.x = s.x + cdx; s.g.y = s.y + cdy; pos(s.g); });
+      } else {
+        t.x = a0.x + ddx; t.y = a0.y + ddy; clamp(t); pos(t);
+        showSnapGuide(t);
+      }
       refreshSnap(); updateOverlap();
     };
     const up = () => {
       group.forEach(g => g.el.classList.remove('dragging'));
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
-      if (!inStack && !candidate) magnet(t);
-      if (inStack) layoutSharedStack(); else pos(anchor);
+      hideSnapGuide();
+      if (!isPanel && !candidate) magnet(t);
+      pos(t);
+      savePositions();
       refreshSnap(); updateOverlap();
     };
     el.addEventListener('pointermove', move);
@@ -534,29 +579,112 @@ function makeTile(t) {
   });
 }
 
-const STACK_OFF = 13;
-// Tiles that are the same physical shared panel (me first = front of stack).
-function sharedStack() {
-  if (!sharedCfg) return [];
+// The two tiles that are the same physical shared panel (a = my half = front).
+function sharedPair() {
+  if (!sharedCfg) return null;
   const me = machines.find(m => m.me);
   const a = me && tileOf(me.name, sharedCfg.local_monitor);
   const b = tileOf(sharedCfg.peer, sharedCfg.peer_monitor);
-  return (a && b) ? [a, b] : [];
+  return (a && b) ? { a, b } : null;
 }
-// Snap the shared tiles into one stacked pile at the front tile's spot, so a
-// shared panel reads as a single physical screen (A on top, B peeking behind).
-function layoutSharedStack() {
-  mons.forEach(t => { t.el.classList.remove('stacked'); t.el.style.zIndex = ''; });
-  const st = sharedStack();
-  if (st.length < 2) return;
-  const [a, ...rest] = st;
-  clamp(a);
-  rest.forEach((t, i) => {
-    t.x = a.x + STACK_OFF * (i + 1);
-    t.y = a.y + STACK_OFF * (i + 1);
+// Back-compat shim for callers that still want the pair as an array.
+function sharedStack() { const p = sharedPair(); return p ? [p.a, p.b] : []; }
+
+// Fold the shared pair into ONE rectangle split into a section per machine, and
+// hang each machine's OTHER monitors off it by real geometry (so C sits above
+// the panel deterministically, every load). User-placed monitors keep their
+// saved spot instead of the geometric default.
+function mergeShared() {
+  mons.forEach(t => {
+    t.el.classList.remove('panel', 'stacked'); t.el.style.display = ''; t.el.style.zIndex = '';
+    const w = t.el.querySelector('.splitwrap'); if (w) w.remove();
+    const bd = t.el.querySelector('.panel-badge'); if (bd) bd.remove();
   });
-  st.forEach((t, i) => { t.el.classList.add('stacked'); t.el.style.zIndex = 20 - i; });
-  st.forEach(pos);
+  const sp = sharedPair();
+  if (!sp) return;
+  const { a, b } = sp;
+  clamp(a);
+  // peer half sits exactly under my half and is hidden; the split represents it
+  b.x = a.x; b.y = a.y; b.w = a.w; b.h = a.h;
+  b.el.style.width = a.w + 'px'; b.el.style.height = a.h + 'px';
+  b.el.style.display = 'none'; pos(b);
+  const anchor = { [a.machine]: a, [b.machine]: b };
+  for (const o of mons) {
+    if (o === a || o === b) continue;
+    if (!(o.machine === a.machine || o.machine === b.machine)) continue;
+    if (savedHas(o)) { clamp(o); pos(o); continue; }
+    const an = anchor[o.machine];
+    o.x = a.x + (o.realX - an.realX) * gScale;
+    o.y = a.y + (o.realY - an.realY) * gScale;
+    clamp(o); pos(o);
+  }
+  renderSplit(a, [a.machine, b.machine]);
+}
+
+function renderSplit(a, names) {
+  a.el.classList.add('panel');
+  a.el.style.zIndex = 6;
+  const badge = document.createElement('span');
+  badge.className = 'panel-badge'; badge.textContent = t('sharedBadge');
+  a.el.appendChild(badge);
+  const wrap = document.createElement('div');
+  wrap.className = 'splitwrap';
+  for (const nm of names) {
+    const col = colorOf(nm);
+    const seg = document.createElement('div');
+    seg.className = 'splitseg';
+    seg.style.setProperty('--sc', col.c);
+    seg.style.setProperty('--sg', col.g);
+    seg.innerHTML = '<span class="segname">' + nm + '</span>';
+    wrap.appendChild(seg);
+  }
+  a.el.appendChild(wrap);
+}
+
+// ---- live snap guide (animated edge shown while dragging) ------------------
+const snapGuide = document.createElement('div');
+snapGuide.id = 'snapGuide';
+canvas.appendChild(snapGuide);
+function hideSnapGuide() { snapGuide.style.display = 'none'; }
+function showSnapGuide(t) {
+  let g = null, gcol = null;
+  for (const o of mons) {
+    if (o === t || o.el.style.display === 'none') continue;
+    const seg = (x0, x1, y0, y1, vert) => ({ x: vert ? x0 - 1.5 : x0, y: vert ? y0 : y1 - 1.5, w: vert ? 3 : x1 - x0, h: vert ? y1 - y0 : 3 });
+    const vy0 = Math.max(t.y, o.y), vy1 = Math.min(t.y + t.h, o.y + o.h);
+    const hx0 = Math.max(t.x, o.x), hx1 = Math.min(t.x + t.w, o.x + o.w);
+    if (Math.abs(t.x + t.w - o.x) <= SNAP && vOver(t, o) > 10) g = seg(o.x, 0, vy0, vy1, true);
+    else if (Math.abs(t.x - (o.x + o.w)) <= SNAP && vOver(t, o) > 10) g = seg(o.x + o.w, 0, vy0, vy1, true);
+    else if (Math.abs(t.y + t.h - o.y) <= SNAP && hOver(t, o) > 10) g = seg(hx0, hx1, 0, o.y, false);
+    else if (Math.abs(t.y - (o.y + o.h)) <= SNAP && hOver(t, o) > 10) g = seg(hx0, hx1, 0, o.y + o.h, false);
+    if (g) { gcol = colorOf(o.machine === t.machine ? t.machine : o.machine).c; break; }
+  }
+  if (!g) { hideSnapGuide(); return; }
+  snapGuide.style.display = 'block';
+  snapGuide.style.left = g.x + 'px'; snapGuide.style.top = g.y + 'px';
+  snapGuide.style.width = g.w + 'px'; snapGuide.style.height = g.h + 'px';
+  snapGuide.style.setProperty('--gc', gcol);
+}
+
+// ---- persistence: remember where the user put each monitor ------------------
+const POS_KEY = 'kayiver-pos-v1';
+let gScale = 1;
+let savedPos = (() => { try { return JSON.parse(localStorage.getItem(POS_KEY)) || {}; } catch (_) { return {}; } })();
+const keyOf = t => t.machine + '#' + t.idx;
+const savedHas = t => !!savedPos[keyOf(t)];
+function savePositions() {
+  const cw = canvas.clientWidth || 1, ch = canvas.clientHeight || 1;
+  const m = {};
+  for (const t of mons) m[keyOf(t)] = { fx: t.x / cw, fy: t.y / ch };
+  savedPos = m;
+  try { localStorage.setItem(POS_KEY, JSON.stringify(m)); } catch (_) {}
+}
+function applySaved() {
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  for (const t of mons) {
+    const s = savedPos[keyOf(t)];
+    if (s) { t.x = s.fx * cw; t.y = s.fy * ch; }
+  }
 }
 
 function pos(t) { t.el.style.left = t.x + 'px'; t.el.style.top = t.y + 'px'; }
@@ -664,7 +792,7 @@ sharedBtn.addEventListener('click', async () => {
     else { setMsg(t('saveFail') + await r.text(), 'err'); return; }
   }
   sharedBtn.style.display = 'none'; candidate = null;
-  layoutSharedStack(); renderSharedBadges(); renderSharedCard(); refreshSnap();
+  mergeShared(); savePositions(); renderSharedBadges(); renderSharedCard(); refreshSnap();
 });
 
 function tileOf(machine, idx) { return mons.find(t => t.machine === machine && t.idx === idx); }
@@ -704,10 +832,11 @@ function renderSharedCard() {
   clear.className = 'linklike'; clear.textContent = t('removeSetting');
   clear.onclick = async () => {
     await fetch('/api/shared-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) });
-    // un-stack: nudge the peer tile off the pile so they're separable again
-    const st = sharedStack();
-    if (st.length > 1) st.slice(1).forEach((t, i) => { t.x += 40 + i * 20; t.y += 40; clamp(t); pos(t); });
-    sharedCfg = null; layoutSharedStack(); updateOverlap(); renderSharedBadges(); renderSharedCard();
+    // un-merge: nudge the peer half out from under the panel so it's separable
+    const p = sharedPair();
+    if (p) { p.b.x = p.a.x + 40; p.b.y = p.a.y + 40; delete savedPos[keyOf(p.b)]; }
+    sharedCfg = null; mergeShared(); mons.forEach(pos); savePositions();
+    updateOverlap(); renderSharedBadges(); renderSharedCard();
   };
   act.appendChild(clear);
 }
@@ -761,6 +890,7 @@ document.getElementById('save').addEventListener('click', async () => {
   const links = currentLinks();
   if (machines.length > 1 && links.length === 0) { setMsg(t('noTouch'), 'err'); return; }
   const r = await fetch('/api/layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(links) });
+  savePositions();
   setMsg(r.ok ? t('saved') : t('saveFail') + await r.text(), r.ok ? 'ok' : 'err');
 });
 
