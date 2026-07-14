@@ -569,7 +569,7 @@ function makeTile(t) {
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
       hideSnapGuide();
-      if (!isPanel && !candidate) magnet(t);
+      if (!isPanel && !candidate) resolveTile(t);
       pos(t);
       savePositions();
       refreshSnap(); updateOverlap();
@@ -695,15 +695,33 @@ function clamp(t) {
 function vOver(a, b) { return Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y); }
 function hOver(a, b) { return Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x); }
 
-// snap a tile's edges to any other tile (tidy alignment, any machine)
-function magnet(t) {
-  for (const o of mons) {
-    if (o === t) continue;
-    if (Math.abs(t.x - (o.x + o.w)) <= SNAP && vOver(t, o) > 14) t.x = o.x + o.w;
-    else if (Math.abs(t.x + t.w - o.x) <= SNAP && vOver(t, o) > 14) t.x = o.x - t.w;
-    if (Math.abs(t.y - (o.y + o.h)) <= SNAP && hOver(t, o) > 14) t.y = o.y + o.h;
-    else if (Math.abs(t.y + t.h - o.y) <= SNAP && hOver(t, o) > 14) t.y = o.y - t.h;
+// Resolve a dropped tile to a VALID spot: flush against the nearest edge of
+// some other monitor, never overlapping one. A monitor can't float free or sit
+// inside another — if the user didn't line it up, it magnets to the closest
+// edge. Called on drop for any individually-moved tile.
+function resolveTile(t) {
+  const solids = mons.filter(o => o !== t && o.el.style.display !== 'none');
+  if (!solids.length) { clamp(t); pos(t); return; }
+  const overlapsAny = (rx, ry) =>
+    solids.some(o => rx < o.x + o.w - 0.5 && rx + t.w > o.x + 0.5 && ry < o.y + o.h - 0.5 && ry + t.h > o.y + 0.5);
+  const cands = [];
+  for (const o of solids) {
+    // cross-axis choices: flush-align to o's near edge, or keep where aimed
+    // (clamped so the two tiles actually share ≥22px of edge).
+    const ys = [o.y, o.y + o.h - t.h, Math.max(o.y - t.h + 22, Math.min(o.y + o.h - 22, t.y))];
+    const xs = [o.x, o.x + o.w - t.w, Math.max(o.x - t.w + 22, Math.min(o.x + o.w - 22, t.x))];
+    for (const y of ys) { cands.push({ x: o.x + o.w, y }); cands.push({ x: o.x - t.w, y }); }
+    for (const x of xs) { cands.push({ x, y: o.y - t.h }); cands.push({ x, y: o.y + o.h }); }
   }
+  let best = null, bestD = Infinity;
+  for (const c of cands) {
+    if (c.x < 0 || c.y < 0 || c.x + t.w > canvas.clientWidth || c.y + t.h > canvas.clientHeight) continue;
+    if (overlapsAny(c.x, c.y)) continue;
+    const d = (c.x - t.x) ** 2 + (c.y - t.y) ** 2;
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  if (best) { t.x = best.x; t.y = best.y; }
+  clamp(t); pos(t);
 }
 
 // machine-level links, derived from adjacency of monitors of DIFFERENT machines
@@ -757,8 +775,12 @@ function updateOverlap() {
   let best = null;
   for (const a of mons) {
     if (!a.me) continue;
+    // The monitor already serving as the shared panel is taken — overlapping
+    // onto it isn't a "make shared" gesture, so its neighbours just attach.
+    if (sharedCfg && a.idx === sharedCfg.local_monitor) continue;
     for (const b of mons) {
       if (b.me || b.machine === a.machine) continue;
+      if (sharedCfg && b.machine === sharedCfg.peer && b.idx === sharedCfg.peer_monitor) continue;
       const area = interArea(a, b);
       if (area <= 0) continue;
       const ratio = area / Math.min(a.w * a.h, b.w * b.h);
