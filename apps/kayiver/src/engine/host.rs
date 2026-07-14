@@ -42,6 +42,9 @@ enum SessionEvent {
     Connected { name: String },
     Disconnected { name: String },
     CursorLeft { name: String, edge: Edge, ratio: f32 },
+    /// The peer's cursor moved onto the shared panel (showing this host), at
+    /// relative position (fx, fy) — take control back onto our copy of it.
+    SharedCross { name: String, fx: f32, fy: f32 },
     LayoutChanged,
 }
 
@@ -311,6 +314,22 @@ impl Router {
                 self.refresh_portals();
             }
             SessionEvent::LayoutChanged => self.refresh_portals(),
+            SessionEvent::SharedCross { name, fx, fy } => {
+                if self.focus.as_deref() != Some(name.as_str()) {
+                    return; // stale
+                }
+                let rect = self.shared.read().unwrap().local_rect;
+                if let Some(r) = rect {
+                    self.release_all();
+                    self.send_to_focus(Msg::Leave);
+                    self.focus = None;
+                    self.exit_forwarding();
+                    let x = r.x + (fx * r.w as f32) as i32;
+                    let y = r.y + (fy * r.h as f32) as i32;
+                    platform::warp_cursor(x, y);
+                    info!("cursor -> {} (onto shared panel)", self.cfg.name);
+                }
+            }
             SessionEvent::CursorLeft { name, edge, ratio } => {
                 if self.focus.as_deref() != Some(name.as_str()) {
                     return; // stale report from a peer that lost focus already
@@ -545,6 +564,9 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
             match msg {
                 Msg::CursorLeft { edge, ratio } => {
                     let _ = evt_tx.send(SessionEvent::CursorLeft { name: name.clone(), edge, ratio });
+                }
+                Msg::SharedCross { fx, fy } => {
+                    let _ = evt_tx.send(SessionEvent::SharedCross { name: name.clone(), fx, fy });
                 }
                 Msg::Pong(seq) => {
                     let sent = pending.lock().unwrap().remove(&seq);

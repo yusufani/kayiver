@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -104,11 +104,18 @@ pub enum Msg {
     /// detached/attached), so the layout editor and crossing math use the
     /// current monitors instead of the ones from the initial `Hello`.
     Monitors { screen: Rect, monitors: Vec<Rect> },
-    /// host -> client: treat `rect` as a hole your cursor can't rest on — the
-    /// shared monitor while the OTHER machine is being shown on it. The cursor
-    /// skips over it to the next screen. `None` clears the block (you own the
-    /// panel now). No display is ever detached.
+    /// host -> client: treat `rect` as the shared monitor showing the OTHER
+    /// machine. The cursor doesn't rest on it — moving onto it hands control to
+    /// the machine it's displaying (see `SharedCross`). `None` clears it (you
+    /// own the panel now). No display is ever detached.
     SharedBlock { rect: Option<Rect> },
+    /// client -> host: my cursor moved onto the shared panel at relative
+    /// position `(fx, fy)` in 0..1. The panel shows the host, so the host takes
+    /// the cursor onto its own copy of the panel at the same relative spot.
+    SharedCross { fx: f32, fy: f32 },
+    /// host -> client: warp your cursor to this absolute point and take input
+    /// (used when control crosses onto your copy of the shared panel).
+    EnterAt { x: i32, y: i32 },
 }
 
 impl Msg {

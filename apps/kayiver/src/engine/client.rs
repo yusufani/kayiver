@@ -212,14 +212,31 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
                 platform::indicator::set_state(true, false);
                 debug!("cursor left; input released");
             }
+            Msg::EnterAt { x, y } => {
+                state.pos = (x, y);
+                state.injector.mouse_to(x, y, 0, 0);
+                state.active = true;
+                platform::indicator::set_state(true, true);
+                info!("cursor entered shared panel -> injecting at ({x},{y})");
+            }
             Msg::Input(ev) => {
                 debug!("input {ev:?} -> pos {:?}", state.pos);
-                if let Some((edge, ratio)) = state.apply(ev) {
-                    state.active = false;
-                    state.injector.release_all();
-                    platform::indicator::set_state(true, false);
-                    info!("pushed through {edge} edge -> returning control to host");
-                    writer.send(&Msg::CursorLeft { edge, ratio }).await?;
+                match state.apply(ev) {
+                    Some(Cross::Portal(edge, ratio)) => {
+                        state.active = false;
+                        state.injector.release_all();
+                        platform::indicator::set_state(true, false);
+                        info!("pushed through {edge} edge -> returning control to host");
+                        writer.send(&Msg::CursorLeft { edge, ratio }).await?;
+                    }
+                    Some(Cross::Shared(fx, fy)) => {
+                        state.active = false;
+                        state.injector.release_all();
+                        platform::indicator::set_state(true, false);
+                        info!("moved onto shared panel -> handing back to host");
+                        writer.send(&Msg::SharedCross { fx, fy }).await?;
+                    }
+                    None => {}
                 }
             }
             Msg::Ping(n) => writer.send(&Msg::Pong(n)).await?,
@@ -231,6 +248,13 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
             other => warn!("unexpected message: {other:?}"),
         }
     }
+}
+
+/// What a client input event triggered: a portal edge crossing, or moving onto
+/// the shared panel (hand control to the host).
+enum Cross {
+    Portal(Edge, f32),
+    Shared(f32, f32),
 }
 
 struct ClientState {
@@ -247,7 +271,7 @@ struct ClientState {
 impl ClientState {
     /// Apply one input event. Returns Some((edge, ratio)) when the cursor
     /// pushed through a portal edge and control should go back to the host.
-    fn apply(&mut self, ev: InputEvent) -> Option<(Edge, f32)> {
+    fn apply(&mut self, ev: InputEvent) -> Option<Cross> {
         if !self.active {
             // Events already in flight when we sent CursorLeft: drop them so
             // the cursor doesn't twitch after the handoff.
@@ -255,24 +279,19 @@ impl ClientState {
         }
         match ev {
             InputEvent::MouseMove { dx, dy } => {
-                let mut nx = self.pos.0 + dx;
-                let mut ny = self.pos.1 + dy;
-                // Skip over the shared monitor (as if it weren't there).
+                let nx = self.pos.0 + dx;
+                let ny = self.pos.1 + dy;
+                // Moving onto the shared panel (which is showing the host) hands
+                // control back to the host at the same relative spot.
                 if let Some(b) = self.blocked {
                     if kayiver_core::layout::point_in(b, nx, ny) {
-                        let (sx, sy) = kayiver_core::layout::skip_out(b, nx, ny, dx, dy);
-                        if kayiver_core::layout::point_in(self.bounds, sx, sy) {
-                            nx = sx;
-                            ny = sy;
-                        } else {
-                            let (bx, by) = kayiver_core::layout::skip_out(b, nx, ny, -dx, -dy);
-                            nx = bx;
-                            ny = by;
-                        }
+                        let fx = (nx - b.x) as f32 / b.w.max(1) as f32;
+                        let fy = (ny - b.y) as f32 / b.h.max(1) as f32;
+                        return Some(Cross::Shared(fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0)));
                     }
                 }
-                if let Some(hit) = self.portal_hit(nx, ny) {
-                    return Some(hit);
+                if let Some((edge, ratio)) = self.portal_hit(nx, ny) {
+                    return Some(Cross::Portal(edge, ratio));
                 }
                 self.pos.0 = nx.clamp(self.bounds.x, self.bounds.right() - 1);
                 self.pos.1 = ny.clamp(self.bounds.y, self.bounds.bottom() - 1);
