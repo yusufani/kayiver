@@ -191,35 +191,13 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
         portal_edges,
         pos: (bounds.x + bounds.w / 2, bounds.y + bounds.h / 2),
         active: false,
+        blocked: None,
     };
 
-    // Display attach/detach runs blocking on its own thread; results come
-    // back through this channel so injection never stalls.
-    let (dp_tx, mut dp_rx) = tokio::sync::mpsc::unbounded_channel::<Msg>();
-
     loop {
-        let msg = tokio::select! {
-            m = tokio::time::timeout(RECV_TIMEOUT, reader.recv()) => m.context("session timed out")??,
-            Some(result) = dp_rx.recv() => {
-                // A display was just attached/detached: our desktop geometry
-                // changed, so refresh the bounds that crossing + injection use
-                // (otherwise the cursor would land using the stale, pre-detach
-                // desktop and end up in the wrong place / on the hidden panel).
-                if matches!(&result, Msg::DisplayPowerResult { error: None, .. }) {
-                    let nb = platform::desktop_bounds();
-                    state.bounds = nb;
-                    state.injector = Injector::new()?;
-                    state.pos = (nb.x + nb.w / 2, nb.y + nb.h / 2);
-                    info!("desktop geometry refreshed after display change: {nb:?}");
-                    // Note: we intentionally don't send Msg::Monitors here — an
-                    // older host wouldn't decode it. The editor picks up the new
-                    // shape on the next reconnect; crossing is already correct
-                    // because it maps ratios against these refreshed bounds.
-                }
-                writer.send(&result).await?;
-                continue;
-            }
-        };
+        let msg = tokio::time::timeout(RECV_TIMEOUT, reader.recv())
+            .await
+            .context("session timed out")??;
         match msg {
             Msg::Enter { edge, ratio } => {
                 state.pos = point_on_edge(state.bounds, edge, ratio, EDGE_INSET);
@@ -245,16 +223,9 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
                 }
             }
             Msg::Ping(n) => writer.send(&Msg::Pong(n)).await?,
-            Msg::DisplayPower { index, expect, on } => {
-                info!("host asks: {} display {index}", if on { "attach" } else { "detach" });
-                let tx = dp_tx.clone();
-                std::thread::spawn(move || {
-                    let error = platform::set_display_enabled(index, Some(expect), on).err().map(|e| format!("{e:#}"));
-                    if let Some(e) = &error {
-                        warn!("display {index} {}: {e}", if on { "attach" } else { "detach" });
-                    }
-                    let _ = tx.send(Msg::DisplayPowerResult { index, on, error });
-                });
+            Msg::SharedBlock { rect } => {
+                info!("shared block -> {rect:?}");
+                state.blocked = rect;
             }
             Msg::Bye => return Ok(()),
             other => warn!("unexpected message: {other:?}"),
@@ -268,6 +239,9 @@ struct ClientState {
     portal_edges: Vec<Edge>,
     pos: (i32, i32),
     active: bool,
+    /// Shared monitor showing the host right now — the injected cursor skips
+    /// over it (never rests on it). None = no block.
+    blocked: Option<Rect>,
 }
 
 impl ClientState {
@@ -281,8 +255,22 @@ impl ClientState {
         }
         match ev {
             InputEvent::MouseMove { dx, dy } => {
-                let nx = self.pos.0 + dx;
-                let ny = self.pos.1 + dy;
+                let mut nx = self.pos.0 + dx;
+                let mut ny = self.pos.1 + dy;
+                // Skip over the shared monitor (as if it weren't there).
+                if let Some(b) = self.blocked {
+                    if kayiver_core::layout::point_in(b, nx, ny) {
+                        let (sx, sy) = kayiver_core::layout::skip_out(b, nx, ny, dx, dy);
+                        if kayiver_core::layout::point_in(self.bounds, sx, sy) {
+                            nx = sx;
+                            ny = sy;
+                        } else {
+                            let (bx, by) = kayiver_core::layout::skip_out(b, nx, ny, -dx, -dy);
+                            nx = bx;
+                            ny = by;
+                        }
+                    }
+                }
                 if let Some(hit) = self.portal_hit(nx, ny) {
                     return Some(hit);
                 }

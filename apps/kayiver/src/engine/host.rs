@@ -52,6 +52,8 @@ pub fn run(cfg: Config) -> Result<()> {
     let ctl = Arc::new(CaptureCtl::new(bounds));
     let (cap_tx, cap_rx) = mpsc::unbounded_channel();
     platform::start_capture(ctl.clone(), cap_tx).context("input capture failed to start")?;
+    // Keeps the local cursor off a shared monitor that's showing the peer.
+    platform::start_cursor_guard(ctl.clone());
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(host_main(cfg, ctl, cap_rx))
@@ -81,19 +83,12 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     tokio::spawn(accept_loop(listener, cfg.clone(), layout.clone(), sessions.clone(), evt_tx.clone()));
     tokio::spawn(watch_layout(layout.clone(), shared.clone(), ctl.clone(), evt_tx));
 
-    // Shared-monitor state: arm the hotkey and work out who owns the panel
-    // right now (a disabled local display means the peer is being shown).
+    // Shared-monitor state: arm the hotkey. On start the host owns the panel
+    // (its cursor is free; the peer is told to block its shared rect).
     let shared_peer = shared_peer_name(&cfg, &cfg.shared_monitor);
-    let mut shared_owner = cfg.name.clone();
+    let shared_owner = cfg.name.clone();
     if cfg.shared_monitor.configured() {
         ctl.shared_hotkey.store(cfg.shared_monitor.hotkey, Ordering::SeqCst);
-        if let Some(idx) = cfg.shared_monitor.local_index {
-            if platform::display_disabled(idx) == Some(true) {
-                if let Some(p) = &shared_peer {
-                    shared_owner = p.clone();
-                }
-            }
-        }
     }
     crate::ui::set_shared_state(
         cfg.shared_monitor.configured(),
@@ -273,31 +268,21 @@ impl Router {
         crate::ui::set_shared_owner(Some(owner));
         crate::ui::set_shared_error(None);
 
-        // Local side (blocking display reconfigure: off-thread). Skip when the
-        // display is already in the desired state. `local_rect` is the safety
-        // check: the backend refuses to detach anything but that exact monitor.
-        let local_idx = sm.local_index.unwrap();
-        let local_rect = sm.local_rect;
-        if platform::display_disabled(local_idx).map(|dis| dis == to_me).unwrap_or(true) {
-            std::thread::spawn(move || {
-                if let Err(e) = platform::set_display_enabled(local_idx, local_rect, to_me) {
-                    warn!("shared monitor, local display: {e:#}");
-                    crate::ui::set_shared_error(Some(format!("local display: {e}")));
-                }
-            });
-        }
+        // Cursor-skip model (no display is ever touched): the machine that is
+        // NOT being shown blocks its shared rect so the cursor skips over it.
+        // Local (host): block local_rect unless the host owns the panel.
+        *self.ctl.blocked.write().unwrap() = if to_me { None } else { sm.local_rect };
 
-        // Peer side: ask it to do the opposite with its own display; send the
-        // peer's shared-monitor geometry so it can make the same safety check.
-        let peer_rect = sm.peer_rect.unwrap_or(kayiver_core::proto::Rect { x: 0, y: 0, w: 0, h: 0 });
-        let msg = Msg::DisplayPower { index: sm.peer_index.unwrap(), expect: peer_rect, on: !to_me };
+        // Peer: block its rect when the host owns the panel; clear when it does.
+        let block = if to_me { sm.peer_rect } else { None };
+        let msg = Msg::SharedBlock { rect: block };
         let sent = {
             let sessions = self.sessions.lock().unwrap();
             sessions.get(&peer).map(|tx| tx.send(msg).is_ok()).unwrap_or(false)
         };
         if !sent {
-            warn!("shared monitor: peer '{peer}' offline — its display was not changed");
-            crate::ui::set_shared_error(Some(format!("{peer} offline — its display unchanged")));
+            warn!("shared monitor: peer '{peer}' offline");
+            crate::ui::set_shared_error(Some(format!("{peer} offline")));
         }
     }
 
@@ -306,6 +291,12 @@ impl Router {
             SessionEvent::Connected { name } => {
                 info!("client connected: {name}");
                 self.refresh_portals();
+                // Re-establish the shared-monitor block on the (re)connected
+                // peer to match the current owner.
+                if self.shared.read().unwrap().configured() {
+                    let owner = self.shared_owner.clone();
+                    self.set_shared_owner(&owner);
+                }
             }
             SessionEvent::Disconnected { name } => {
                 info!("client disconnected: {name}");

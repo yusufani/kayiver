@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -104,6 +104,11 @@ pub enum Msg {
     /// detached/attached), so the layout editor and crossing math use the
     /// current monitors instead of the ones from the initial `Hello`.
     Monitors { screen: Rect, monitors: Vec<Rect> },
+    /// host -> client: treat `rect` as a hole your cursor can't rest on — the
+    /// shared monitor while the OTHER machine is being shown on it. The cursor
+    /// skips over it to the next screen. `None` clears the block (you own the
+    /// panel now). No display is ever detached.
+    SharedBlock { rect: Option<Rect> },
 }
 
 impl Msg {

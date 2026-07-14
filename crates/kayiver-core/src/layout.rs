@@ -113,6 +113,43 @@ pub fn point_on_edge(bounds: Rect, edge: Edge, ratio: f32, inset: i32) -> (i32, 
     )
 }
 
+/// Is (x, y) inside `r`?
+pub fn point_in(r: Rect, x: i32, y: i32) -> bool {
+    x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
+}
+
+/// The cursor is inside the shared monitor `b` (which this machine must not
+/// show right now). Return the point just past `b` in the direction of travel
+/// `(dx, dy)`, so the cursor *skips over* the monitor onto whatever is beyond —
+/// as if that screen weren't there. If motion is ambiguous, pop out the nearest
+/// edge.
+pub fn skip_out(b: Rect, x: i32, y: i32, dx: i32, dy: i32) -> (i32, i32) {
+    if dx == 0 && dy == 0 {
+        // No direction: leave via the nearest edge.
+        let dl = x - b.x;
+        let dr = b.right() - x;
+        let dt = y - b.y;
+        let db = b.bottom() - y;
+        let m = dl.min(dr).min(dt).min(db);
+        return if m == dl {
+            (b.x - 1, y)
+        } else if m == dr {
+            (b.right(), y)
+        } else if m == dt {
+            (x, b.y - 1)
+        } else {
+            (x, b.bottom())
+        };
+    }
+    if dx.abs() >= dy.abs() {
+        if dx >= 0 { (b.right(), y) } else { (b.x - 1, y) }
+    } else if dy >= 0 {
+        (x, b.bottom())
+    } else {
+        (x, b.y - 1)
+    }
+}
+
 /// True if (x, y) is touching `edge` of `bounds` (cursor clamped at boundary).
 pub fn touches_edge(bounds: Rect, edge: Edge, x: i32, y: i32) -> bool {
     match edge {

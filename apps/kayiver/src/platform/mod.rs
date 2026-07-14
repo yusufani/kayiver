@@ -13,11 +13,11 @@
 //! latency trick: no round trip to the router before events are swallowed,
 //! so nothing ever double-applies locally and remotely.
 
-use std::sync::atomic::AtomicBool;
-use std::sync::{Mutex, RwLock};
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
-use kayiver_core::layout::Edge;
+use kayiver_core::layout::{point_in, skip_out, Edge};
 use kayiver_core::proto::Rect;
 
 pub struct CaptureCtl {
@@ -33,6 +33,10 @@ pub struct CaptureCtl {
     /// When set, Cmd/Ctrl+Alt+M is swallowed and reported as
     /// `Captured::SharedHotkey` (shared-monitor ownership toggle).
     pub shared_hotkey: AtomicBool,
+    /// Shared monitor this machine must NOT show right now: the cursor skips
+    /// over this rect (never rests on it) so it can't sit on a screen that's
+    /// physically displaying the other machine. None = no block.
+    pub blocked: RwLock<Option<Rect>>,
     pub bounds: Rect,
 }
 
@@ -43,9 +47,49 @@ impl CaptureCtl {
             portals: RwLock::new(Vec::new()),
             cooldown_until: Mutex::new(Instant::now()),
             shared_hotkey: AtomicBool::new(false),
+            blocked: RwLock::new(None),
             bounds,
         }
     }
+}
+
+/// Keep the local cursor out of a "blocked" shared-monitor rect: poll the
+/// cursor and, whenever it lands inside the block, warp it just past the far
+/// edge (in the direction it was moving) so it skips over that monitor as if it
+/// weren't there. Cheap busy-poll on its own thread; a no-op while nothing is
+/// blocked or while input is being forwarded. Works on any platform that has
+/// `cursor_pos` + `warp_cursor`.
+pub fn start_cursor_guard(ctl: Arc<CaptureCtl>) {
+    std::thread::Builder::new()
+        .name("kayiver-cursor-guard".into())
+        .spawn(move || {
+            let mut prev = cursor_pos();
+            loop {
+                std::thread::sleep(Duration::from_millis(8));
+                if ctl.forwarding.load(Ordering::SeqCst) {
+                    prev = cursor_pos();
+                    continue;
+                }
+                let Some(b) = *ctl.blocked.read().unwrap() else {
+                    prev = cursor_pos();
+                    continue;
+                };
+                let (x, y) = cursor_pos();
+                if point_in(b, x, y) {
+                    let (dx, dy) = (x - prev.0, y - prev.1);
+                    let mut out = skip_out(b, x, y, dx, dy);
+                    // If skipping forward would leave this desktop, bounce back.
+                    if !point_in(ctl.bounds, out.0, out.1) {
+                        out = skip_out(b, x, y, -dx, -dy);
+                    }
+                    warp_cursor(out.0, out.1);
+                    prev = out;
+                } else {
+                    prev = (x, y);
+                }
+            }
+        })
+        .ok();
 }
 
 #[cfg(target_os = "macos")]
