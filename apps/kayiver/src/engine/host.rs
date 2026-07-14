@@ -491,20 +491,69 @@ impl Router {
         platform::set_forwarding_visuals(false);
     }
 
-    /// Portal edges are only armed when the machine behind them is online.
+    /// Portal edges are only armed when the machine behind them is online —
+    /// and never when they're a shared-panel wall (the panel fills that whole
+    /// desktop edge and nothing sits beyond it). Arming a wall would let the
+    /// capture thread grab the cursor only for the router to bounce it back:
+    /// the brief stutter felt at B's far edge. Leaving it unarmed makes it a
+    /// plain desktop edge the cursor rests against.
     fn refresh_portals(&self) {
+        let sm = self.shared.read().unwrap().clone();
         let mut active = Vec::new();
         {
             let layout = self.layout.read().unwrap();
             for edge in layout.portals(&self.cfg.name) {
                 if let Some((peer, _)) = layout.target(&self.cfg.name, edge) {
-                    if self.sessions.lock().unwrap().contains_key(peer) {
-                        active.push(edge);
+                    if !self.sessions.lock().unwrap().contains_key(peer) {
+                        continue;
                     }
+                    if self.shared_edge_is_wall(&sm, peer, edge) {
+                        continue;
+                    }
+                    active.push(edge);
                 }
             }
         }
         *self.ctl.portals.write().unwrap() = active;
+    }
+
+    /// True when `edge` is a dead side of the shared panel: the panel spans the
+    /// entire desktop edge and the peer has no monitor beyond its copy of the
+    /// panel on that side. Such an edge leads nowhere, so it should stay a wall.
+    fn shared_edge_is_wall(&self, sm: &SharedMonitor, target_peer: &str, edge: Edge) -> bool {
+        let (Some(local), Some(prect)) = (sm.local_rect, sm.peer_rect) else { return false };
+        let Some(shared_peer) = shared_peer_name(&self.cfg, sm) else { return false };
+        if target_peer != shared_peer {
+            return false;
+        }
+        let b = self.ctl.bounds;
+        // Does the panel fill this whole desktop edge? (If it only covers part
+        // of it, another monitor might legitimately cross there — leave it.)
+        let spans = match edge {
+            Edge::Right => local.right() >= b.right() - 4 && local.y <= b.y + 4 && local.bottom() >= b.bottom() - 4,
+            Edge::Left => local.x <= b.x + 4 && local.y <= b.y + 4 && local.bottom() >= b.bottom() - 4,
+            Edge::Top => local.y <= b.y + 4 && local.x <= b.x + 4 && local.right() >= b.right() - 4,
+            Edge::Bottom => local.bottom() >= b.bottom() - 4 && local.x <= b.x + 4 && local.right() >= b.right() - 4,
+        };
+        if !spans {
+            return false;
+        }
+        // A peer monitor beyond the panel on this side makes it a real crossing.
+        let has_beyond = self
+            .peer_screens
+            .read()
+            .unwrap()
+            .get(&shared_peer)
+            .map(|screens| {
+                screens.iter().any(|m| match edge {
+                    Edge::Top => (m.bottom() - prect.y).abs() <= 8 && m.x < prect.right() && m.right() > prect.x,
+                    Edge::Bottom => (m.y - prect.bottom()).abs() <= 8 && m.x < prect.right() && m.right() > prect.x,
+                    Edge::Left => (m.right() - prect.x).abs() <= 8 && m.y < prect.bottom() && m.bottom() > prect.y,
+                    Edge::Right => (m.x - prect.right()).abs() <= 8 && m.y < prect.bottom() && m.bottom() > prect.y,
+                })
+            })
+            .unwrap_or(false);
+        !has_beyond
     }
 }
 
