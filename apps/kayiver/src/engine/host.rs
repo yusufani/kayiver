@@ -37,6 +37,10 @@ type Sessions = Arc<Mutex<HashMap<String, UnboundedSender<Msg>>>>;
 type SharedLayout = Arc<RwLock<Layout>>;
 /// Shared-monitor config, hot-reloaded together with the layout.
 type SharedCfg = Arc<RwLock<SharedMonitor>>;
+/// Live in-memory copy of each peer's monitor shapes, keyed by peer name.
+/// Updated when a peer reports geometry; read on the cursor hot path so a
+/// shared-edge crossing never has to touch the disk.
+type PeerScreens = Arc<RwLock<HashMap<String, Vec<kayiver_core::proto::Rect>>>>;
 
 enum SessionEvent {
     Connected { name: String },
@@ -82,9 +86,14 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
     let layout: SharedLayout = Arc::new(RwLock::new(cfg.layout.clone()));
     let shared: SharedCfg = Arc::new(RwLock::new(cfg.shared_monitor.clone()));
+    // Seed the live peer-screen cache from whatever the config last recorded,
+    // so a crossing works even before the peer sends a fresh geometry update.
+    let peer_screens: PeerScreens = Arc::new(RwLock::new(
+        cfg.peers.iter().map(|p| (p.name.clone(), p.screens.clone())).collect(),
+    ));
     let (evt_tx, mut evt_rx) = mpsc::unbounded_channel();
 
-    tokio::spawn(accept_loop(listener, cfg.clone(), layout.clone(), sessions.clone(), evt_tx.clone()));
+    tokio::spawn(accept_loop(listener, cfg.clone(), layout.clone(), sessions.clone(), peer_screens.clone(), evt_tx.clone()));
     tokio::spawn(watch_layout(layout.clone(), shared.clone(), ctl.clone(), evt_tx));
 
     // Shared-monitor state: arm the hotkey. On start the host owns the panel
@@ -104,6 +113,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         cfg: cfg.clone(),
         layout,
         shared,
+        peer_screens,
         shared_owner,
         ctl,
         sessions,
@@ -155,6 +165,7 @@ struct Router {
     cfg: Arc<Config>,
     layout: SharedLayout,
     shared: SharedCfg,
+    peer_screens: PeerScreens,
     /// Which machine the shared panel is currently showing (best knowledge).
     shared_owner: String,
     ctl: Arc<CaptureCtl>,
@@ -417,8 +428,10 @@ impl Router {
             Edge::Top | Edge::Bottom => ((ex - local.x) as f32 / local.w.max(1) as f32).clamp(0.0, 1.0),
             Edge::Left | Edge::Right => ((ey - local.y) as f32 / local.h.max(1) as f32).clamp(0.0, 1.0),
         };
-        // Find the peer monitor adjacent to peer_rect on the same side.
-        let screens = Config::load_or_init().ok().and_then(|c| c.peer(&peer).map(|p| p.screens.clone())).unwrap_or_default();
+        // Find the peer monitor adjacent to peer_rect on the same side. Read
+        // from the live in-memory cache — never the disk — so this stays on the
+        // fast path while the cursor is pressed against the shared edge.
+        let screens = self.peer_screens.read().unwrap().get(&peer).cloned().unwrap_or_default();
         let adj = screens.into_iter().find(|m| match edge {
             Edge::Top => (m.bottom() - prect.y).abs() <= 8 && m.x < prect.right() && m.right() > prect.x,
             Edge::Bottom => (m.y - prect.bottom()).abs() <= 8 && m.x < prect.right() && m.right() > prect.x,
@@ -542,22 +555,23 @@ async fn watch_layout(
     }
 }
 
-async fn accept_loop(listener: TcpListener, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, evt_tx: UnboundedSender<SessionEvent>) {
+async fn accept_loop(listener: TcpListener, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, evt_tx: UnboundedSender<SessionEvent>) {
     loop {
         let Ok((stream, addr)) = listener.accept().await else { return };
         let cfg = cfg.clone();
         let layout = layout.clone();
         let sessions = sessions.clone();
+        let peer_screens = peer_screens.clone();
         let evt_tx = evt_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, cfg, layout, sessions, evt_tx).await {
+            if let Err(e) = handle_conn(stream, cfg, layout, sessions, peer_screens, evt_tx).await {
                 debug!("connection from {addr}: {e}");
             }
         });
     }
 }
 
-async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, evt_tx: UnboundedSender<SessionEvent>) -> Result<()> {
+async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, evt_tx: UnboundedSender<SessionEvent>) -> Result<()> {
     stream.set_nodelay(true)?;
     let intro = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stream)).await??;
     let name = match Intro::decode(&intro)? {
@@ -585,7 +599,7 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
 
     // Cache the peer's monitor shapes + OS so the layout editor can draw them
     // and map its display indices.
-    cache_peer_screens(&name, &monitors, Some(&os));
+    cache_peer_screens(&name, &monitors, Some(&os), &peer_screens);
 
     let portal_edges = { layout.read().unwrap().portals(&name) };
     writer
@@ -660,7 +674,7 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
                     // The peer's desktop changed (a display was attached/detached);
                     // refresh the cache so the editor and crossing use the new shape.
                     debug!("{name}: geometry update, {} monitors", monitors.len());
-                    cache_peer_screens(&name, &monitors, None);
+                    cache_peer_screens(&name, &monitors, None, &peer_screens);
                 }
                 Msg::Bye => return Ok(()),
                 other => debug!("unexpected from {name}: {other:?}"),
@@ -679,10 +693,12 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
 /// Persist a peer's monitor shapes (and optionally its OS) so the layout
 /// editor can draw them and map display indices. Called from the initial
 /// Hello and from later `Monitors` geometry updates.
-fn cache_peer_screens(name: &str, monitors: &[kayiver_core::proto::Rect], os: Option<&str>) {
+fn cache_peer_screens(name: &str, monitors: &[kayiver_core::proto::Rect], os: Option<&str>, live: &PeerScreens) {
     if monitors.is_empty() {
         return;
     }
+    // Live cache first (cheap, read on the cursor hot path); disk after.
+    live.write().unwrap().insert(name.to_string(), monitors.to_vec());
     if let Ok(mut fresh) = Config::load_or_init() {
         if let Some(p) = fresh.peers.iter_mut().find(|p| p.name == name) {
             let os_changed = os.map(|o| p.os.as_deref() != Some(o)).unwrap_or(false);
