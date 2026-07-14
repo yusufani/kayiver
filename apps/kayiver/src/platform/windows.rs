@@ -514,6 +514,12 @@ pub fn warp_cursor(x: i32, y: i32) {
     }
 }
 
+/// Windows has no post-warp event suppression; identical to `warp_cursor`.
+/// Exists so the cross-platform return path can call one name.
+pub fn warp_cursor_settled(x: i32, y: i32) {
+    warp_cursor(x, y);
+}
+
 #[allow(dead_code)]
 pub fn cursor_pos() -> (i32, i32) {
     let mut p = POINT::default();

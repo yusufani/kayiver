@@ -47,6 +47,7 @@ pub fn start_capture(_ctl: Arc<CaptureCtl>, _tx: UnboundedSender<Captured>) -> R
 pub fn set_forwarding_visuals(_on: bool) {}
 
 pub fn warp_cursor(_x: i32, _y: i32) {}
+pub fn warp_cursor_settled(_x: i32, _y: i32) {}
 
 #[allow(dead_code)]
 pub fn cursor_pos() -> (i32, i32) {

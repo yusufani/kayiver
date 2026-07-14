@@ -254,7 +254,7 @@ impl Router {
                 self.send_to_focus(Msg::Leave);
                 self.focus = None;
                 let b = self.ctl.bounds;
-                platform::warp_cursor(b.x + b.w / 2, b.y + b.h / 2);
+                platform::warp_cursor_settled(b.x + b.w / 2, b.y + b.h / 2);
             }
             Captured::SharedHotkey => self.set_shared_owner("toggle"),
             Captured::SharedEnter { fx, fy } => {
@@ -361,7 +361,7 @@ impl Router {
                     self.exit_forwarding();
                     let x = r.x + (fx * r.w as f32) as i32;
                     let y = r.y + (fy * r.h as f32) as i32;
-                    platform::warp_cursor(x, y);
+                    platform::warp_cursor_settled(x, y);
                     info!("cursor -> {} (onto shared panel)", self.cfg.name);
                 }
             }
@@ -481,7 +481,7 @@ impl Router {
     fn return_local_at(&self, entry_edge: Edge, ratio: f32) {
         let (x, y) = kayiver_core::layout::point_on_edge(self.ctl.bounds, entry_edge, ratio, EDGE_INSET);
         self.exit_forwarding();
-        platform::warp_cursor(x, y);
+        platform::warp_cursor_settled(x, y);
         crate::ui::set_cross_flash(entry_edge); // cursor arrived back on this machine
     }
 

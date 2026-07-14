@@ -404,6 +404,19 @@ pub fn warp_cursor(x: i32, y: i32) {
     }
 }
 
+/// Warp the cursor AND immediately cancel macOS's post-warp local-events
+/// suppression (~0.25 s, during which physical mouse moves are swallowed).
+/// Re-associating right after the warp defeats that window, so control feels
+/// instant when it returns to this machine. Use ONLY when regaining local
+/// control — the plain `warp_cursor` (cursor parked while forwarding) must not
+/// re-associate, or it would reconnect the frozen pointer mid-session.
+pub fn warp_cursor_settled(x: i32, y: i32) {
+    unsafe {
+        CGWarpMouseCursorPosition(CGPoint { x: x as f64, y: y as f64 });
+        CGAssociateMouseAndMouseCursorPosition(1);
+    }
+}
+
 #[allow(dead_code)]
 pub fn cursor_pos() -> (i32, i32) {
     unsafe {
