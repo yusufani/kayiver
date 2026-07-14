@@ -109,6 +109,27 @@ pub fn url() -> String {
     format!("http://127.0.0.1:{UI_PORT}")
 }
 
+/// A one-shot crossing signal for the on-screen overlay animation: the edge the
+/// cursor just crossed (1=left 2=right 3=top 4=bottom), 0 = none. Set by the
+/// host router on a crossing; drained by the macOS overlay each frame.
+pub static CROSS_FLASH: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_cross_flash(edge: kayiver_core::layout::Edge) {
+    use kayiver_core::layout::Edge;
+    let v = match edge {
+        Edge::Left => 1,
+        Edge::Right => 2,
+        Edge::Top => 3,
+        Edge::Bottom => 4,
+    };
+    CROSS_FLASH.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Take and clear the pending crossing flash (0 = none).
+pub fn take_cross_flash() -> u8 {
+    CROSS_FLASH.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Talk to a running kayiver's local API over plain TCP (no HTTP client dep).
 /// Used by the CLI (`kayiver monitor`) and the macOS menu-bar shell.
 pub fn local_api(method: &str, path: &str, body: Option<&str>) -> anyhow::Result<(u16, String)> {

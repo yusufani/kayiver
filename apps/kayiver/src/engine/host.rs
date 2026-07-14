@@ -217,6 +217,7 @@ impl Router {
                 match self.layout_target(&self.cfg.name, edge) {
                     Some((peer, entry_edge)) if self.session_exists(&peer) => {
                         info!("cursor -> {peer} (via {edge} edge)");
+                        crate::ui::set_cross_flash(edge);
                         self.focus = Some(peer);
                         self.send_to_focus(Msg::Enter { edge: entry_edge, ratio });
                     }
@@ -362,6 +363,7 @@ impl Router {
         let (x, y) = kayiver_core::layout::point_on_edge(self.ctl.bounds, entry_edge, ratio, EDGE_INSET);
         self.exit_forwarding();
         platform::warp_cursor(x, y);
+        crate::ui::set_cross_flash(entry_edge); // cursor arrived back on this machine
     }
 
     fn exit_forwarding(&self) {

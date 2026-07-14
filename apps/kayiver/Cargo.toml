@@ -39,6 +39,9 @@ features = [
 ]
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = "0.3.2"
+objc2-foundation = "0.3.2"
 png = "0.18.1"
 tao = "0.35.3"
 tray-icon = "0.24.1"
