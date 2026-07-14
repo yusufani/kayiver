@@ -200,7 +200,12 @@ fn run_shell(_open_window_now: bool) -> Result<()> {
                 }
                 Err(e) => eprintln!("editor window failed: {e:#}"),
             }
-            overlay = open_overlay(target).map_err(|e| eprintln!("overlay failed: {e:#}")).ok();
+            // Overlay is OFF: the transparent window rendered opaque white and
+            // covered a whole monitor. Disabled until it's verified see-through
+            // on-screen. `KAYIVER_OVERLAY=1` opts in for testing.
+            if std::env::var("KAYIVER_OVERLAY").as_deref() == Ok("1") {
+                overlay = open_overlay(target).map_err(|e| eprintln!("overlay failed: {e:#}")).ok();
+            }
         }
 
         match event {
