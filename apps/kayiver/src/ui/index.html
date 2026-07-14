@@ -256,6 +256,13 @@
     <h2>Ayarlar</h2>
     <div class="subttl" id="setSub">—</div>
     <div class="srow">
+      <div class="lbl"><b id="langLbl">Dil</b></div>
+      <select id="setLang" style="background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font:inherit;font-size:13px;cursor:pointer">
+        <option value="tr">Türkçe</option>
+        <option value="en">English</option>
+      </select>
+    </div>
+    <div class="srow">
       <div class="lbl"><b>Ortak monitör kısayolu</b><small><kbd id="hkLabel">⌘⌥M</kbd> ile paneli el değiştir</small></div>
       <label class="switch"><input type="checkbox" id="setHotkey"><span class="slider"></span></label>
     </div>
@@ -274,6 +281,98 @@
 </div>
 
 <script>
+
+// ---------------------------------------------------------------- i18n ----
+const I18N = {
+  tr: {
+    sub: "tek klavye & fare, bütün ekranlar — her monitörü ayrı sürükle",
+    connecting: "bağlanıyor…", settings: "Ayarlar", layout: "Yerleşim", save: "Kaydet",
+    layoutHint: "her monitörü ayrı ayrı sürükle; kenarlar değince geçiş olur",
+    sharedTitle: "Ortak monitör",
+    hint1a: "bir monitörü diğer makinenin monitörüne ", hintTouch: "değdir", hint1b: " = geçiş · ",
+    hintDrop: "üstüne bırak", hint1c: " = ortak panel", hintPanic: "panik: 3× ", hintShared: " · ortak monitör: ",
+    hkShort: "Ortak monitör kısayolu", hkDesc: " ile paneli el değiştir",
+    autostart: "Girişte başlat", autostartDesc: "oturum açılınca kayıver kendiliğinden çalışsın",
+    remote: "Telefon / LAN kumandası", remoteDesc: "Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)",
+    cfgFile: "Config dosyası", close: "Kapat", language: "Dil",
+    thisMachine: "(bu makine)", running: "kayıver çalışıyor", stopped: "çalışmıyor", unreachable: "ulaşılamıyor",
+    host: "ana makine", connected: "bağlı", offline: "çevrimdışı",
+    linkProblem: "⚠ bağlantı sorunu: ",
+    dragHint: "her monitörü ayrı ayrı sürükle; kenarlar değince geçiş olur",
+    noTouch: "hiçbir monitör değmiyor — bir makinenin monitörünü diğerine değdir",
+    saved: "kaydedildi ✓ — ~2 sn içinde uygulanır", saveFail: "kaydedilemedi: ",
+    reach: "kayıver'a ulaşılamıyor: ",
+    makeShared: "ortak panel yap", removeShared: "ortak panel ✓ (kaldır)",
+    sharedSaved: "ortak panel kaydedildi ✓", sharedRemoved: "ortak panel kaldırıldı",
+    sharedNone: "Tek panel iki makinede mi? Bir makinenin o monitörünü diğerinin karşılık gelen monitörünün ÜSTÜNE bırak.",
+    panelShows: "Panel şu an ", panelShowsEnd: " ekranını gösteriyor.", panelUnknown: "Panel durumu bilinmiyor.",
+    removeSetting: "ayarı kaldır",
+    saving: "kaydediliyor…", savedOk: "kaydedildi ✓", errPre: "hata: ",
+    autostartOn: "girişte başlatma açıldı", autostartOff: "kapatıldı",
+    remoteNote: "kayıver'ı yeniden başlatınca aktifleşir",
+    port: "port",
+  },
+  en: {
+    sub: "one keyboard & mouse, every screen — drag each monitor",
+    connecting: "connecting…", settings: "Settings", layout: "Layout", save: "Save",
+    layoutHint: "drag each monitor; touching edges become crossings",
+    sharedTitle: "Shared monitor",
+    hint1a: "touch one machine's monitor to another's ", hintTouch: "= crossing", hint1b: " · ",
+    hintDrop: "drop on top", hint1c: " = shared panel", hintPanic: "panic: 3x ", hintShared: " · shared monitor: ",
+    hkShort: "Shared-monitor shortcut", hkDesc: " to hand over the panel",
+    autostart: "Start at login", autostartDesc: "run kayiver automatically when you log in",
+    remote: "Phone / LAN control", remoteDesc: "token-protected local API for the Android app (takes effect after a restart)",
+    cfgFile: "Config file", close: "Close", language: "Language",
+    thisMachine: "(this machine)", running: "kayiver running", stopped: "not running", unreachable: "unreachable",
+    host: "host", connected: "connected", offline: "offline",
+    linkProblem: "⚠ connection issue: ",
+    dragHint: "drag each monitor; touching edges become crossings",
+    noTouch: "nothing touches — drag one machine's monitor to another's",
+    saved: "saved ✓ — applies within ~2 s", saveFail: "save failed: ",
+    reach: "can't reach kayiver: ",
+    makeShared: "make shared panel", removeShared: "shared panel ✓ (remove)",
+    sharedSaved: "shared panel saved ✓", sharedRemoved: "shared panel removed",
+    sharedNone: "One panel on both machines? Drop that monitor onto the matching monitor of the other machine.",
+    panelShows: "The panel is showing ", panelShowsEnd: " right now.", panelUnknown: "Panel state unknown.",
+    removeSetting: "remove setting",
+    saving: "saving…", savedOk: "saved ✓", errPre: "error: ",
+    autostartOn: "start-at-login enabled", autostartOff: "disabled",
+    remoteNote: "takes effect after you restart kayiver",
+    port: "port",
+  },
+};
+let lang = localStorage.getItem('kayiver-lang') || (navigator.language && navigator.language.startsWith('tr') ? 'tr' : 'en');
+const t = k => (I18N[lang] && I18N[lang][k]) || I18N.en[k] || k;
+function applyStaticI18n() {
+  document.documentElement.lang = lang;
+  const set = (sel, txt) => { const e = document.querySelector(sel); if (e) e.textContent = txt; };
+  set('.brand .sub', t('sub'));
+  document.querySelector('#gear').title = t('settings');
+  set('#layoutCard .title', t('layout'));
+  const me = document.getElementById('msg');
+  if (me && !me.className) me.textContent = t('layoutHint');
+  set('#save', t('save'));
+  set('#sharedCard .title', t('sharedTitle'));
+  document.querySelector('.hint').innerHTML =
+    t('hint1a') + '<b>' + t('hintTouch') + '</b>' + t('hint1b') + '<b>' + t('hintDrop') + '</b>' + t('hint1c') +
+    '<br>' + t('hintPanic') + '<kbd>Esc</kbd>' + t('hintShared') + '<kbd id="hotkeyHint">' + hk() + '</kbd>';
+  // settings modal
+  document.querySelector('#settings h2').textContent = t('settings');
+  const ll = document.getElementById('langLbl'); if (ll) ll.textContent = t('language');
+  const rows = document.querySelectorAll('#settings .srow .lbl b');
+  if (rows[1]) rows[1].textContent = t('hkShort');
+  if (rows[2]) rows[2].textContent = t('autostart');
+  if (rows[3]) rows[3].textContent = t('remote');
+  if (rows[4]) rows[4].textContent = t('cfgFile');
+  const smalls = document.querySelectorAll('#settings .srow .lbl small');
+  if (smalls[0]) smalls[0].innerHTML = '<kbd id="hkLabel">' + hk() + '</kbd>' + t('hkDesc');
+  if (smalls[1]) smalls[1].textContent = t('autostartDesc');
+  if (smalls[2]) smalls[2].textContent = t('remoteDesc');
+  set('#setClose', t('close'));
+}
+function hk() { return /Mac/.test(navigator.platform) ? '⌘⌥M' : 'Ctrl+Alt+M'; }
+function setLang(l) { lang = l; localStorage.setItem('kayiver-lang', l); applyStaticI18n(); renderSharedCard(); renderLegend(); }
+
 const SNAP = 16;
 const OVERLAP_MIN = 0.30;
 // machine colors: index 0 = me (teal), then distinct hues for peers.
@@ -512,7 +611,7 @@ function renderLegend() {
   for (const m of machines) {
     const col = COLORS[m.colorIdx % COLORS.length];
     const d = document.createElement('div'); d.className = 'legchip';
-    d.innerHTML = '<span class="legdot" style="background:' + col.c + '"></span>' + m.name + (m.me ? ' (bu makine)' : '');
+    d.innerHTML = '<span class="legdot" style="background:' + col.c + '"></span>' + m.name + (m.me ? ' ' + t('thisMachine') : '');
     el.appendChild(d);
   }
 }
@@ -547,7 +646,7 @@ function updateOverlap() {
   best.a.el.classList.add('overlap'); best.b.el.classList.add('overlap');
   const already = sharedCfg && sharedCfg.peer === best.peer &&
     sharedCfg.local_monitor === best.meMon && sharedCfg.peer_monitor === best.peerMon;
-  sharedBtn.textContent = already ? 'ortak panel ✓ (kaldır)' : 'ortak panel yap';
+  sharedBtn.textContent = already ? t('removeShared') : t('makeShared');
   sharedBtn.dataset.remove = already ? '1' : '';
   sharedBtn.style.left = best.cx + 'px'; sharedBtn.style.top = best.cy + 'px';
   sharedBtn.style.display = 'block';
@@ -557,12 +656,12 @@ sharedBtn.addEventListener('click', async () => {
   if (!candidate) return;
   if (sharedBtn.dataset.remove === '1') {
     await fetch('/api/shared-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) });
-    sharedCfg = null; setMsg('ortak panel kaldırıldı', 'ok');
+    sharedCfg = null; setMsg(t('sharedRemoved'), 'ok');
   } else {
     const body = { local_monitor: candidate.meMon, peer: candidate.peer, peer_monitor: candidate.peerMon, hotkey: settings.hotkey !== false };
     const r = await fetch('/api/shared-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (r.ok) { sharedCfg = body; setMsg('ortak panel kaydedildi ✓', 'ok'); }
-    else { setMsg('kaydedilemedi: ' + await r.text(), 'err'); return; }
+    if (r.ok) { sharedCfg = body; setMsg(t('sharedSaved'), 'ok'); }
+    else { setMsg(t('saveFail') + await r.text(), 'err'); return; }
   }
   sharedBtn.style.display = 'none'; candidate = null;
   layoutSharedStack(); renderSharedBadges(); renderSharedCard(); refreshSnap();
@@ -585,12 +684,12 @@ function renderSharedCard() {
   const act = document.getElementById('sharedActions');
   who.innerHTML = ''; act.innerHTML = ''; msg.className = '';
   if (!sharedCfg) {
-    msg.textContent = 'Tek panel iki makinede mi? Bir makinenin o monitörünü diğerinin karşılık gelen monitörünün ÜSTÜNE bırak.';
+    msg.textContent = t('sharedNone');
     return;
   }
   const owner = sharedLive.owner, err = sharedLive.error;
   msg.className = err ? 'err' : '';
-  msg.textContent = err ? err : (owner ? 'Panel şu an ' + owner + ' ekranını gösteriyor.' : 'Panel durumu bilinmiyor.');
+  msg.textContent = err ? err : (owner ? t('panelShows') + owner + t('panelShowsEnd') : t('panelUnknown'));
   for (const m of machines) {
     const b = document.createElement('button');
     b.className = 'ghost small owner-btn' + (owner === m.name ? ' active' : '');
@@ -602,7 +701,7 @@ function renderSharedCard() {
     who.appendChild(b);
   }
   const clear = document.createElement('button');
-  clear.className = 'linklike'; clear.textContent = 'ayarı kaldır';
+  clear.className = 'linklike'; clear.textContent = t('removeSetting');
   clear.onclick = async () => {
     await fetch('/api/shared-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) });
     // un-stack: nudge the peer tile off the pile so they're separable again
@@ -630,12 +729,12 @@ async function poll() {
   try {
     const st = await (await fetch('/api/status')).json();
     document.getElementById('hostDot').className = 'dot ' + (st.running ? 'on' : 'off');
-    document.getElementById('hostTxt').textContent = st.running ? 'kayıver çalışıyor' : 'çalışmıyor';
+    document.getElementById('hostTxt').textContent = st.running ? t('running') : t('stopped');
 
     const banner = document.getElementById('banner');
     if (st.link_error) {
       banner.style.display = 'block';
-      banner.textContent = '⚠ bağlantı sorunu: ' + st.link_error;
+      banner.textContent = t('linkProblem') + st.link_error;
     } else {
       banner.style.display = 'none';
     }
@@ -653,16 +752,16 @@ async function poll() {
     }
   } catch (_) {
     document.getElementById('hostDot').className = 'dot off';
-    document.getElementById('hostTxt').textContent = 'ulaşılamıyor';
+    document.getElementById('hostTxt').textContent = t('unreachable');
   }
   setTimeout(poll, 1000);
 }
 
 document.getElementById('save').addEventListener('click', async () => {
   const links = currentLinks();
-  if (machines.length > 1 && links.length === 0) { setMsg('hiçbir monitör değmiyor — bir makinenin monitörünü diğerine değdir', 'err'); return; }
+  if (machines.length > 1 && links.length === 0) { setMsg(t('noTouch'), 'err'); return; }
   const r = await fetch('/api/layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(links) });
-  setMsg(r.ok ? 'kaydedildi ✓ — ~2 sn içinde uygulanır' : 'kaydedilemedi: ' + await r.text(), r.ok ? 'ok' : 'err');
+  setMsg(r.ok ? t('saved') : t('saveFail') + await r.text(), r.ok ? 'ok' : 'err');
 });
 
 // -------------------------------------------------------------- settings ----
@@ -671,10 +770,11 @@ const overlay = document.getElementById('overlay');
 const setMsgEl = document.getElementById('setMsg');
 async function openSettings() {
   try { settings = await (await fetch('/api/settings')).json(); } catch (e) { settings = {}; }
-  document.getElementById('setSub').textContent = (settings.name || '?') + ' · ' + (settings.mode || '?') + ' · port ' + (settings.port || '?');
+  document.getElementById('setSub').textContent = (settings.name || '?') + ' · ' + (settings.mode || '?') + ' · ' + t('port') + ' ' + (settings.port || '?');
   document.getElementById('setHotkey').checked = settings.hotkey !== false;
   document.getElementById('setAutostart').checked = !!settings.autostart;
   document.getElementById('setRemote').checked = !!settings.remote_enabled;
+  document.getElementById('setLang').value = lang;
   document.getElementById('cfgPath').textContent = settings.config_path || '';
   renderRemoteInfo(); setMsgEl.textContent = ''; overlay.style.display = 'flex';
 }
@@ -685,27 +785,29 @@ function renderRemoteInfo() {
   else box.style.display = 'none';
 }
 async function saveSetting(patch, note) {
-  setMsgEl.textContent = 'kaydediliyor…';
+  setMsgEl.textContent = t('saving');
   try {
     const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
     if (!r.ok) throw new Error(await r.text());
-    settings = await r.json(); renderRemoteInfo(); setMsgEl.textContent = note || 'kaydedildi ✓';
-  } catch (e) { setMsgEl.textContent = 'hata: ' + e.message; }
+    settings = await r.json(); renderRemoteInfo(); setMsgEl.textContent = note || t('savedOk');
+  } catch (e) { setMsgEl.textContent = t('errPre') + e.message; }
 }
+document.getElementById('setLang').addEventListener('change', e => setLang(e.target.value));
 document.getElementById('gear').addEventListener('click', openSettings);
 document.getElementById('setClose').addEventListener('click', closeSettings);
 overlay.addEventListener('click', e => { if (e.target === overlay) closeSettings(); });
 document.getElementById('setHotkey').addEventListener('change', e => saveSetting({ hotkey: e.target.checked }));
-document.getElementById('setAutostart').addEventListener('change', e => saveSetting({ autostart: e.target.checked }, e.target.checked ? 'girişte başlatma açıldı' : 'kapatıldı'));
-document.getElementById('setRemote').addEventListener('change', e => saveSetting({ remote_enabled: e.target.checked }, 'kayıver\'ı yeniden başlatınca aktifleşir'));
+document.getElementById('setAutostart').addEventListener('change', e => saveSetting({ autostart: e.target.checked }, e.target.checked ? t('autostartOn') : t('autostartOff')));
+document.getElementById('setRemote').addEventListener('change', e => saveSetting({ remote_enabled: e.target.checked }, t('remoteNote')));
 
 window.addEventListener('resize', () => mons.forEach(t => { clamp(t); pos(t); }));
 (async () => {
   const s = await (await fetch('/api/state')).json();
+  applyStaticI18n();
   stateSig = stateSignature(s);
   buildFromState(s);
   poll();
-})().catch(e => setMsg("kayıver'a ulaşılamıyor: " + e, 'err'));
+})().catch(e => setMsg(t('reach') + e, 'err'));
 </script>
 </body>
 </html>
