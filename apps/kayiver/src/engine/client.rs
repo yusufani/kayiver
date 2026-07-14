@@ -73,6 +73,7 @@ pub fn run(cfg: Config) -> Result<()> {
                 }
             }
             platform::indicator::set_state(false, false);
+            platform::passive::show(None); // clear the passive notice when disconnected
             crate::ui::set_connected(&host_name, false);
             tokio::time::sleep(backoff).await;
         }
@@ -243,6 +244,11 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
             Msg::SharedBlock { rect } => {
                 info!("shared block -> {rect:?}");
                 state.blocked = rect;
+                platform::passive::show(rect.map(|r| {
+                    (r, "Diğer makine gösteriliyor. Fiziksel girişi bu makineye alıp \
+                         Ctrl+Alt+M'e basınca imleç buraya gelir."
+                        .to_string())
+                }));
             }
             Msg::Bye => return Ok(()),
             other => warn!("unexpected message: {other:?}"),

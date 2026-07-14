@@ -119,6 +119,19 @@ pub use stub::*;
 
 #[cfg(target_os = "windows")]
 mod tray_windows;
+#[cfg(target_os = "windows")]
+mod passive_windows;
+
+/// A full-screen notice drawn on the shared monitor while it's showing the
+/// OTHER machine (this machine's copy is passive). `show(None)` clears it.
+/// Implemented on Windows; a no-op elsewhere for now.
+pub mod passive {
+    use kayiver_core::proto::Rect;
+    pub fn show(_state: Option<(Rect, String)>) {
+        #[cfg(target_os = "windows")]
+        super::passive_windows::show(_state);
+    }
+}
 
 /// Cross-platform status indicator (system tray / menu bar). Implemented on
 /// Windows; a no-op elsewhere for now.
