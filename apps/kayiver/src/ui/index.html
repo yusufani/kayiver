@@ -178,6 +178,25 @@
   .switch input:checked + .slider::before { transform: translateX(18px); }
   #settings .foot { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
   #setMsg { font-size: 12px; color: var(--muted); min-height: 16px; flex: 1; }
+
+  /* ---- responsive: narrow / short windows ---- */
+  @media (max-width: 760px) {
+    header { flex-wrap: wrap; gap: 8px 14px; padding: 12px 16px 8px; }
+    .brand .sub { display: none; }
+    .statusbar { margin-left: auto; gap: 10px; }
+    .legend { display: none; }
+    #canvas { margin: 4px 14px; }
+    footer { flex-wrap: wrap; gap: 10px; padding: 10px 16px 14px; }
+    #layoutCard, #sharedCard { flex: 1 1 100%; }
+    .hint { display: none; }
+    #msg, #sharedMsg { max-width: none; }
+  }
+  @media (max-height: 560px) {
+    header { padding: 8px 16px 4px; }
+    .brand .sub { display: none; }
+    footer { padding: 8px 16px 10px; }
+    .card { padding: 8px 12px; }
+  }
 </style>
 </head>
 <body>
@@ -305,7 +324,10 @@ function buildFromState(s) {
 
   let maxW = 1;
   for (const m of s.machines) maxW = Math.max(maxW, bbox(m.monitors).w);
-  const scale = Math.min(0.075, 320 / maxW);
+  // Scale so the widest machine takes ~40% of the canvas (min 150px) — keeps
+  // multi-machine layouts inside small windows too.
+  const targetW = Math.max(150, Math.min(340, canvas.clientWidth * 0.4));
+  const scale = Math.min(0.075, targetW / maxW);
 
   // per-machine cluster origins from the saved links
   const clusterPos = placeMachines(s.machines, s.links, scale);
@@ -324,6 +346,14 @@ function buildFromState(s) {
     });
   }
   mons.forEach(makeTile);
+  // Center the whole arrangement in the canvas so nothing hugs one edge.
+  if (mons.length) {
+    const minx = Math.min(...mons.map(t => t.x)), maxx = Math.max(...mons.map(t => t.x + t.w));
+    const miny = Math.min(...mons.map(t => t.y)), maxy = Math.max(...mons.map(t => t.y + t.h));
+    const dx = (canvas.clientWidth - (maxx - minx)) / 2 - minx;
+    const dy = (canvas.clientHeight - (maxy - miny)) / 2 - miny;
+    mons.forEach(t => { t.x += dx; t.y += dy; });
+  }
   mons.forEach(t => clamp(t));
   mons.forEach(pos);
   layoutSharedStack();
