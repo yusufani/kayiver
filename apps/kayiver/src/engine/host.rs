@@ -468,8 +468,16 @@ impl Router {
                 let peer = shared_peer_name(&self.cfg, &sm);
                 if let (Some(peer), Some(pr)) = (peer, sm.peer_rect) {
                     if self.session_exists(&peer) {
-                        let x = pr.x + (fx * pr.w as f32) as i32;
-                        let y = pr.y + (fy * pr.h as f32) as i32;
+                        // Keep the landing a few px off the panel edges. The
+                        // panel's edge often coincides with the peer's own
+                        // desktop portal edge, so landing exactly on it (e.g.
+                        // fx=0 at the left) makes the peer immediately detect a
+                        // portal hit and bounce control right back — the cursor
+                        // "crosses" but never actually moves on the peer.
+                        let x = (pr.x + (fx * pr.w as f32) as i32)
+                            .clamp(pr.x + EDGE_INSET, pr.right() - 1 - EDGE_INSET);
+                        let y = (pr.y + (fy * pr.h as f32) as i32)
+                            .clamp(pr.y + EDGE_INSET, pr.bottom() - 1 - EDGE_INSET);
                         self.ctl.forwarding.store(true, Ordering::SeqCst);
                         platform::set_forwarding_visuals(true);
                         self.focus = Some(peer);
@@ -1036,13 +1044,6 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
                         crate::ui::set_rtt(&name, sent.elapsed().as_secs_f64() * 1000.0);
                     }
                 }
-                Msg::DisplayPowerResult { index, on, error } => match error {
-                    None => info!("{name}: display {index} {}", if on { "attached" } else { "detached" }),
-                    Some(e) => {
-                        warn!("{name}: display {index} {} failed: {e}", if on { "attach" } else { "detach" });
-                        crate::ui::set_shared_error(Some(format!("{name}: {e}")));
-                    }
-                },
                 Msg::Monitors { monitors, .. } => {
                     // The peer's desktop changed (a display was attached/detached);
                     // refresh the cache so the editor and crossing use the new shape.

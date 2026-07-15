@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -91,15 +91,6 @@ pub enum Msg {
     Ping(u64),
     Pong(u64),
     Bye,
-    /// host -> client: attach (`on`) or detach one of your displays. Used for
-    /// the shared-monitor flow: the machine the panel is NOT showing detaches
-    /// it so its cursor can't wander onto an invisible screen. `expect` is the
-    /// geometry of the display we mean — the client refuses to detach if the
-    /// display at `index` doesn't match it, so an index/ordering slip can never
-    /// turn off the wrong monitor.
-    DisplayPower { index: u32, expect: Rect, on: bool },
-    /// client -> host: outcome of a `DisplayPower` request.
-    DisplayPowerResult { index: u32, on: bool, error: Option<String> },
     /// client -> host: my desktop geometry changed (e.g. a display was
     /// detached/attached), so the layout editor and crossing math use the
     /// current monitors instead of the ones from the initial `Hello`.
