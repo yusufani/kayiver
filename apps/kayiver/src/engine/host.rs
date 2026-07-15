@@ -186,6 +186,20 @@ fn parse_edge(s: &str) -> Option<Edge> {
     }
 }
 
+/// Bounding box of a set of monitor rects (a machine's whole desktop).
+fn union_rect(rects: &[kayiver_core::proto::Rect]) -> Option<kayiver_core::proto::Rect> {
+    let mut it = rects.iter();
+    let first = it.next()?;
+    let (mut minx, mut miny, mut maxx, mut maxy) = (first.x, first.y, first.right(), first.bottom());
+    for r in it {
+        minx = minx.min(r.x);
+        miny = miny.min(r.y);
+        maxx = maxx.max(r.right());
+        maxy = maxy.max(r.bottom());
+    }
+    Some(kayiver_core::proto::Rect { x: minx, y: miny, w: maxx - minx, h: maxy - miny })
+}
+
 /// UHID mouse button bit index for a captured button.
 fn button_index(b: MouseButton) -> u8 {
     match b {
@@ -559,6 +573,12 @@ impl Router {
                 if self.focus.as_deref() != Some(name.as_str()) {
                     return; // stale report from a peer that lost focus already
                 }
+                // Geometry-first: if the cursor left through the shared panel
+                // itself, resolve against real monitor neighbours (physically
+                // correct) instead of the machine-level link.
+                if self.try_shared_edge_return(&name, edge, ratio) {
+                    return;
+                }
                 match self.layout_target(&name, edge) {
                     Some((next, entry_edge)) if next == self.cfg.name => {
                         self.release_all();
@@ -652,6 +672,87 @@ impl Router {
         crate::ui::set_cross_flash(edge);
         self.focus = Some(peer);
         self.send_to_focus(Msg::EnterAt { x, y });
+        true
+    }
+
+    /// Symmetric counterpart of `try_shared_edge_cross`: the focused peer's
+    /// cursor left through an edge of ITS copy of the shared panel. The shared
+    /// panel glues the two desktops into one physical space, so resolve by real
+    /// monitor geometry — never the machine-level link, which is geometrically
+    /// wrong once the panel is one of several monitors:
+    ///   - a host monitor sits beyond the panel on that side (e.g. A to the left
+    ///     of the panel B) → bring control home, landing on that monitor at the
+    ///     aligned offset;
+    ///   - nothing is there (e.g. below the panel) → it's a WALL: hold the
+    ///     cursor on the peer's panel. Do NOT follow the link (which would wrap
+    ///     the cursor to the far side of this desktop — the "down jumps to the
+    ///     top" / "left can't reach A" bugs).
+    /// Returns true if it handled the crossing.
+    fn try_shared_edge_return(&mut self, peer: &str, edge: Edge, ratio: f32) -> bool {
+        let sm = self.shared.read().unwrap().clone();
+        let (Some(local), Some(prect)) = (sm.local_rect, sm.peer_rect) else { return false };
+        let Some(shared_peer) = shared_peer_name(&self.cfg, &sm) else { return false };
+        if peer != shared_peer {
+            return false;
+        }
+        // The peer reported `edge`/`ratio` over its whole desktop bounds. Rebuild
+        // that exit point in peer coords and require it to sit on the panel's own
+        // edge — i.e. the cursor left the shared screen itself, not some other
+        // peer monitor (which the machine link should still handle).
+        let Some(pb) = union_rect(&self.peer_screens.read().unwrap().get(peer).cloned().unwrap_or_default())
+        else {
+            return false;
+        };
+        let (ex, ey) = kayiver_core::layout::point_on_edge(pb, edge, ratio, 0);
+        let on_panel_edge = match edge {
+            Edge::Left => ex <= prect.x && ey >= prect.y && ey < prect.bottom(),
+            Edge::Right => ex >= prect.right() - 1 && ey >= prect.y && ey < prect.bottom(),
+            Edge::Top => ey <= prect.y && ex >= prect.x && ex < prect.right(),
+            Edge::Bottom => ey >= prect.bottom() - 1 && ex >= prect.x && ex < prect.right(),
+        };
+        if !on_panel_edge {
+            return false;
+        }
+        // Offset along the panel edge (0..1), preserved across the crossing.
+        let f = match edge {
+            Edge::Left | Edge::Right => ((ey - prect.y) as f32 / prect.h.max(1) as f32).clamp(0.0, 1.0),
+            Edge::Top | Edge::Bottom => ((ex - prect.x) as f32 / prect.w.max(1) as f32).clamp(0.0, 1.0),
+        };
+        // A host monitor beyond the panel on this side? (e.g. A left of B.) The
+        // panel itself (`local`) can't be its own neighbour — geometry excludes
+        // it, since its far edge is elsewhere.
+        let adj = platform::monitors().into_iter().find(|m| match edge {
+            Edge::Left => (m.right() - local.x).abs() <= 8 && m.y < local.bottom() && m.bottom() > local.y,
+            Edge::Right => (m.x - local.right()).abs() <= 8 && m.y < local.bottom() && m.bottom() > local.y,
+            Edge::Top => (m.bottom() - local.y).abs() <= 8 && m.x < local.right() && m.right() > local.x,
+            Edge::Bottom => (m.y - local.bottom()).abs() <= 8 && m.x < local.right() && m.right() > local.x,
+        });
+        match adj {
+            Some(m) => {
+                // Land on that host monitor, entering from the panel side.
+                let (x, y) = match edge {
+                    Edge::Left => (m.right() - 1 - EDGE_INSET, m.y + (f * m.h as f32) as i32),
+                    Edge::Right => (m.x + EDGE_INSET, m.y + (f * m.h as f32) as i32),
+                    Edge::Top => (m.x + (f * m.w as f32) as i32, m.bottom() - 1 - EDGE_INSET),
+                    Edge::Bottom => (m.x + (f * m.w as f32) as i32, m.y + EDGE_INSET),
+                };
+                let x = x.clamp(m.x, m.right() - 1);
+                let y = y.clamp(m.y, m.bottom() - 1);
+                self.release_all();
+                self.send_to_focus(Msg::Leave);
+                self.focus = None;
+                self.exit_forwarding();
+                platform::warp_cursor_settled(x, y);
+                crate::ui::set_cross_flash(edge.opposite());
+                info!("cursor -> {} (shared panel {edge} edge -> host monitor)", self.cfg.name);
+            }
+            None => {
+                // Dead side of the panel — hold the cursor on the peer's panel.
+                let (x, y) = kayiver_core::layout::point_on_edge(prect, edge, f, EDGE_INSET);
+                self.send_to_focus(Msg::EnterAt { x, y });
+                info!("shared panel {edge} edge leads nowhere — held as a wall");
+            }
+        }
         true
     }
 
