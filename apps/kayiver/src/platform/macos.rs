@@ -428,13 +428,23 @@ pub fn cursor_pos() -> (i32, i32) {
 }
 
 pub fn set_forwarding_visuals(on: bool) {
+    // CGDisplayHideCursor/ShowCursor are REFERENCE-COUNTED: two hides need two
+    // shows or the cursor stays hidden (and, being app-scoped, only reappears
+    // when kayiver isn't frontmost). Crossing onto the tablet used to hide twice
+    // — once from the capture thread, once from tablet control — but restore
+    // once. Guard the hide/show so it's idempotent: exactly one of each.
+    static HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     unsafe {
         if on {
-            CGDisplayHideCursor(CGMainDisplayID());
+            if !HIDDEN.swap(true, Ordering::SeqCst) {
+                CGDisplayHideCursor(CGMainDisplayID());
+            }
             CGAssociateMouseAndMouseCursorPosition(0);
         } else {
             CGAssociateMouseAndMouseCursorPosition(1);
-            CGDisplayShowCursor(CGMainDisplayID());
+            if HIDDEN.swap(false, Ordering::SeqCst) {
+                CGDisplayShowCursor(CGMainDisplayID());
+            }
         }
     }
 }
