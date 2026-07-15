@@ -181,12 +181,20 @@ pub fn enable_wireless(serial: &str) -> Result<String> {
 
 // ----------------------------------------------------- the control sink ----
 
-/// A live scrcpy control connection with a registered UHID mouse.
+/// One command for the writer thread. Moves are coalescable; everything else
+/// is a pre-built control message written verbatim.
+enum Cmd {
+    Move { buttons: u8, dx: i32, dy: i32 },
+    Report(Vec<u8>),
+}
+
+/// A live scrcpy control connection. Input goes through a channel to a dedicated
+/// writer thread, so a slow (e.g. wireless) socket write never blocks the input
+/// router; the writer also coalesces queued moves into fewer packets.
 struct TabletSink {
-    stream: TcpStream,
+    tx: std::sync::mpsc::Sender<Cmd>,
     server: Child,
     serial: String,
-    scid: String,
     port: u16,
     buttons: u8,
     /// Keyboard state: modifier bitmask + up to 6 held non-modifier HID usages.
@@ -194,6 +202,86 @@ struct TabletSink {
     keys: Vec<u8>,
     /// Tablet screen size in px, for the virtual cursor / edge return.
     size: (i32, i32),
+}
+
+fn uhid_input_msg(id: u16, data: &[u8]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(5 + data.len());
+    m.push(MSG_UHID_INPUT);
+    m.extend_from_slice(&id.to_be_bytes());
+    m.extend_from_slice(&(data.len() as u16).to_be_bytes());
+    m.extend_from_slice(data);
+    m
+}
+fn uhid_create_msg(id: u16, name: &[u8], desc: &[u8]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(desc.len() + 16);
+    m.push(MSG_UHID_CREATE);
+    m.extend_from_slice(&id.to_be_bytes());
+    m.extend_from_slice(&0u16.to_be_bytes());
+    m.extend_from_slice(&0u16.to_be_bytes());
+    m.push(name.len() as u8);
+    m.extend_from_slice(name);
+    m.extend_from_slice(&(desc.len() as u16).to_be_bytes());
+    m.extend_from_slice(desc);
+    m
+}
+fn mouse_report_msg(buttons: u8, dx: i8, dy: i8, wheel: i8, hpan: i8) -> Vec<u8> {
+    uhid_input_msg(UHID_MOUSE_ID, &[buttons, dx as u8, dy as u8, wheel as u8, hpan as u8])
+}
+fn kbd_report_msg(mods: u8, keys: &[u8]) -> Vec<u8> {
+    let mut data = [0u8; 8];
+    data[0] = mods;
+    for (i, k) in keys.iter().take(6).enumerate() {
+        data[2 + i] = *k;
+    }
+    uhid_input_msg(UHID_KBD_ID, &data)
+}
+
+/// Own the socket on its own thread; batch pending commands and coalesce
+/// consecutive moves so wireless never drowns in tiny packets.
+fn spawn_writer(mut stream: TcpStream, rx: std::sync::mpsc::Receiver<Cmd>) {
+    std::thread::Builder::new()
+        .name("kayiver-tablet-w".into())
+        .spawn(move || {
+            while let Ok(first) = rx.recv() {
+                let mut batch = vec![first];
+                while let Ok(c) = rx.try_recv() {
+                    batch.push(c);
+                }
+                let mut i = 0;
+                while i < batch.len() {
+                    match &batch[i] {
+                        Cmd::Move { .. } => {
+                            let (mut buttons, mut dx, mut dy) = (0u8, 0i32, 0i32);
+                            while let Some(Cmd::Move { buttons: b, dx: x, dy: y }) = batch.get(i) {
+                                buttons = *b;
+                                dx += *x;
+                                dy += *y;
+                                i += 1;
+                            }
+                            loop {
+                                let sx = clamp(dx);
+                                let sy = clamp(dy);
+                                if stream.write_all(&mouse_report_msg(buttons, sx, sy, 0, 0)).is_err() {
+                                    return;
+                                }
+                                dx -= sx as i32;
+                                dy -= sy as i32;
+                                if dx == 0 && dy == 0 {
+                                    break;
+                                }
+                            }
+                        }
+                        Cmd::Report(v) => {
+                            if stream.write_all(v).is_err() {
+                                return;
+                            }
+                            i += 1;
+                        }
+                    }
+                }
+            }
+        })
+        .ok();
 }
 
 /// The tablet's screen size in px (for edge-return math), if connected.
@@ -312,10 +400,14 @@ pub fn connect(serial: &str) -> Result<()> {
     // premature connect gets an immediate EOF. scrcpy sends a readiness "dummy"
     // byte first (tunnel_forward); retry connect+read until we get it, then
     // drain the 64-byte device name that follows.
+    // Over wireless adb the readiness byte can take well over a second to arrive,
+    // and reconnecting on every timeout churns the server's single accept slot.
+    // So: retry only the *connect* (server may not have bound yet), then hold one
+    // connection open with a generous read window for the dummy + 64-byte name.
     let mut stream = None;
-    for _ in 0..60 {
+    for _ in 0..80 {
         if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
-            s.set_read_timeout(Some(Duration::from_millis(300))).ok();
+            s.set_read_timeout(Some(Duration::from_secs(4))).ok();
             let mut dummy = [0u8; 1];
             if s.read_exact(&mut dummy).is_ok() {
                 let mut name = [0u8; 64];
@@ -337,27 +429,26 @@ pub fn connect(serial: &str) -> Result<()> {
         }
     };
 
-    // Register the UHID mouse (real pointer) and keyboard.
     let size = query_size(serial);
-    let mut s = TabletSink {
-        stream, server, serial: serial.to_string(), scid, port,
-        buttons: 0, mods: 0, keys: Vec::new(), size,
-    };
-    s.uhid_create(UHID_MOUSE_ID, b"kayiver mouse", MOUSE_REPORT_DESC)?;
-    s.uhid_create(UHID_KBD_ID, b"kayiver keyboard", KBD_REPORT_DESC)?;
+    let _ = scid;
     // Drain device->client control messages (UHID LED output, clipboard, …) so
     // the socket buffer can't fill and stall the server. Ends on disconnect.
-    if let Ok(mut rd) = s.stream.try_clone() {
+    if let Ok(mut rd) = stream.try_clone() {
         std::thread::spawn(move || {
             let mut buf = [0u8; 1024];
-            loop {
-                match rd.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {}
-                }
-            }
+            while matches!(rd.read(&mut buf), Ok(n) if n > 0) {}
         });
     }
+    // Writer thread owns the socket; input is queued to it.
+    let (tx, rx) = std::sync::mpsc::channel();
+    spawn_writer(stream, rx);
+    // Register the UHID mouse (real pointer) and keyboard.
+    let _ = tx.send(Cmd::Report(uhid_create_msg(UHID_MOUSE_ID, b"kayiver mouse", MOUSE_REPORT_DESC)));
+    let _ = tx.send(Cmd::Report(uhid_create_msg(UHID_KBD_ID, b"kayiver keyboard", KBD_REPORT_DESC)));
+    let s = TabletSink {
+        tx, server, serial: serial.to_string(), port,
+        buttons: 0, mods: 0, keys: Vec::new(), size,
+    };
     *sink().lock().unwrap() = Some(s);
     Ok(())
 }
@@ -369,60 +460,10 @@ pub fn disconnect() {
 
 fn stop_locked(guard: &mut Option<TabletSink>) {
     if let Some(mut s) = guard.take() {
-        let _ = s.uhid_destroy();
+        drop(std::mem::replace(&mut s.tx, std::sync::mpsc::channel().0)); // end the writer
         let _ = s.server.kill();
         let _ = s.server.wait();
         let _ = adb().args(["-s", &s.serial, "forward", "--remove", &format!("tcp:{}", s.port)]).output();
-    }
-}
-
-impl TabletSink {
-    fn uhid_create(&mut self, id: u16, name: &[u8], desc: &[u8]) -> Result<()> {
-        let mut msg = Vec::with_capacity(desc.len() + 16);
-        msg.push(MSG_UHID_CREATE);
-        msg.extend_from_slice(&id.to_be_bytes());
-        msg.extend_from_slice(&0u16.to_be_bytes()); // vendor id
-        msg.extend_from_slice(&0u16.to_be_bytes()); // product id
-        msg.push(name.len() as u8); // write_string_tiny: 1-byte length
-        msg.extend_from_slice(name);
-        msg.extend_from_slice(&(desc.len() as u16).to_be_bytes());
-        msg.extend_from_slice(desc);
-        self.stream.write_all(&msg).context("uhid create failed")?;
-        Ok(())
-    }
-
-    fn uhid_destroy(&mut self) -> Result<()> {
-        for id in [UHID_MOUSE_ID, UHID_KBD_ID] {
-            let mut msg = vec![MSG_UHID_DESTROY];
-            msg.extend_from_slice(&id.to_be_bytes());
-            let _ = self.stream.write_all(&msg);
-        }
-        Ok(())
-    }
-
-    fn uhid_input(&mut self, id: u16, data: &[u8]) -> Result<()> {
-        let mut msg = vec![MSG_UHID_INPUT];
-        msg.extend_from_slice(&id.to_be_bytes());
-        msg.extend_from_slice(&(data.len() as u16).to_be_bytes());
-        msg.extend_from_slice(data);
-        self.stream.write_all(&msg)?;
-        Ok(())
-    }
-
-    /// Send one 5-byte mouse report [buttons, dx, dy, wheel, hpan].
-    fn report(&mut self, dx: i8, dy: i8, wheel: i8, hpan: i8) -> Result<()> {
-        let data = [self.buttons, dx as u8, dy as u8, wheel as u8, hpan as u8];
-        self.uhid_input(UHID_MOUSE_ID, &data)
-    }
-
-    /// Send the 8-byte keyboard report from the current mods + held keys.
-    fn kbd_report(&mut self) -> Result<()> {
-        let mut data = [0u8; 8];
-        data[0] = self.mods;
-        for (i, k) in self.keys.iter().take(6).enumerate() {
-            data[2 + i] = *k;
-        }
-        self.uhid_input(UHID_KBD_ID, &data)
     }
 }
 
@@ -440,24 +481,11 @@ pub fn wake() {
     });
 }
 
-/// Forward a relative move; large deltas are split into ≤127 steps.
-pub fn mouse_move(mut dx: i32, mut dy: i32) {
-    let mut guard = sink().lock().unwrap();
-    let Some(s) = guard.as_mut() else { return };
-    loop {
-        let sx = clamp(dx);
-        let sy = clamp(dy);
-        if s.report(sx, sy, 0, 0).is_err() {
-            drop(guard);
-            disconnect();
-            return;
-        }
-        dx -= sx as i32;
-        dy -= sy as i32;
-        if dx == 0 && dy == 0 {
-            break;
-        }
-    }
+/// Forward a relative move (coalesced + chunked by the writer thread).
+pub fn mouse_move(dx: i32, dy: i32) {
+    let guard = sink().lock().unwrap();
+    let Some(s) = guard.as_ref() else { return };
+    let _ = s.tx.send(Cmd::Move { buttons: s.buttons, dx, dy });
 }
 
 /// Button index: 0 left, 1 right, 2 middle, 3 X1, 4 X2.
@@ -472,14 +500,14 @@ pub fn mouse_button(index: u8, pressed: bool) {
     } else {
         s.buttons &= !(1 << index);
     }
-    let _ = s.report(0, 0, 0, 0);
+    let _ = s.tx.send(Cmd::Report(mouse_report_msg(s.buttons, 0, 0, 0, 0)));
 }
 
 /// Wheel: positive `dy` scrolls up, positive `dx` pans right.
 pub fn mouse_scroll(dx: i32, dy: i32) {
-    let mut guard = sink().lock().unwrap();
-    let Some(s) = guard.as_mut() else { return };
-    let _ = s.report(0, 0, clamp(dy), clamp(dx));
+    let guard = sink().lock().unwrap();
+    let Some(s) = guard.as_ref() else { return };
+    let _ = s.tx.send(Cmd::Report(mouse_report_msg(s.buttons, 0, 0, clamp(dy), clamp(dx))));
 }
 
 /// Forward a key by HID usage code (`hid`). Modifiers (0xE0..=0xE7) set the
@@ -508,5 +536,5 @@ pub fn key(hid: u16, pressed: bool) {
     } else {
         s.keys.retain(|k| *k != hid);
     }
-    let _ = s.kbd_report();
+    let _ = s.tx.send(Cmd::Report(kbd_report_msg(s.mods, &s.keys)));
 }
