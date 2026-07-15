@@ -236,16 +236,21 @@ fn kbd_report_msg(mods: u8, keys: &[u8]) -> Vec<u8> {
     uhid_input_msg(UHID_KBD_ID, &data)
 }
 
-/// Minimum gap between UHID writes when input is flooding. Isolated moves fire
-/// immediately; only a continuous stream is capped to this rate (~125 Hz), with
-/// everything in the gap coalesced into one cumulative report. This bounds the
-/// backlog so the on-device cursor can't drift seconds behind over wireless
-/// (buffer bloat): position is preserved because coalesced deltas sum exactly.
+/// Minimum gap between UHID writes when input is flooding. A continuous stream
+/// is capped to this rate (~125 Hz), with everything in the gap coalesced into
+/// one cumulative report (deltas sum exactly, so position is preserved).
 const WRITE_MIN_GAP: Duration = Duration::from_millis(8);
 
-/// Own the socket on its own thread; rate-limit + coalesce moves so a saturated
-/// wireless link sheds packets instead of accumulating latency.
-fn spawn_writer(mut stream: TcpStream, rx: std::sync::mpsc::Receiver<Cmd>) {
+/// Idle heartbeat interval. Over wireless, Android lets the WiFi radio doze
+/// between packets, so a move after any pause pays a 50-200ms wake penalty
+/// instead of the ~8ms hot-radio RTT (measured). A steady no-op keeps the radio
+/// awake the whole session so real moves always land hot. This — not data
+/// coalescing — is what actually removes the wireless lag.
+const KEEPALIVE_GAP: Duration = Duration::from_millis(6);
+
+/// Own the socket on its own thread. Fires real input immediately, coalesces
+/// bursts, and (on wireless) emits an idle no-op heartbeat to keep the radio hot.
+fn spawn_writer(mut stream: TcpStream, rx: std::sync::mpsc::Receiver<Cmd>, wifi: bool) {
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::Instant;
     std::thread::Builder::new()
@@ -255,7 +260,27 @@ fn spawn_writer(mut stream: TcpStream, rx: std::sync::mpsc::Receiver<Cmd>) {
             let mut last_send = Instant::now()
                 .checked_sub(WRITE_MIN_GAP)
                 .unwrap_or_else(Instant::now);
-            while let Ok(first) = rx.recv() {
+            // Held-button state, so an idle heartbeat never drops a drag.
+            let mut last_buttons = 0u8;
+            loop {
+                let first = match rx.recv_timeout(KEEPALIVE_GAP) {
+                    Ok(c) => c,
+                    Err(RecvTimeoutError::Timeout) => {
+                        // Idle: on wireless, poke the radio so it stays out of
+                        // doze; a zero-delta report is a true no-op for Android.
+                        if wifi {
+                            if stream
+                                .write_all(&mouse_report_msg(last_buttons, 0, 0, 0, 0))
+                                .is_err()
+                            {
+                                return;
+                            }
+                            last_send = Instant::now();
+                        }
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => return,
+                };
                 let mut batch = vec![first];
                 // If we just sent, hold briefly and gather more input to coalesce
                 // rather than firing another tiny packet into a backed-up link.
@@ -290,6 +315,7 @@ fn spawn_writer(mut stream: TcpStream, rx: std::sync::mpsc::Receiver<Cmd>) {
                                 dy += *y;
                                 i += 1;
                             }
+                            last_buttons = buttons;
                             loop {
                                 let sx = clamp(dx);
                                 let sy = clamp(dy);
@@ -471,9 +497,11 @@ pub fn connect(serial: &str) -> Result<()> {
             while matches!(rd.read(&mut buf), Ok(n) if n > 0) {}
         });
     }
-    // Writer thread owns the socket; input is queued to it.
+    // Writer thread owns the socket; input is queued to it. A `host:port` serial
+    // means the transport is TCP/IP (wireless) — enable the radio heartbeat.
+    let wifi = serial.contains(':');
     let (tx, rx) = std::sync::mpsc::channel();
-    spawn_writer(stream, rx);
+    spawn_writer(stream, rx, wifi);
     // Register the UHID mouse (real pointer) and keyboard.
     let _ = tx.send(Cmd::Report(uhid_create_msg(UHID_MOUSE_ID, b"kayiver mouse", MOUSE_REPORT_DESC)));
     let _ = tx.send(Cmd::Report(uhid_create_msg(UHID_KBD_ID, b"kayiver keyboard", KBD_REPORT_DESC)));

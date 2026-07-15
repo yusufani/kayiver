@@ -7,7 +7,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CARGO="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo"
+# The ~/.cargo/bin shims are missing on this box; use the toolchain bin directly
+# and put it on PATH so cargo can find rustc.
+TOOLCHAIN_BIN="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin"
+export PATH="$TOOLCHAIN_BIN:$PATH"
+CARGO="$TOOLCHAIN_BIN/cargo"
 # The app the system actually LAUNCHES is /Applications/Kayiver.app; dist is the
 # repo copy. Sign both (identical signature) so they never diverge — Launch
 # Services resolves the app.kayiver bundle id and may run either one.
