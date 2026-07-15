@@ -8,7 +8,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CARGO="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo"
-APP="dist/Kayiver.app"
+# The app the system actually LAUNCHES is /Applications/Kayiver.app; dist is the
+# repo copy. Sign both (identical signature) so they never diverge — Launch
+# Services resolves the app.kayiver bundle id and may run either one.
+APPS=("/Applications/Kayiver.app" "dist/Kayiver.app")
+RUN_APP="/Applications/Kayiver.app"
 KC="$HOME/Library/Keychains/kayiver-signing.keychain-db"
 HASH=02C0C88FD96EB2EF88779C4231B2CD73AB46B3AF   # "Kayiver Self-Signed"
 IDENT=app.kayiver
@@ -16,16 +20,19 @@ IDENT=app.kayiver
 echo "==> building release"
 "$CARGO" build --release -p kayiver
 
-echo "==> installing into $APP"
-cp target/release/kayiver "$APP/Contents/MacOS/kayiver"
-
-echo "==> signing with stable identity ($IDENT)"
-security unlock-keychain -p kayiver-local "$KC"
-codesign --force --deep --sign "$HASH" --keychain "$KC" --identifier "$IDENT" "$APP"
-codesign -d -r- "$APP" 2>&1 | grep -i designated
-
-echo "==> restarting app"
+echo "==> stopping running app"
 pkill -f "Kayiver.app/Contents/MacOS/kayiver" 2>/dev/null || true
 sleep 1
-open "$APP"
+
+security unlock-keychain -p kayiver-local "$KC"
+for APP in "${APPS[@]}"; do
+  [ -d "$APP" ] || continue
+  echo "==> installing + signing $APP"
+  cp target/release/kayiver "$APP/Contents/MacOS/kayiver"
+  codesign --force --deep --sign "$HASH" --keychain "$KC" --identifier "$IDENT" "$APP"
+done
+codesign -d -r- "$RUN_APP" 2>&1 | grep -i designated
+
+echo "==> launching $RUN_APP"
+open "$RUN_APP"
 echo "==> done. Grant is preserved (same signature) — no re-approval needed."
