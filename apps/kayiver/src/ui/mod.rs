@@ -387,6 +387,7 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
             Err(e) => ("500 Internal Server Error", "text/plain", e.to_string().into_bytes()),
         },
         ("GET", "/api/status") => ("200 OK", "application/json", api_status().into_bytes()),
+        ("GET", "/api/cursor") => ("200 OK", "application/json", api_cursor().into_bytes()),
         ("POST", "/api/layout") => match api_save_layout(body) {
             Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
@@ -427,6 +428,10 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
         },
         ("POST", "/api/android/place") => match api_android_place(body) {
             Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
+            Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+        },
+        ("POST", "/api/android/add") => match api_android_add(body) {
+            Ok(json) => ("200 OK", "application/json", json.into_bytes()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
         },
         _ => ("404 Not Found", "text/plain", b"not found".to_vec()),
@@ -487,6 +492,14 @@ fn api_android_place(body: &[u8]) -> Result<()> {
         std::thread::spawn(|| { crate::android::ensure_connected(); });
     }
     Ok(())
+}
+
+/// POST /api/android/add {"ip": "1.2.3.4[:port]"} — connect a wireless device.
+fn api_android_add(body: &[u8]) -> Result<String> {
+    let v: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
+    let ip = v.get("ip").and_then(|s| s.as_str()).context("missing 'ip'")?;
+    let addr = crate::android::add_wireless(ip.trim())?;
+    Ok(serde_json::json!({ "addr": addr }).to_string())
 }
 
 /// POST /api/android/wireless {"serial": "..."} — arm wireless adb, return addr.
@@ -663,6 +676,14 @@ fn api_status() -> String {
         },
     })
     .to_string()
+}
+
+/// GET /api/cursor — the host's real cursor position (desktop coords) and which
+/// machine currently has control, so the editor can show the live pointer.
+fn api_cursor() -> String {
+    let (x, y) = crate::platform::cursor_pos();
+    let focus = live().lock().unwrap().focus.clone();
+    serde_json::json!({ "x": x, "y": y, "focus": focus }).to_string()
 }
 
 fn api_save_layout(body: &[u8]) -> Result<()> {

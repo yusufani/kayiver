@@ -139,6 +139,22 @@ pub fn list_devices() -> Vec<Device> {
     devices
 }
 
+/// Add a device over the network by `adb connect <ip[:port]>`. Defaults to
+/// port 5555. The device must already have wireless debugging on.
+pub fn add_wireless(ip: &str) -> Result<String> {
+    if !have("adb") {
+        bail!("adb not installed");
+    }
+    let addr = if ip.contains(':') { ip.to_string() } else { format!("{ip}:5555") };
+    let out = adb().args(["connect", &addr]).output().context("adb connect failed")?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    if text.contains("connected") || text.contains("already") {
+        Ok(addr)
+    } else {
+        bail!("{}", text.trim())
+    }
+}
+
 /// Arm wireless adb on a USB device and connect over TCP/IP; returns `ip:port`.
 pub fn enable_wireless(serial: &str) -> Result<String> {
     if !have("adb") {

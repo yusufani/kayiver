@@ -214,6 +214,8 @@
   .tablet-tile .tname { font-size: 11px; font-weight: 750; color: var(--text); }
   .tablet-tile .tsub { font-size: 9.5px; color: var(--faint); }
   .tablet-tile.on .tsub { color: var(--a2); }
+  .add-tile { position: absolute; z-index: 8; display: flex; align-items: center; gap: 6px; border: 1.5px dashed var(--line2); border-radius: 9px; padding: 6px 11px; font-size: 11px; color: var(--muted); cursor: pointer; background: var(--panel2); }
+  .add-tile:hover { border-color: var(--a1); color: var(--text); }
   .tablet-tile .ticon { width: 26px; height: 34px; border: 2px solid var(--muted); border-radius: 5px; }
   .tablet-tile.on .ticon { border-color: var(--a2); }
   #sharedMsg { font-size: 12px; color: var(--muted); max-width: 280px; }
@@ -378,6 +380,7 @@ const I18N = {
     tabletNoTools: "scrcpy kurulu değil (brew install scrcpy)",
     tabletControlling: "kontrol ediliyor · çıkış: 3× Esc", tabletConnecting: "bağlanıyor…",
     tabletDrag: "sürükle=yerleştir · tıkla=bağla", tabletReady: "hazır", tabletPlaced: "tablet yerleşti — kenardan geçince kontrol: ",
+    addDevice: "cihaz", addDeviceOk: "cihaz eklendi ✓",
     connectBtn: "bağlan", disconnect: "bırak", wireless: "kablosuz", wirelessOn: "kablosuz açık: ",
     autostart: "Girişte başlat", autostartDesc: "oturum açılınca kayıver kendiliğinden çalışsın",
     remote: "Telefon / LAN kumandası", remoteDesc: "Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)",
@@ -414,6 +417,7 @@ const I18N = {
     tabletNoTools: "scrcpy not installed (brew install scrcpy)",
     tabletControlling: "controlling · exit: 3× Esc", tabletConnecting: "connecting…",
     tabletDrag: "drag=place · click=connect", tabletReady: "ready", tabletPlaced: "tablet placed — cross this edge to control: ",
+    addDevice: "device", addDeviceOk: "device added ✓",
     connectBtn: "connect", disconnect: "release", wireless: "wireless", wirelessOn: "wireless on: ",
     autostart: "Start at login", autostartDesc: "run kayiver automatically when you log in",
     remote: "Phone / LAN control", remoteDesc: "token-protected local API for the Android app (takes effect after a restart)",
@@ -488,6 +492,7 @@ let machines = [];     // {name, me, colorIdx}
 let mons = [];         // per-monitor tiles
 let sharedCfg = null;
 let sharedLive = {};
+let dockPanelOpen = false;
 let settings = {};
 let candidate = null;
 const canvas = document.getElementById('canvas');
@@ -716,7 +721,7 @@ function renderSplit(a, names) {
     seg.style.setProperty('--sc', col.c);
     seg.style.setProperty('--sg', col.g);
     seg.innerHTML = '<span class="segname">' + nm + '</span><span class="segpick">' + t('activate') + '</span>';
-    seg.addEventListener('click', e => { e.stopPropagation(); setOwner(nm); });
+    seg.addEventListener('click', e => { e.stopPropagation(); dockPanelOpen = !dockPanelOpen; renderDock(); });
     wrap.appendChild(seg);
   }
   a.el.appendChild(wrap);
@@ -888,38 +893,57 @@ for (let i = 0; i < 9; i++) { const d = document.createElement('div'); d.style.c
 const capEl = document.createElement('div');
 capEl.style.cssText = 'position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:45;background:var(--panel);border:1px solid var(--line2);border-radius:20px;padding:5px 13px;font-size:11.5px;font-family:"IBM Plex Mono",monospace;color:var(--muted);box-shadow:var(--shadow);opacity:0;transition:opacity .25s;white-space:nowrap;';
 canvas.appendChild(capEl);
-let curPos = { x: 300, y: 200 }, curBuf = [], curFrom = null, curTo = null, curT = 0;
+let curPos = { x: 300, y: 200 }, curBuf = [], curT = 0, realTarget = null;
+// Map the host's real cursor (or the focused machine) to canvas coordinates.
+function mapCursor(c) {
+  const meName = (machines.find(m => m.me) || {}).name;
+  const focus = c.focus;
+  if (focus === 'tablet') return tabPos ? { x: tabPos.x + TAB_W / 2, y: tabPos.y + TAB_H / 2 } : null;
+  if (focus && focus !== meName) {
+    const pt = mons.find(m => m.machine === focus && m.el.style.display !== 'none');
+    return pt ? { x: pt.x + pt.w / 2, y: pt.y + pt.h / 2 } : null;
+  }
+  // on this machine: place at the exact spot inside whichever monitor holds it
+  for (const t of mons) {
+    if (!t.me || t.el.style.display === 'none') continue;
+    if (c.x >= t.realX && c.x < t.realX + t.realW && c.y >= t.realY && c.y < t.realY + t.realH) {
+      return { x: t.x + (c.x - t.realX) * t.w / Math.max(1, t.realW), y: t.y + (c.y - t.realY) * t.h / Math.max(1, t.realH) };
+    }
+  }
+  return null;
+}
+async function pollCursor() {
+  if (liveOn) { try { realTarget = mapCursor(await (await fetch('/api/cursor')).json()); } catch (_) { realTarget = null; } }
+  setTimeout(pollCursor, 120);
+}
+pollCursor();
 function tickCursor(t) {
   requestAnimationFrame(tickCursor);
   const dt = Math.min(0.05, (t - (curT || t)) / 1000); curT = t;
   document.querySelectorAll('.mon.livefocus').forEach(e => e.classList.remove('livefocus'));
-  const ns = mons.filter(m => m.el.style.display !== 'none').map(m => ({ id: m.machine + m.idx, cx: m.x + m.w / 2, cy: m.y + m.h / 2, machine: m.machine, el: m.el }));
-  const dragging = document.querySelector('.mon.dragging');
-  if (!liveOn || dragging || ns.length < 2) { curEl.style.opacity = '0'; capEl.style.opacity = '0'; return; }
+  if (!liveOn || !realTarget) { curEl.style.opacity = '0'; trailDots.forEach(d => d.style.opacity = '0'); return; }
   curEl.style.opacity = '1';
-  const ids = ns.map(n => n.id);
-  if (curTo == null || !ids.includes(curTo)) { curFrom = ids[0]; curTo = ids[1 % ids.length]; }
-  const to = ns.find(n => n.id === curTo), from = ns.find(n => n.id === curFrom) || to;
-  const dx = to.cx - curPos.x, dy = to.cy - curPos.y, dist = Math.hypot(dx, dy), sp = 200 * dt;
-  if (dist < Math.max(3, sp)) { curPos.x = to.cx; curPos.y = to.cy; curFrom = curTo; const i = ids.indexOf(curFrom); curTo = ids[(i + 1) % ids.length]; }
-  else { curPos.x += dx / dist * sp; curPos.y += dy / dist * sp; }
-  if (to && to.el) to.el.classList.add('livefocus');
-  let cap = '';
-  if (from && to && from.machine !== to.machine) cap = from.machine + '  →  ' + to.machine;
-  capEl.textContent = cap; capEl.style.opacity = cap ? '1' : '0';
+  // ease toward the real position for smooth motion
+  curPos.x += (realTarget.x - curPos.x) * Math.min(1, dt * 16);
+  curPos.y += (realTarget.y - curPos.y) * Math.min(1, dt * 16);
   curEl.style.transform = 'translate(' + curPos.x + 'px,' + curPos.y + 'px)';
-  curBuf.unshift({ x: curPos.x, y: curPos.y }); if (curBuf.length > 36) curBuf.pop();
-  trailDots.forEach((d, i) => { const p = curBuf[(i + 1) * 4]; if (p) { const k = 1 - i / 9; d.style.transform = 'translate(' + (p.x - 3) + 'px,' + (p.y - 3) + 'px) scale(' + (0.4 + k * 0.6) + ')'; d.style.opacity = String(k * 0.5); } else d.style.opacity = '0'; });
+  // glow the tile the cursor is over
+  for (const m of mons) {
+    if (m.el.style.display === 'none') continue;
+    if (curPos.x >= m.x && curPos.x <= m.x + m.w && curPos.y >= m.y && curPos.y <= m.y + m.h) { m.el.classList.add('livefocus'); break; }
+  }
+  curBuf.unshift({ x: curPos.x, y: curPos.y }); if (curBuf.length > 30) curBuf.pop();
+  trailDots.forEach((d, i) => { const p = curBuf[(i + 1) * 3]; if (p) { const k = 1 - i / 9; d.style.transform = 'translate(' + (p.x - 3) + 'px,' + (p.y - 3) + 'px) scale(' + (0.3 + k * 0.6) + ')'; d.style.opacity = String(k * 0.45); } else d.style.opacity = '0'; });
 }
 requestAnimationFrame(tickCursor);
-function setLive(on) { liveOn = on; localStorage.setItem('kayiver-live', on ? '1' : '0'); renderDock(); }
+function setLive(on) { liveOn = on; localStorage.setItem('kayiver-live', on ? '1' : '0'); if (!on) realTarget = null; renderDock(); }
 
 // Dock: shared-panel owner buttons (design puts them here, at the bottom) +
 // the live-cursor toggle state.
 function renderDock() {
   const od = document.getElementById('ownerDock');
   od.innerHTML = '';
-  if (sharedCfg) {
+  if (sharedCfg && dockPanelOpen) {
     const lbl = document.createElement('span');
     lbl.style.cssText = 'font-size:11.5px;color:var(--muted);white-space:nowrap;';
     lbl.textContent = t('panelOwners');
@@ -1030,6 +1054,30 @@ const tabletTile = document.createElement('div');
 tabletTile.className = 'tablet-tile';
 tabletTile.style.display = 'none';
 canvas.appendChild(tabletTile);
+// "+ device" — add a wireless device by IP (USB devices auto-appear).
+const addTile = document.createElement('div');
+addTile.className = 'add-tile';
+canvas.appendChild(addTile);
+function placeAddTile() {
+  addTile.style.left = Math.max(8, canvas.clientWidth - 148) + 'px';
+  addTile.style.top = Math.max(8, canvas.clientHeight - 44) + 'px';
+}
+function renderAddTile(open) {
+  placeAddTile();
+  if (!open) { addTile.innerHTML = '<span>+ ' + t('addDevice') + '</span>'; addTile.onclick = () => renderAddTile(true); return; }
+  addTile.onclick = null;
+  addTile.innerHTML = '';
+  const inp = document.createElement('input'); inp.placeholder = 'ip:5555'; inp.style.cssText = 'width:96px;background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 7px;font:inherit;font-size:11px;';
+  const go = document.createElement('button'); go.className = 'dock-btn'; go.textContent = '↵'; go.style.padding = '4px 8px';
+  const add = async () => {
+    const ip = inp.value.trim(); if (!ip) { renderAddTile(false); return; }
+    try { const r = await fetch('/api/android/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip }) }); setMsg(r.ok ? t('addDeviceOk') : await r.text(), r.ok ? 'ok' : 'err'); } catch (e) { setMsg(String(e), 'err'); }
+    renderAddTile(false); setTimeout(pollAndroid, 800);
+  };
+  go.onclick = add; inp.addEventListener('keydown', e => { if (e.key === 'Enter') add(); if (e.key === 'Escape') renderAddTile(false); });
+  addTile.appendChild(inp); addTile.appendChild(go); inp.focus();
+}
+renderAddTile(false);
 let tabPos = (() => { try { return JSON.parse(localStorage.getItem('kayiver-tabpos')); } catch (_) { return null; } })();
 let tabDevice = null, tabOn = false;
 async function pollAndroid() {
