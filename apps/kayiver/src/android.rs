@@ -221,38 +221,34 @@ pub fn connect(serial: &str) -> Result<()> {
         .spawn()
         .context("failed to launch scrcpy server")?;
 
-    // The server needs a moment to bind its socket; retry the connect.
+    // adb accepts the forward port before the server has bound its socket, so a
+    // premature connect gets an immediate EOF. scrcpy sends a readiness "dummy"
+    // byte first (tunnel_forward); retry connect+read until we get it, then
+    // drain the 64-byte device name that follows.
     let mut stream = None;
-    for _ in 0..40 {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => {
+    for _ in 0..60 {
+        if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
+            s.set_read_timeout(Some(Duration::from_millis(300))).ok();
+            let mut dummy = [0u8; 1];
+            if s.read_exact(&mut dummy).is_ok() {
+                let mut name = [0u8; 64];
+                let _ = s.read_exact(&mut name); // device name; unused
+                s.set_read_timeout(None).ok();
+                s.set_nodelay(true).ok();
                 stream = Some(s);
                 break;
             }
-            Err(_) => std::thread::sleep(Duration::from_millis(50)),
         }
+        std::thread::sleep(Duration::from_millis(80));
     }
     let mut stream = match stream {
         Some(s) => s,
         None => {
             let mut server = server;
             let _ = server.kill();
-            bail!("could not connect to the scrcpy control socket (is USB debugging authorized?)");
+            bail!("no handshake from scrcpy server (is USB debugging authorized on the tablet?)");
         }
     };
-    stream.set_nodelay(true).ok();
-
-    // Handshake: read the 64-byte device name.
-    let mut name = [0u8; 64];
-    stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .ok();
-    if let Err(e) = stream.read_exact(&mut name) {
-        let mut server = server;
-        let _ = server.kill();
-        bail!("no handshake from scrcpy server: {e}");
-    }
-    stream.set_read_timeout(None).ok();
 
     // Register the UHID mouse so Android shows a pointer.
     let mut s = TabletSink { stream, server, serial: serial.to_string(), scid, port, buttons: 0 };
