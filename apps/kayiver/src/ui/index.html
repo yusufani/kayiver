@@ -625,9 +625,11 @@ function makeTile(t) {
     const start = group.map(g => ({ g, x: g.x, y: g.y }));
     const a0 = { x: t.x, y: t.y };
     const sx = e.clientX, sy = e.clientY;
+    let moved = false;
     group.forEach(g => g.el.classList.add('dragging'));
     const move = ev => {
       const ddx = ev.clientX - sx, ddy = ev.clientY - sy;
+      if (Math.abs(ddx) > 4 || Math.abs(ddy) > 4) moved = true;
       if (isPanel) {
         // clamp by the panel tile, shift everyone by the same corrected delta
         let nx = a0.x + ddx, ny = a0.y + ddy;
@@ -646,6 +648,10 @@ function makeTile(t) {
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
       hideSnapGuide();
+      // A tap (no real drag) on the shared panel opens/closes the owner picker
+      // in the dock. Done here — not via a child 'click' listener — because the
+      // tile's pointer capture swallows synthetic clicks on the segments.
+      if (isPanel && !moved) { dockPanelOpen = !dockPanelOpen; renderDock(); }
       if (!isPanel && !candidate) resolveTile(t);
       pos(t);
       savePositions();
@@ -721,7 +727,6 @@ function renderSplit(a, names) {
     seg.style.setProperty('--sc', col.c);
     seg.style.setProperty('--sg', col.g);
     seg.innerHTML = '<span class="segname">' + nm + '</span><span class="segpick">' + t('activate') + '</span>';
-    seg.addEventListener('click', e => { e.stopPropagation(); dockPanelOpen = !dockPanelOpen; renderDock(); });
     wrap.appendChild(seg);
   }
   a.el.appendChild(wrap);
