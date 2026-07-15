@@ -1,3 +1,4 @@
+mod android;
 mod autostart;
 mod engine;
 #[cfg(target_os = "macos")]

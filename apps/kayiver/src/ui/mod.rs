@@ -404,8 +404,56 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
             Ok(json) => ("200 OK", "application/json", json.into_bytes()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
         },
+        ("GET", "/api/android") => ("200 OK", "application/json", api_android_list().into_bytes()),
+        ("POST", "/api/android/connect") => match api_android_action(body, crate::android::connect) {
+            Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
+            Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+        },
+        ("POST", "/api/android/disconnect") => match api_android_action(body, crate::android::disconnect) {
+            Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
+            Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+        },
+        ("POST", "/api/android/wireless") => match api_android_wireless(body) {
+            Ok(json) => ("200 OK", "application/json", json.into_bytes()),
+            Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+        },
         _ => ("404 Not Found", "text/plain", b"not found".to_vec()),
     }
+}
+
+/// GET /api/android — tool availability + visible devices.
+fn api_android_list() -> String {
+    let devices: Vec<serde_json::Value> = crate::android::list_devices()
+        .into_iter()
+        .map(|d| {
+            serde_json::json!({
+                "serial": d.serial,
+                "model": d.model,
+                "connection": d.connection,
+                "running": d.running,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "tools_ready": crate::android::tools_ready(),
+        "devices": devices,
+    })
+    .to_string()
+}
+
+/// Run a per-device action ({"serial": "..."}).
+fn api_android_action(body: &[u8], f: fn(&str) -> Result<()>) -> Result<()> {
+    let v: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
+    let serial = v.get("serial").and_then(|s| s.as_str()).context("missing 'serial'")?;
+    f(serial)
+}
+
+/// POST /api/android/wireless {"serial": "..."} — arm wireless adb, return addr.
+fn api_android_wireless(body: &[u8]) -> Result<String> {
+    let v: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
+    let serial = v.get("serial").and_then(|s| s.as_str()).context("missing 'serial'")?;
+    let addr = crate::android::enable_wireless(serial)?;
+    Ok(serde_json::json!({ "addr": addr }).to_string())
 }
 
 /// GET /api/settings — current app settings for the editor's settings panel.

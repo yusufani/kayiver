@@ -157,15 +157,18 @@
     white-space: nowrap; padding: 8px 15px; font-size: 12.5px;
   }
 
-  footer { display: flex; align-items: stretch; gap: 14px; padding: 12px 22px 16px; }
+  footer { display: flex; flex-wrap: wrap; align-items: stretch; gap: 14px; padding: 12px 22px 16px; }
   .card {
     background: linear-gradient(180deg, var(--panel), var(--panel2));
     border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px;
     box-shadow: var(--shadow); display: flex; align-items: center; gap: 12px;
   }
   .card .title { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--faint); font-weight: 700; }
-  #layoutCard { flex: 0 0 auto; }
-  #sharedCard { flex: 1; min-width: 0; }
+  #layoutCard { flex: 1 1 220px; }
+  #sharedCard { flex: 1 1 260px; min-width: 0; }
+  #tabletCard { flex: 1 1 240px; min-width: 0; }
+  #tabletMsg { font-size: 12px; color: var(--muted); max-width: 240px; }
+  #tabletMsg.err { color: var(--danger); }
   #sharedCard .who { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   #msg { font-size: 12.5px; color: var(--muted); min-height: 17px; max-width: 300px; }
   #msg.err { color: var(--danger); }
@@ -274,6 +277,10 @@
     <div class="who" id="sharedWho"></div>
     <div style="margin-left:auto; display:flex; gap:8px; align-items:center" id="sharedActions"></div>
   </div>
+  <div class="card" id="tabletCard">
+    <div style="min-width:0"><div class="title" id="tabletTitle">Tablet</div><div id="tabletMsg">—</div></div>
+    <div style="margin-left:auto; display:flex; gap:8px; align-items:center; flex-wrap:wrap" id="tabletActions"></div>
+  </div>
   <div class="hint">
     bir monitörü diğer makinenin monitörüne <b>değdir</b> = geçiş · <b>üstüne bırak</b> = ortak panel<br>
     panik: 3× <kbd>Esc</kbd> · ortak monitör: <kbd id="hotkeyHint">⌘⌥M</kbd>
@@ -334,6 +341,9 @@ const I18N = {
     hkShort: "Ortak monitör kısayolu", hkDesc: " ile paneli el değiştir",
     dwell: "Geçiş gecikmesi", dwellDesc: "kenarda bu kadar bekleyince karşı ekrana geç (varsayılan: anında)",
     dwellImmediate: "Anında", secShort: "sn",
+    tablet: "Tablet", tabletNone: "Tablet yok — USB kablosuyla bağla, tablette USB hata ayıklamayı aç",
+    tabletNoTools: "scrcpy kurulu değil (brew install scrcpy)",
+    connectBtn: "bağlan", disconnect: "kes", wireless: "kablosuz", wirelessOn: "kablosuz açık: ",
     autostart: "Girişte başlat", autostartDesc: "oturum açılınca kayıver kendiliğinden çalışsın",
     remote: "Telefon / LAN kumandası", remoteDesc: "Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)",
     cfgFile: "Config dosyası", close: "Kapat", language: "Dil",
@@ -364,6 +374,9 @@ const I18N = {
     hkShort: "Shared-monitor shortcut", hkDesc: " to hand over the panel",
     dwell: "Crossing delay", dwellDesc: "wait this long at the edge before crossing to the other screen (default: instant)",
     dwellImmediate: "Instant", secShort: "s",
+    tablet: "Tablet", tabletNone: "No tablet — connect one over USB and enable USB debugging",
+    tabletNoTools: "scrcpy not installed (brew install scrcpy)",
+    connectBtn: "connect", disconnect: "disconnect", wireless: "wireless", wirelessOn: "wireless on: ",
     autostart: "Start at login", autostartDesc: "run kayiver automatically when you log in",
     remote: "Phone / LAN control", remoteDesc: "token-protected local API for the Android app (takes effect after a restart)",
     cfgFile: "Config file", close: "Close", language: "Language",
@@ -397,6 +410,7 @@ function applyStaticI18n() {
   if (me && !me.className) me.textContent = t('layoutHint');
   set('#save', t('save'));
   set('#sharedCard .title', t('sharedTitle'));
+  set('#tabletTitle', t('tablet'));
   document.querySelector('.hint').innerHTML =
     t('hint1a') + '<b>' + t('hintTouch') + '</b>' + t('hint1b') + '<b>' + t('hintDrop') + '</b>' + t('hint1c') +
     '<br>' + t('hintPanic') + '<kbd>Esc</kbd>' + t('hintShared') + '<kbd id="hotkeyHint">' + hk() + '</kbd>';
@@ -885,9 +899,45 @@ async function refreshStateIfChanged() {
   } catch (_) {}
 }
 
+// ---------------------------------------------------------- tablet ----
+async function pollAndroid() {
+  try { renderAndroid(await (await fetch('/api/android')).json()); }
+  catch (_) {}
+}
+function amkbtn(txt, cls, fn) { const b = document.createElement('button'); b.className = cls; b.textContent = txt; b.onclick = fn; return b; }
+function renderAndroid(a) {
+  const msg = document.getElementById('tabletMsg');
+  const act = document.getElementById('tabletActions');
+  act.innerHTML = ''; msg.className = '';
+  if (!a || !a.tools_ready) { msg.textContent = t('tabletNoTools'); return; }
+  const ds = a.devices || [];
+  if (!ds.length) { msg.textContent = t('tabletNone'); return; }
+  msg.textContent = ds.map(d => d.model + ' · ' + (d.connection === 'wifi' ? t('wireless') : 'USB')).join(' · ');
+  for (const d of ds) {
+    act.appendChild(d.running
+      ? amkbtn(t('disconnect'), 'ghost small', () => androidAct('disconnect', d.serial))
+      : amkbtn(t('connectBtn'), 'small', () => androidAct('connect', d.serial)));
+    if (d.connection === 'usb') act.appendChild(amkbtn(t('wireless'), 'ghost small', () => androidWireless(d.serial)));
+  }
+}
+async function androidAct(action, serial) {
+  try { await fetch('/api/android/' + action, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ serial }) }); } catch (_) {}
+  pollAndroid();
+}
+async function androidWireless(serial) {
+  const msg = document.getElementById('tabletMsg');
+  try {
+    const r = await fetch('/api/android/wireless', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ serial }) });
+    if (r.ok) { msg.textContent = t('wirelessOn') + (await r.json()).addr; }
+    else { msg.textContent = await r.text(); msg.className = 'err'; }
+  } catch (e) { msg.textContent = String(e); msg.className = 'err'; }
+  setTimeout(pollAndroid, 1500);
+}
+
 let pollN = 0;
 async function poll() {
   if (++pollN % 4 === 0) await refreshStateIfChanged();
+  if (pollN % 4 === 2) pollAndroid();
   try {
     const st = await (await fetch('/api/status')).json();
     document.getElementById('hostDot').className = 'dot ' + (st.running ? 'on' : 'off');
@@ -972,6 +1022,7 @@ window.addEventListener('resize', () => mons.forEach(t => { clamp(t); pos(t); })
   stateSig = stateSignature(s);
   buildFromState(s);
   poll();
+  pollAndroid();
 })().catch(e => setMsg(t('reach') + e, 'err'));
 </script>
 </body>
