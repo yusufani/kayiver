@@ -89,15 +89,9 @@
     touch-action: none;
   }
   /* animated portal corridor between adjacent monitors of different machines */
-  .corridor { position: absolute; z-index: 20; border-radius: 6px; pointer-events: none; }
-  .corridor .flow { position: absolute; inset: 0; border-radius: 6px; opacity: .7; mix-blend-mode: overlay; }
-  .corridor.v .flow {
-    background: repeating-linear-gradient(180deg, rgba(255,255,255,.55) 0 3px, transparent 3px 12px);
-    background-size: 100% 34px; animation: kv-flowV 1.1s linear infinite;
-  }
-  .corridor.h .flow {
-    background: repeating-linear-gradient(90deg, rgba(255,255,255,.55) 0 3px, transparent 3px 12px);
-    background-size: 34px 100%; animation: kv-flow 1.1s linear infinite;
+  .corridor {
+    position: absolute; z-index: 20; border-radius: 2px; pointer-events: none;
+    background: var(--a1); opacity: .5; box-shadow: 0 0 5px var(--a1);
   }
 
   /* one monitor = one draggable tile, tinted by its machine */
@@ -840,8 +834,8 @@ function refreshSnap() {
   renderCorridors();
 }
 
-// Glowing animated "portal corridors" along every edge where two different
-// machines' monitors meet — the cursor flows through these.
+// A subtle crossing marker along every seam where two different machines'
+// monitors meet — a thin soft line, not a loud animated bar.
 const corridorLayer = document.createElement('div');
 corridorLayer.style.cssText = 'position:absolute;inset:0;pointer-events:none;';
 canvas.appendChild(corridorLayer);
@@ -853,29 +847,17 @@ function renderCorridors() {
     if (a === b || a.machine === b.machine) continue;
     const key = [a.machine + a.idx, b.machine + b.idx].sort().join('|');
     if (seen.has(key)) continue;
-    const ca = colorOf(a.machine).c, cb = colorOf(b.machine).c;
     let bar = null;
-    // vertical seam (a's right touches b's left) → vertical corridor
     const vy0 = Math.max(a.y, b.y), vy1 = Math.min(a.y + a.h, b.y + b.h);
-    if (vy1 - vy0 > 12) {
-      if (Math.abs(a.x + a.w - b.x) <= SNAP) bar = { o: 'v', s: (a.x + a.w + b.x) / 2, p0: vy0, p1: vy1 };
-    }
+    if (vy1 - vy0 > 12 && Math.abs(a.x + a.w - b.x) <= SNAP) bar = { o: 'v', s: (a.x + a.w + b.x) / 2, p0: vy0 + 6, p1: vy1 - 6 };
     const hx0 = Math.max(a.x, b.x), hx1 = Math.min(a.x + a.w, b.x + b.w);
-    if (!bar && hx1 - hx0 > 12) {
-      if (Math.abs(a.y + a.h - b.y) <= SNAP) bar = { o: 'h', s: (a.y + a.h + b.y) / 2, p0: hx0, p1: hx1 };
-    }
+    if (!bar && hx1 - hx0 > 12 && Math.abs(a.y + a.h - b.y) <= SNAP) bar = { o: 'h', s: (a.y + a.h + b.y) / 2, p0: hx0 + 6, p1: hx1 - 6 };
     if (!bar) continue;
     seen.add(key);
     const d = document.createElement('div');
-    d.className = 'corridor ' + bar.o;
-    d.style.setProperty('--cc', ca);
-    const glow = `box-shadow:0 0 16px 1px ${ca}, 0 0 6px ${cb};`;
-    if (bar.o === 'v') {
-      d.style.cssText += `left:${bar.s - 5}px;top:${bar.p0}px;width:10px;height:${bar.p1 - bar.p0}px;background:linear-gradient(180deg,${ca},${cb});${glow}`;
-    } else {
-      d.style.cssText += `left:${bar.p0}px;top:${bar.s - 5}px;width:${bar.p1 - bar.p0}px;height:10px;background:linear-gradient(90deg,${ca},${cb});${glow}`;
-    }
-    d.innerHTML = '<div class="flow"></div>';
+    d.className = 'corridor';
+    if (bar.o === 'v') d.style.cssText += `left:${bar.s - 1}px;top:${bar.p0}px;width:2px;height:${bar.p1 - bar.p0}px;`;
+    else d.style.cssText += `left:${bar.p0}px;top:${bar.s - 1}px;width:${bar.p1 - bar.p0}px;height:2px;`;
     corridorLayer.appendChild(d);
   }
 }
