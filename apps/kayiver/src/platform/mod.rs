@@ -93,21 +93,13 @@ pub fn start_cursor_guard(ctl: Arc<CaptureCtl>, tx: tokio::sync::mpsc::Unbounded
                     if !inside {
                         inside = true;
                         let (dx, dy) = (x - prev.0, y - prev.1);
-                        // Hand over at the edge we ENTERED through, preserving the
-                        // direction of travel: crossing rightward onto the panel
-                        // must land on the peer's LEFT edge at the same height —
-                        // not wherever the 8 ms poll happened to catch the cursor
-                        // after it flicked deep into the (invisible) panel, which
-                        // dumped it in the far corner.
-                        let along_y = ((y - b.y) as f32 / b.h.max(1) as f32).clamp(0.0, 1.0);
-                        let along_x = ((x - b.x) as f32 / b.w.max(1) as f32).clamp(0.0, 1.0);
-                        let (fx, fy) = if dx.abs() >= dy.abs() {
-                            if dx >= 0 { (0.0, along_y) } else { (1.0, along_y) }
-                        } else if dy >= 0 {
-                            (along_x, 0.0)
-                        } else {
-                            (along_x, 1.0)
-                        };
+                        // Hand over at the edge we ENTERED through, at the point
+                        // where the prev→cur segment actually crosses the panel
+                        // boundary — not wherever the 8 ms poll caught the cursor
+                        // inside, and not a guess from the dominant travel axis
+                        // (which reads a slightly diagonal left-entry as a TOP
+                        // entry and dumps the cursor in the peer's top corner).
+                        let (fx, fy) = entry_on_rect(b, prev, (x, y));
                         // Park just outside the edge we came in through so the
                         // local cursor isn't left sitting on the hidden panel.
                         let park = skip_out(b, x, y, -dx, -dy);
@@ -122,6 +114,65 @@ pub fn start_cursor_guard(ctl: Arc<CaptureCtl>, tx: tokio::sync::mpsc::Unbounded
             }
         })
         .ok();
+}
+
+/// Where the segment `from`→`to` (ending inside `b`) enters the rect, as
+/// fractions across it — the entered edge pinned to exactly 0.0 / 1.0 and the
+/// crossing point preserved along it. Every side the segment could have
+/// crossed is intersected and the first hit along the travel (smallest t)
+/// wins, so a diagonal entry near a corner still resolves to the side that was
+/// physically hit first. When there is no crossing to measure (`from` already
+/// inside, or no motion — e.g. the block appeared under a resting cursor),
+/// falls back to pinning the nearest side of the caught position.
+fn entry_on_rect(b: Rect, from: (i32, i32), to: (i32, i32)) -> (f32, f32) {
+    let (px, py) = (from.0 as f32, from.1 as f32);
+    let (dx, dy) = (to.0 as f32 - px, to.1 as f32 - py);
+    let w = b.w.max(1) as f32;
+    let h = b.h.max(1) as f32;
+    let (x0, y0) = (b.x as f32, b.y as f32);
+    let (x1, y1) = ((b.x + b.w) as f32, (b.y + b.h) as f32);
+
+    let mut best: Option<(f32, (f32, f32))> = None;
+    let mut consider = |t: f32, fx: f32, fy: f32| {
+        // A candidate is a real entry only if the crossing point sits on the
+        // rect's side (small tolerance for float rounding at corners).
+        let on_side = (-0.01..=1.01).contains(&fx) && (-0.01..=1.01).contains(&fy);
+        if (0.0..=1.0).contains(&t) && on_side && best.map_or(true, |(bt, _)| t < bt) {
+            best = Some((t, (fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0))));
+        }
+    };
+    if dx > 0.0 && px < x0 {
+        let t = (x0 - px) / dx;
+        consider(t, 0.0, (py + t * dy - y0) / h);
+    }
+    if dx < 0.0 && px >= x1 {
+        let t = (x1 - px) / dx;
+        consider(t, 1.0, (py + t * dy - y0) / h);
+    }
+    if dy > 0.0 && py < y0 {
+        let t = (y0 - py) / dy;
+        consider(t, (px + t * dx - x0) / w, 0.0);
+    }
+    if dy < 0.0 && py >= y1 {
+        let t = (y1 - py) / dy;
+        consider(t, (px + t * dx - x0) / w, 1.0);
+    }
+    if let Some((_, f)) = best {
+        return f;
+    }
+    let fx = ((to.0 - b.x) as f32 / w).clamp(0.0, 1.0);
+    let fy = ((to.1 - b.y) as f32 / h).clamp(0.0, 1.0);
+    let (dl, dr, dt, db) = (fx, 1.0 - fx, fy, 1.0 - fy);
+    let m = dl.min(dr).min(dt).min(db);
+    if m == dl {
+        (0.0, fy)
+    } else if m == dr {
+        (1.0, fy)
+    } else if m == dt {
+        (fx, 0.0)
+    } else {
+        (fx, 1.0)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -168,5 +219,53 @@ pub mod indicator {
     pub fn set_state(_connected: bool, _cursor_here: bool) {
         #[cfg(target_os = "windows")]
         super::tray_windows::set_state(_connected, _cursor_here);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The shared panel on this desk: B at (2560,0) 2560x1440, entered from A.
+    fn b() -> Rect {
+        Rect { x: 2560, y: 0, w: 2560, h: 1440 }
+    }
+
+    #[test]
+    fn diagonal_left_entry_stays_at_entry_height() {
+        // Down-right at >45°: the old dominant-axis guess read this as a TOP
+        // entry and dumped the cursor in the peer's top-left corner.
+        let (fx, fy) = entry_on_rect(b(), (2550, 700), (2565, 760));
+        assert_eq!(fx, 0.0);
+        assert!((fy - 740.0 / 1440.0).abs() < 0.01, "fy={fy}");
+    }
+
+    #[test]
+    fn straight_left_entry() {
+        let (fx, fy) = entry_on_rect(b(), (2500, 700), (2600, 700));
+        assert_eq!(fx, 0.0);
+        assert!((fy - 700.0 / 1440.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn corner_entry_picks_first_side_hit() {
+        // From above the rect near its corner, moving down-right: only the
+        // top edge is a real crossing, even though the motion is mostly
+        // vertical AND horizontal candidates exist nearby.
+        let (fx, fy) = entry_on_rect(
+            Rect { x: 2560, y: 100, w: 2560, h: 1340 },
+            (2600, 60),
+            (2700, 220),
+        );
+        assert_eq!(fy, 0.0);
+        assert!((fx - (2625.0 - 2560.0) / 2560.0).abs() < 0.01, "fx={fx}");
+    }
+
+    #[test]
+    fn no_motion_falls_back_to_nearest_side() {
+        // Block appeared under a resting cursor near the left edge.
+        let (fx, fy) = entry_on_rect(b(), (2570, 700), (2570, 700));
+        assert_eq!(fx, 0.0);
+        assert!((fy - 700.0 / 1440.0).abs() < 0.01);
     }
 }
