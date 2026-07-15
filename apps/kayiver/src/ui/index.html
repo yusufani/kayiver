@@ -119,21 +119,31 @@
   .mon.panel .name, .mon.panel .res, .mon.panel .sdot { display: none; }
   .splitwrap { position: absolute; inset: 0; display: flex; pointer-events: none; z-index: 2; }
   .splitseg {
-    flex: 1; position: relative; display: flex; align-items: center; justify-content: center;
+    flex: 1; position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
     background: var(--sg, transparent);
     border-right: 1.5px dashed rgba(255,255,255,.22);
+    pointer-events: auto; cursor: pointer; opacity: .45; transition: opacity .15s, box-shadow .15s;
   }
   .splitseg:last-child { border-right: 0; }
+  .splitseg:hover { opacity: .8; }
+  .splitseg.active { opacity: 1; box-shadow: inset 0 0 0 2px var(--sc); }
   .splitseg .segname {
     font-size: 10px; font-weight: 800; color: var(--sc); letter-spacing: .2px;
     max-width: calc(100% - 8px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
   }
+  .splitseg .segpick { font-size: 8px; font-weight: 700; color: var(--faint); text-transform: uppercase; letter-spacing: .4px; }
+  .splitseg.active .segpick { color: var(--sc); }
   .panel-badge {
     position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%); z-index: 3;
     background: var(--accent-grad); color: #052e24; font-size: 8.5px; font-weight: 800;
     padding: 1px 9px; border-radius: 999px; letter-spacing: .4px; white-space: nowrap;
     box-shadow: 0 2px 6px rgba(0,0,0,.4);
   }
+  .panel-x {
+    position: absolute; top: 2px; right: 5px; z-index: 4; cursor: pointer;
+    font-size: 14px; line-height: 1; color: var(--faint); padding: 2px 4px; border-radius: 6px;
+  }
+  .panel-x:hover { color: var(--danger); background: rgba(248,113,113,.14); }
   .mon.shared .badge { display: block; }
   .mon.panel .badge { display: none; }
   .mon .badge {
@@ -157,7 +167,8 @@
     white-space: nowrap; padding: 8px 15px; font-size: 12.5px;
   }
 
-  footer { display: flex; flex-wrap: wrap; align-items: stretch; gap: 14px; padding: 12px 22px 16px; }
+  footer { display: flex; align-items: center; gap: 16px; padding: 12px 22px 16px; }
+  footer #save { flex: none; margin-left: auto; }
   .card {
     background: linear-gradient(180deg, var(--panel), var(--panel2));
     border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px;
@@ -170,12 +181,26 @@
   #tabletMsg { font-size: 12px; color: var(--muted); max-width: 240px; }
   #tabletMsg.err { color: var(--danger); }
   #sharedCard .who { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-  #msg { font-size: 12.5px; color: var(--muted); min-height: 17px; max-width: 300px; }
+  #msg { font-size: 12.5px; color: var(--muted); min-height: 17px; flex: none; }
   #msg.err { color: var(--danger); }
   #msg.ok { color: var(--a2); }
+  /* tablet shown as a device tile in the canvas */
+  .tablet-tile {
+    position: absolute; z-index: 8; border-radius: 12px; cursor: pointer; overflow: hidden;
+    border: 2px dashed var(--line2); background: linear-gradient(180deg, var(--panel), var(--panel2));
+    box-shadow: var(--shadow); display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 4px; padding: 8px; text-align: center; transition: border-color .15s, box-shadow .15s;
+  }
+  .tablet-tile:hover { border-color: var(--a1); }
+  .tablet-tile.on { border-style: solid; border-color: var(--a2); box-shadow: 0 0 0 3px rgba(52,211,153,.18), var(--shadow); }
+  .tablet-tile .tname { font-size: 11px; font-weight: 750; color: var(--text); }
+  .tablet-tile .tsub { font-size: 9.5px; color: var(--faint); }
+  .tablet-tile.on .tsub { color: var(--a2); }
+  .tablet-tile .ticon { width: 26px; height: 34px; border: 2px solid var(--muted); border-radius: 5px; }
+  .tablet-tile.on .ticon { border-color: var(--a2); }
   #sharedMsg { font-size: 12px; color: var(--muted); max-width: 280px; }
   #sharedMsg.err { color: var(--danger); }
-  .hint { margin-left: auto; color: var(--faint); font-size: 11px; text-align: right; line-height: 1.45; align-self: center; }
+  .hint { flex: 1; color: var(--faint); font-size: 11px; text-align: left; line-height: 1.45; }
 
   button {
     background: var(--accent-grad);
@@ -268,23 +293,11 @@
 <div id="canvas"><button id="sharedBtn"></button></div>
 
 <footer>
-  <div class="card" id="layoutCard">
-    <div><div class="title">Yerleşim</div><div id="msg">her monitörü ayrı ayrı sürükle; kenarlar değince geçiş olur</div></div>
-    <button id="save">Kaydet</button>
-  </div>
-  <div class="card" id="sharedCard">
-    <div style="min-width:0"><div class="title">Ortak monitör</div><div id="sharedMsg">—</div></div>
-    <div class="who" id="sharedWho"></div>
-    <div style="margin-left:auto; display:flex; gap:8px; align-items:center" id="sharedActions"></div>
-  </div>
-  <div class="card" id="tabletCard">
-    <div style="min-width:0"><div class="title" id="tabletTitle">Tablet</div><div id="tabletMsg">—</div></div>
-    <div style="margin-left:auto; display:flex; gap:8px; align-items:center; flex-wrap:wrap" id="tabletActions"></div>
-  </div>
+  <div id="msg">her monitörü ayrı ayrı sürükle; kenarlar değince geçiş olur</div>
   <div class="hint">
-    bir monitörü diğer makinenin monitörüne <b>değdir</b> = geçiş · <b>üstüne bırak</b> = ortak panel<br>
-    panik: 3× <kbd>Esc</kbd> · ortak monitör: <kbd id="hotkeyHint">⌘⌥M</kbd>
+    <b>değdir</b> = geçiş · <b>üstüne bırak</b> = ortak panel · ortak panelde bir yarıya tıkla = o ekranı aktif et · panik: 3× <kbd>Esc</kbd>
   </div>
+  <button id="save">Kaydet</button>
 </footer>
 
 <div id="overlay">
@@ -356,7 +369,7 @@ const I18N = {
     saved: "kaydedildi ✓ — ~2 sn içinde uygulanır", saveFail: "kaydedilemedi: ",
     reach: "kayıver'a ulaşılamıyor: ",
     makeShared: "ortak panel yap", removeShared: "ortak panel ✓ (kaldır)",
-    sharedBadge: "ortak", sharedSaved: "ortak panel kaydedildi ✓", sharedRemoved: "ortak panel kaldırıldı",
+    sharedBadge: "ortak", activate: "aktif et", sharedSaved: "ortak panel kaydedildi ✓", sharedRemoved: "ortak panel kaldırıldı",
     sharedNone: "Tek panel iki makinede mi? Bir makinenin o monitörünü diğerinin karşılık gelen monitörünün ÜSTÜNE bırak.",
     panelShows: "Panel şu an ", panelShowsEnd: " ekranını gösteriyor.", panelUnknown: "Panel durumu bilinmiyor.",
     removeSetting: "ayarı kaldır",
@@ -390,7 +403,7 @@ const I18N = {
     saved: "saved ✓ — applies within ~2 s", saveFail: "save failed: ",
     reach: "can't reach kayiver: ",
     makeShared: "make shared panel", removeShared: "shared panel ✓ (remove)",
-    sharedBadge: "shared", sharedSaved: "shared panel saved ✓", sharedRemoved: "shared panel removed",
+    sharedBadge: "shared", activate: "activate", sharedSaved: "shared panel saved ✓", sharedRemoved: "shared panel removed",
     sharedNone: "One panel on both machines? Drop that monitor onto the matching monitor of the other machine.",
     panelShows: "The panel is showing ", panelShowsEnd: " right now.", panelUnknown: "Panel state unknown.",
     removeSetting: "remove setting",
@@ -411,8 +424,6 @@ function applyStaticI18n() {
   const me = document.getElementById('msg');
   if (me && !me.className) me.textContent = t('layoutHint');
   set('#save', t('save'));
-  set('#sharedCard .title', t('sharedTitle'));
-  set('#tabletTitle', t('tablet'));
   document.querySelector('.hint').innerHTML =
     t('hint1a') + '<b>' + t('hintTouch') + '</b>' + t('hint1b') + '<b>' + t('hintDrop') + '</b>' + t('hint1c') +
     '<br>' + t('hintPanic') + '<kbd>Esc</kbd>' + t('hintShared') + '<kbd id="hotkeyHint">' + hk() + '</kbd>';
@@ -436,7 +447,7 @@ function applyStaticI18n() {
   set('#setClose', t('close'));
 }
 function hk() { return /Mac/.test(navigator.platform) ? '⌘⌥M' : 'Ctrl+Alt+M'; }
-function setLang(l) { lang = l; localStorage.setItem('kayiver-lang', l); applyStaticI18n(); renderSharedCard(); renderLegend(); }
+function setLang(l) { lang = l; localStorage.setItem('kayiver-lang', l); applyStaticI18n(); renderLegend(); }
 
 const SNAP = 16;
 const OVERLAP_MIN = 0.30;
@@ -523,7 +534,7 @@ function buildFromState(s) {
   mons.forEach(t => clamp(t));
   mergeShared();              // fold the shared pair into one split panel
   mons.forEach(pos);
-  refreshSnap(); renderSharedBadges(); renderSharedCard(); renderLegend();
+  refreshSnap(); renderLegend();
 }
 
 // Position each machine cluster: me centered, others by link adjacency, rest in a row.
@@ -657,24 +668,52 @@ function mergeShared() {
   renderSplit(a, [a.machine, b.machine]);
 }
 
+let panelEl = null;
 function renderSplit(a, names) {
   a.el.classList.add('panel');
   a.el.style.zIndex = 6;
+  panelEl = a.el;
   const badge = document.createElement('span');
   badge.className = 'panel-badge'; badge.textContent = t('sharedBadge');
   a.el.appendChild(badge);
+  // small × to remove the shared panel (was a bottom-card link before)
+  const x = document.createElement('span');
+  x.className = 'panel-x'; x.textContent = '×'; x.title = t('removeSetting');
+  x.addEventListener('click', e => { e.stopPropagation(); unshare(); });
+  a.el.appendChild(x);
   const wrap = document.createElement('div');
   wrap.className = 'splitwrap';
   for (const nm of names) {
     const col = colorOf(nm);
     const seg = document.createElement('div');
     seg.className = 'splitseg';
+    seg.dataset.machine = nm;
     seg.style.setProperty('--sc', col.c);
     seg.style.setProperty('--sg', col.g);
-    seg.innerHTML = '<span class="segname">' + nm + '</span>';
+    seg.innerHTML = '<span class="segname">' + nm + '</span><span class="segpick">' + t('activate') + '</span>';
+    seg.addEventListener('click', e => { e.stopPropagation(); setOwner(nm); });
     wrap.appendChild(seg);
   }
   a.el.appendChild(wrap);
+  updatePanelOwner();
+}
+// Highlight the half whose machine currently owns (is showing on) the panel.
+function updatePanelOwner() {
+  if (!panelEl) return;
+  const owner = sharedLive.owner;
+  panelEl.querySelectorAll('.splitseg').forEach(seg => {
+    seg.classList.toggle('active', !!owner && seg.dataset.machine === owner);
+  });
+}
+async function setOwner(name) {
+  sharedLive.owner = name; updatePanelOwner(); // optimistic
+  try { await fetch('/api/shared', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: name }) }); } catch (_) {}
+}
+async function unshare() {
+  await fetch('/api/shared-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) });
+  const p = sharedPair();
+  if (p) { p.b.x = p.a.x + 40; p.b.y = p.a.y + 40; }
+  sharedCfg = null; panelEl = null; mergeShared(); mons.forEach(pos); updateOverlap(); renderLegend();
 }
 
 // ---- live snap guide (animated edge shown while dragging) ------------------
@@ -841,54 +880,10 @@ sharedBtn.addEventListener('click', async () => {
     else { setMsg(t('saveFail') + await r.text(), 'err'); return; }
   }
   sharedBtn.style.display = 'none'; candidate = null;
-  mergeShared(); savePositions(); renderSharedBadges(); renderSharedCard(); refreshSnap();
+  mergeShared(); savePositions(); refreshSnap();
 });
 
 function tileOf(machine, idx) { return mons.find(t => t.machine === machine && t.idx === idx); }
-function renderSharedBadges() {
-  mons.forEach(t => t.el.classList.remove('shared'));
-  if (!sharedCfg) return;
-  const me = machines.find(m => m.me);
-  const a = me && tileOf(me.name, sharedCfg.local_monitor);
-  const b = tileOf(sharedCfg.peer, sharedCfg.peer_monitor);
-  if (a) a.el.classList.add('shared');
-  if (b) b.el.classList.add('shared');
-}
-
-function renderSharedCard() {
-  const msg = document.getElementById('sharedMsg');
-  const who = document.getElementById('sharedWho');
-  const act = document.getElementById('sharedActions');
-  who.innerHTML = ''; act.innerHTML = ''; msg.className = '';
-  if (!sharedCfg) {
-    msg.textContent = t('sharedNone');
-    return;
-  }
-  const owner = sharedLive.owner, err = sharedLive.error;
-  msg.className = err ? 'err' : '';
-  msg.textContent = err ? err : (owner ? t('panelShows') + owner + t('panelShowsEnd') : t('panelUnknown'));
-  for (const m of machines) {
-    const b = document.createElement('button');
-    b.className = 'ghost small owner-btn' + (owner === m.name ? ' active' : '');
-    b.textContent = m.name;
-    b.onclick = async () => {
-      const r = await fetch('/api/shared', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: m.name }) });
-      if (!r.ok) { msg.className = 'err'; msg.textContent = await r.text(); }
-    };
-    who.appendChild(b);
-  }
-  const clear = document.createElement('button');
-  clear.className = 'linklike'; clear.textContent = t('removeSetting');
-  clear.onclick = async () => {
-    await fetch('/api/shared-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) });
-    // un-merge: nudge the peer half out from under the panel so it's separable
-    const p = sharedPair();
-    if (p) { p.b.x = p.a.x + 40; p.b.y = p.a.y + 40; }
-    sharedCfg = null; mergeShared(); mons.forEach(pos);
-    updateOverlap(); renderSharedBadges(); renderSharedCard();
-  };
-  act.appendChild(clear);
-}
 
 // ---------------------------------------------------------------- poll ----
 
@@ -901,38 +896,42 @@ async function refreshStateIfChanged() {
   } catch (_) {}
 }
 
-// ---------------------------------------------------------- tablet ----
+// ---- tablet: shown as a device tile in the canvas -------------------------
+const tabletTile = document.createElement('div');
+tabletTile.className = 'tablet-tile';
+tabletTile.style.display = 'none';
+canvas.appendChild(tabletTile);
 async function pollAndroid() {
   try { renderAndroid(await (await fetch('/api/android')).json()); }
   catch (_) {}
 }
-function amkbtn(txt, cls, fn) { const b = document.createElement('button'); b.className = cls; b.textContent = txt; b.onclick = fn; return b; }
 function renderAndroid(a) {
-  const msg = document.getElementById('tabletMsg');
-  const act = document.getElementById('tabletActions');
-  act.innerHTML = ''; msg.className = '';
-  if (!a || !a.tools_ready) { msg.textContent = t('tabletNoTools'); return; }
-  const ds = a.devices || [];
-  if (a.connected) {
-    const d = ds.find(x => x.serial === a.connected);
-    msg.textContent = (d ? d.model + ' — ' : '') + t('tabletControlling');
-    act.appendChild(amkbtn(t('disconnect'), 'small', () => androidDisconnect()));
-    return;
-  }
-  if (!ds.length) { msg.textContent = t('tabletNone'); return; }
-  msg.textContent = ds.map(d => d.model + ' · ' + (d.connection === 'wifi' ? t('wireless') : 'USB')).join(' · ');
-  for (const d of ds) {
-    act.appendChild(amkbtn(t('connectBtn'), 'small', () => androidConnect(d.serial)));
-    if (d.connection === 'usb') act.appendChild(amkbtn(t('wireless'), 'ghost small', () => androidWireless(d.serial)));
+  if (!a || !a.tools_ready || !(a.devices || []).length) { tabletTile.style.display = 'none'; return; }
+  const w = 122, h = 96;
+  tabletTile.style.width = w + 'px'; tabletTile.style.height = h + 'px';
+  tabletTile.style.left = Math.max(8, canvas.clientWidth - w - 26) + 'px';
+  tabletTile.style.top = Math.max(8, canvas.clientHeight - h - 26) + 'px';
+  tabletTile.style.display = 'flex';
+  const d = (a.devices || []).find(x => x.serial === a.connected) || a.devices[0];
+  const on = !!a.connected;
+  tabletTile.classList.toggle('on', on);
+  tabletTile.innerHTML = '<div class="ticon"></div><div class="tname">' + d.model + '</div>';
+  const sub = document.createElement('div'); sub.className = 'tsub';
+  sub.textContent = on ? t('tabletControlling') : ((d.connection === 'wifi' ? t('wireless') : 'USB') + ' · ' + t('connectBtn'));
+  tabletTile.appendChild(sub);
+  tabletTile.onclick = on ? androidDisconnect : () => androidConnect(d.serial);
+  if (!on && d.connection === 'usb') {
+    const wl = document.createElement('div'); wl.className = 'tsub'; wl.style.textDecoration = 'underline';
+    wl.textContent = t('wireless'); wl.onclick = e => { e.stopPropagation(); androidWireless(d.serial); };
+    tabletTile.appendChild(wl);
   }
 }
 async function androidConnect(serial) {
-  const msg = document.getElementById('tabletMsg');
-  msg.textContent = t('tabletConnecting');
+  setMsg(t('tabletConnecting'), '');
   try {
     const r = await fetch('/api/android/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ serial }) });
-    if (!r.ok) { msg.textContent = await r.text(); msg.className = 'err'; }
-  } catch (e) { msg.textContent = String(e); msg.className = 'err'; }
+    setMsg(r.ok ? t('tabletControlling') : await r.text(), r.ok ? 'ok' : 'err');
+  } catch (e) { setMsg(String(e), 'err'); }
   pollAndroid();
 }
 async function androidDisconnect() {
@@ -940,12 +939,10 @@ async function androidDisconnect() {
   pollAndroid();
 }
 async function androidWireless(serial) {
-  const msg = document.getElementById('tabletMsg');
   try {
     const r = await fetch('/api/android/wireless', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ serial }) });
-    if (r.ok) { msg.textContent = t('wirelessOn') + (await r.json()).addr; }
-    else { msg.textContent = await r.text(); msg.className = 'err'; }
-  } catch (e) { msg.textContent = String(e); msg.className = 'err'; }
+    setMsg(r.ok ? t('wirelessOn') + (await r.json()).addr : await r.text(), r.ok ? 'ok' : 'err');
+  } catch (e) { setMsg(String(e), 'err'); }
   setTimeout(pollAndroid, 1500);
 }
 
@@ -968,7 +965,7 @@ async function poll() {
 
     const prevOwner = sharedLive.owner, prevErr = sharedLive.error;
     sharedLive = st.shared || {};
-    if (sharedCfg && (sharedLive.owner !== prevOwner || sharedLive.error !== prevErr)) renderSharedCard();
+    if (sharedCfg && sharedLive.owner !== prevOwner) updatePanelOwner();
 
     for (const t of mons) {
       t.el.classList.toggle('focus', st.focus === t.machine);
