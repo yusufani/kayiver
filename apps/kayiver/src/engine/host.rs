@@ -134,6 +134,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         down_keys: HashSet::new(),
         down_buttons: HashSet::new(),
         pending_drop_url: None,
+        tablet_active: false,
     };
 
     // The layout editor rides along with the host process.
@@ -160,6 +161,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
             },
             cmd = cmd_rx.recv() => match cmd {
                 Some(crate::ui::UiCmd::SetSharedOwner(owner)) => router.set_shared_owner(&owner),
+                Some(crate::ui::UiCmd::TabletControl(on)) => router.set_tablet_control(on),
                 None => break,
             },
         }
@@ -168,6 +170,17 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         }
     }
     Ok(())
+}
+
+/// UHID mouse button bit index for a captured button.
+fn button_index(b: MouseButton) -> u8 {
+    match b {
+        MouseButton::Left => 0,
+        MouseButton::Right => 1,
+        MouseButton::Middle => 2,
+        MouseButton::X1 => 3,
+        MouseButton::X2 => 4,
+    }
 }
 
 /// The peer that shares the panel: explicit config, else the first paired peer.
@@ -190,6 +203,9 @@ struct Router {
     /// A URL grabbed from the drag pasteboard when a link was dragged across to
     /// the peer; opened on that peer when the drag is released (left button up).
     pending_drop_url: Option<String>,
+    /// While true, captured input is forwarded to the connected Android tablet
+    /// (via scrcpy UHID) instead of the local desktop or a peer.
+    tablet_active: bool,
 }
 
 impl Router {
@@ -213,6 +229,31 @@ impl Router {
         }
     }
 
+    /// Enter/leave tablet control: swallow local input and route it to the
+    /// connected Android device (or restore local control).
+    fn set_tablet_control(&mut self, on: bool) {
+        if on {
+            if !crate::android::is_connected() {
+                return;
+            }
+            self.release_all();
+            self.send_to_focus(Msg::Leave);
+            self.focus = None;
+            self.tablet_active = true;
+            self.ctl.forwarding.store(true, Ordering::SeqCst);
+            platform::set_forwarding_visuals(true);
+            crate::ui::set_focus(Some("tablet".into()));
+            info!("controlling tablet");
+        } else if self.tablet_active {
+            self.tablet_active = false;
+            self.exit_forwarding();
+            let b = self.ctl.bounds;
+            platform::warp_cursor_settled(b.x + b.w / 2, b.y + b.h / 2);
+            crate::ui::set_focus(None);
+            info!("tablet control released");
+        }
+    }
+
     fn on_captured(&mut self, ev: Captured, cap_rx: &mut UnboundedReceiver<Captured>) {
         match ev {
             Captured::Input(InputEvent::MouseMove { mut dx, mut dy }) => {
@@ -228,9 +269,24 @@ impl Router {
                         break;
                     }
                 }
-                self.send_to_focus(Msg::Input(InputEvent::MouseMove { dx, dy }));
+                if self.tablet_active {
+                    crate::android::mouse_move(dx, dy);
+                } else {
+                    self.send_to_focus(Msg::Input(InputEvent::MouseMove { dx, dy }));
+                }
                 if let Some(next) = trailing {
                     self.on_captured(next, cap_rx);
+                }
+            }
+            Captured::Input(ev) if self.tablet_active => {
+                // Tablet control: mouse buttons + wheel become UHID reports.
+                // (Keyboard-to-tablet is not wired yet.)
+                match ev {
+                    InputEvent::MouseButton { button, pressed } => {
+                        crate::android::mouse_button(button_index(button), pressed);
+                    }
+                    InputEvent::Wheel { dx, dy } => crate::android::mouse_scroll(dx, dy),
+                    _ => {}
                 }
             }
             Captured::Input(ev) => {
@@ -284,6 +340,10 @@ impl Router {
             }
             Captured::Panic => {
                 info!("panic escape — input returned to host");
+                if self.tablet_active {
+                    self.set_tablet_control(false);
+                    return;
+                }
                 self.release_all();
                 self.send_to_focus(Msg::Leave);
                 self.focus = None;

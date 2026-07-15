@@ -29,6 +29,9 @@ pub struct PeerLive {
 /// Commands the editor (or `kayiver monitor`) sends to the running host router.
 pub enum UiCmd {
     SetSharedOwner(String),
+    /// Enter (true) or leave (false) tablet control: forward the keyboard/mouse
+    /// to the connected Android device instead of the local desktop.
+    TabletControl(bool),
 }
 
 #[derive(Default)]
@@ -405,14 +408,19 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
         },
         ("GET", "/api/android") => ("200 OK", "application/json", api_android_list().into_bytes()),
-        ("POST", "/api/android/connect") => match api_android_action(body, crate::android::connect) {
+        ("POST", "/api/android/connect") => match api_android_connect(body) {
             Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
         },
-        ("POST", "/api/android/disconnect") => match api_android_action(body, crate::android::disconnect) {
-            Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
-            Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
-        },
+        ("POST", "/api/android/control") => {
+            send_cmd(UiCmd::TabletControl(true));
+            ("200 OK", "text/plain", b"ok".to_vec())
+        }
+        ("POST", "/api/android/disconnect") => {
+            send_cmd(UiCmd::TabletControl(false));
+            crate::android::disconnect();
+            ("200 OK", "text/plain", b"ok".to_vec())
+        }
         ("POST", "/api/android/wireless") => match api_android_wireless(body) {
             Ok(json) => ("200 OK", "application/json", json.into_bytes()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
@@ -421,7 +429,7 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
     }
 }
 
-/// GET /api/android — tool availability + visible devices.
+/// GET /api/android — tool availability, devices, and live control state.
 fn api_android_list() -> String {
     let devices: Vec<serde_json::Value> = crate::android::list_devices()
         .into_iter()
@@ -430,22 +438,31 @@ fn api_android_list() -> String {
                 "serial": d.serial,
                 "model": d.model,
                 "connection": d.connection,
-                "running": d.running,
             })
         })
         .collect();
     serde_json::json!({
         "tools_ready": crate::android::tools_ready(),
         "devices": devices,
+        "connected": crate::android::connected_serial(),
     })
     .to_string()
 }
 
-/// Run a per-device action ({"serial": "..."}).
-fn api_android_action(body: &[u8], f: fn(&str) -> Result<()>) -> Result<()> {
+fn send_cmd(cmd: UiCmd) {
+    if let Some(tx) = live().lock().unwrap().cmd.as_ref() {
+        let _ = tx.send(cmd);
+    }
+}
+
+/// POST /api/android/connect {"serial": "..."} — open the control session and
+/// immediately hand the keyboard/mouse to the tablet.
+fn api_android_connect(body: &[u8]) -> Result<()> {
     let v: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
     let serial = v.get("serial").and_then(|s| s.as_str()).context("missing 'serial'")?;
-    f(serial)
+    crate::android::connect(serial)?;
+    send_cmd(UiCmd::TabletControl(true));
+    Ok(())
 }
 
 /// POST /api/android/wireless {"serial": "..."} — arm wireless adb, return addr.

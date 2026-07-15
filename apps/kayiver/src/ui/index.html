@@ -343,7 +343,8 @@ const I18N = {
     dwellImmediate: "Anında", secShort: "sn",
     tablet: "Tablet", tabletNone: "Tablet yok — USB kablosuyla bağla, tablette USB hata ayıklamayı aç",
     tabletNoTools: "scrcpy kurulu değil (brew install scrcpy)",
-    connectBtn: "bağlan", disconnect: "kes", wireless: "kablosuz", wirelessOn: "kablosuz açık: ",
+    tabletControlling: "kontrol ediliyor · çıkış: 3× Esc", tabletConnecting: "bağlanıyor…",
+    connectBtn: "bağlan", disconnect: "bırak", wireless: "kablosuz", wirelessOn: "kablosuz açık: ",
     autostart: "Girişte başlat", autostartDesc: "oturum açılınca kayıver kendiliğinden çalışsın",
     remote: "Telefon / LAN kumandası", remoteDesc: "Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)",
     cfgFile: "Config dosyası", close: "Kapat", language: "Dil",
@@ -376,7 +377,8 @@ const I18N = {
     dwellImmediate: "Instant", secShort: "s",
     tablet: "Tablet", tabletNone: "No tablet — connect one over USB and enable USB debugging",
     tabletNoTools: "scrcpy not installed (brew install scrcpy)",
-    connectBtn: "connect", disconnect: "disconnect", wireless: "wireless", wirelessOn: "wireless on: ",
+    tabletControlling: "controlling · exit: 3× Esc", tabletConnecting: "connecting…",
+    connectBtn: "connect", disconnect: "release", wireless: "wireless", wirelessOn: "wireless on: ",
     autostart: "Start at login", autostartDesc: "run kayiver automatically when you log in",
     remote: "Phone / LAN control", remoteDesc: "token-protected local API for the Android app (takes effect after a restart)",
     cfgFile: "Config file", close: "Close", language: "Language",
@@ -911,17 +913,30 @@ function renderAndroid(a) {
   act.innerHTML = ''; msg.className = '';
   if (!a || !a.tools_ready) { msg.textContent = t('tabletNoTools'); return; }
   const ds = a.devices || [];
+  if (a.connected) {
+    const d = ds.find(x => x.serial === a.connected);
+    msg.textContent = (d ? d.model + ' — ' : '') + t('tabletControlling');
+    act.appendChild(amkbtn(t('disconnect'), 'small', () => androidDisconnect()));
+    return;
+  }
   if (!ds.length) { msg.textContent = t('tabletNone'); return; }
   msg.textContent = ds.map(d => d.model + ' · ' + (d.connection === 'wifi' ? t('wireless') : 'USB')).join(' · ');
   for (const d of ds) {
-    act.appendChild(d.running
-      ? amkbtn(t('disconnect'), 'ghost small', () => androidAct('disconnect', d.serial))
-      : amkbtn(t('connectBtn'), 'small', () => androidAct('connect', d.serial)));
+    act.appendChild(amkbtn(t('connectBtn'), 'small', () => androidConnect(d.serial)));
     if (d.connection === 'usb') act.appendChild(amkbtn(t('wireless'), 'ghost small', () => androidWireless(d.serial)));
   }
 }
-async function androidAct(action, serial) {
-  try { await fetch('/api/android/' + action, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ serial }) }); } catch (_) {}
+async function androidConnect(serial) {
+  const msg = document.getElementById('tabletMsg');
+  msg.textContent = t('tabletConnecting');
+  try {
+    const r = await fetch('/api/android/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ serial }) });
+    if (!r.ok) { msg.textContent = await r.text(); msg.className = 'err'; }
+  } catch (e) { msg.textContent = String(e); msg.className = 'err'; }
+  pollAndroid();
+}
+async function androidDisconnect() {
+  try { await fetch('/api/android/disconnect', { method: 'POST' }); } catch (_) {}
   pollAndroid();
 }
 async function androidWireless(serial) {
