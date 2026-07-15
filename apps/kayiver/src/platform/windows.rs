@@ -665,6 +665,16 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         }
     }
 
+    // Tablet-control hotkey (Ctrl+Alt+T).
+    if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && info.vkCode == 0x54 {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_MENU};
+        let down = |vk: u16| (GetAsyncKeyState(vk as i32) as u16) & 0x8000 != 0;
+        if down(VK_CONTROL.0) && down(VK_MENU.0) {
+            let _ = state.tx.send(Captured::TabletHotkey);
+            return LRESULT(1);
+        }
+    }
+
     if !state.ctl.forwarding.load(Ordering::SeqCst) {
         return CallNextHookEx(None, code, wparam, lparam);
     }

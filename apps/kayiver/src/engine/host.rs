@@ -139,6 +139,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         tablet_vpos: (0, 0),
         tablet_size: (2560, 1600),
         tablet_entry_ratio: 0.5,
+        tablet_return_armed: false,
     };
 
     // The layout editor rides along with the host process.
@@ -225,6 +226,9 @@ struct Router {
     tablet_vpos: (i32, i32),
     tablet_size: (i32, i32),
     tablet_entry_ratio: f32,
+    /// The return edge is disarmed until the cursor has moved well inside the
+    /// tablet, so entering at the edge doesn't instantly bounce back.
+    tablet_return_armed: bool,
 }
 
 impl Router {
@@ -300,6 +304,7 @@ impl Router {
             Edge::Top => ((ratio * tw as f32) as i32, th),
             Edge::Bottom => ((ratio * tw as f32) as i32, 0),
         };
+        self.tablet_return_armed = false;
         self.set_tablet_control(true);
         true
     }
@@ -313,7 +318,20 @@ impl Router {
         crate::android::mouse_move(dx, dy);
         let te = *self.ctl.tablet_edge.read().unwrap();
         let (vx, vy) = self.tablet_vpos;
-        let back = match te {
+        // Arm the return only once the cursor is well inside, so entering at the
+        // edge can't instantly bounce back (the entry and return edge are one).
+        let margin = 120;
+        let inside = match te {
+            Some(Edge::Right) => vx > margin,
+            Some(Edge::Left) => vx < tw - margin,
+            Some(Edge::Top) => vy < th - margin,
+            Some(Edge::Bottom) => vy > margin,
+            None => false,
+        };
+        if inside {
+            self.tablet_return_armed = true;
+        }
+        let back = self.tablet_return_armed && match te {
             Some(Edge::Right) => vx <= 0,
             Some(Edge::Left) => vx >= tw,
             Some(Edge::Top) => vy >= th,
@@ -431,6 +449,17 @@ impl Router {
                 platform::warp_cursor_settled(b.x + b.w / 2, b.y + b.h / 2);
             }
             Captured::SharedHotkey => self.set_shared_owner("toggle"),
+            Captured::TabletHotkey => {
+                if self.tablet_active {
+                    self.set_tablet_control(false);
+                } else if crate::android::is_connected() {
+                    self.set_tablet_control(true);
+                } else {
+                    // Connect in the background (blocking); press again once up.
+                    std::thread::spawn(|| { crate::android::ensure_connected(); });
+                    crate::ui::set_link_error(Some("tablet bağlanıyor — tekrar dene".into()));
+                }
+            }
             Captured::SharedEnter { fx, fy } => {
                 // Local cursor moved onto the shared panel (showing the peer) →
                 // hand control to the peer, onto its copy of the panel.

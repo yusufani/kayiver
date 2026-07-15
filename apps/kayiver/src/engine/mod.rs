@@ -19,6 +19,9 @@ pub enum Captured {
     /// Shared-monitor hotkey (Cmd/Ctrl+Alt+M). Only emitted while
     /// `CaptureCtl::shared_hotkey` is set; the keystroke is swallowed.
     SharedHotkey,
+    /// Tablet-control hotkey (Cmd/Ctrl+Alt+T): toggle handing input to the
+    /// Android tablet. The keystroke is swallowed.
+    TabletHotkey,
     /// The local cursor moved onto the shared panel (which is showing the
     /// peer), at relative position (fx, fy). Hand control to the peer.
     SharedEnter { fx: f32, fy: f32 },

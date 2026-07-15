@@ -525,6 +525,19 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         }
     }
 
+    // Tablet-control hotkey (Cmd+Alt+T): toggle control of the Android tablet.
+    if etype == ET_KEY_DOWN {
+        const VK_T: i64 = 17;
+        let flags = CGEventGetFlags(event);
+        if CGEventGetIntegerValueField(event, F_KEYCODE) == VK_T
+            && flags & FLAG_CMD != 0
+            && flags & FLAG_ALT != 0
+        {
+            let _ = state.tx.send(Captured::TabletHotkey);
+            return std::ptr::null_mut();
+        }
+    }
+
     let forwarding = state.ctl.forwarding.load(Ordering::SeqCst);
 
     if !forwarding {
