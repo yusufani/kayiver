@@ -968,6 +968,19 @@ function tabletEdge() {
 async function placeTablet() {
   const edge = tabletEdge();
   if (!edge) return;
+  // Magnet: snap the tile flush just beyond this machine's monitors on `edge`.
+  const me = mons.filter(m => m.me && m.el.style.display !== 'none');
+  const x0 = Math.min(...me.map(t => t.x)), y0 = Math.min(...me.map(t => t.y));
+  const x1 = Math.max(...me.map(t => t.x + t.w)), y1 = Math.max(...me.map(t => t.y + t.h));
+  const GAP = 8, clampY = v => Math.min(Math.max(v, y0), y1 - TAB_H), clampX = v => Math.min(Math.max(v, x0), x1 - TAB_W);
+  if (edge === 'right') { tabPos.x = x1 + GAP; tabPos.y = clampY(tabPos.y); }
+  else if (edge === 'left') { tabPos.x = x0 - TAB_W - GAP; tabPos.y = clampY(tabPos.y); }
+  else if (edge === 'top') { tabPos.y = y0 - TAB_H - GAP; tabPos.x = clampX(tabPos.x); }
+  else if (edge === 'bottom') { tabPos.y = y1 + GAP; tabPos.x = clampX(tabPos.x); }
+  tabPos.x = Math.max(0, Math.min(canvas.clientWidth - TAB_W, tabPos.x));
+  tabPos.y = Math.max(0, Math.min(canvas.clientHeight - TAB_H, tabPos.y));
+  tabletTile.style.left = tabPos.x + 'px'; tabletTile.style.top = tabPos.y + 'px';
+  localStorage.setItem('kayiver-tabpos', JSON.stringify(tabPos));
   try { await fetch('/api/android/place', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ edge }) }); } catch (_) {}
   setMsg(t('tabletPlaced') + edge, 'ok');
 }

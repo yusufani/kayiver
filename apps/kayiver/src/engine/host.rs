@@ -259,6 +259,7 @@ impl Router {
             self.send_to_focus(Msg::Leave);
             self.focus = None;
             self.tablet_active = true;
+            crate::android::wake(); // light up a slept screen
             self.ctl.forwarding.store(true, Ordering::SeqCst);
             platform::set_forwarding_visuals(true);
             crate::ui::set_focus(Some("tablet".into()));

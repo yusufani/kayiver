@@ -28,6 +28,7 @@ const UHID_MOUSE_ID: u16 = 1;
 const UHID_KBD_ID: u16 = 2;
 
 // scrcpy control message types (v4.1).
+const MSG_SET_DISPLAY_POWER: u8 = 10;
 const MSG_UHID_CREATE: u8 = 12;
 const MSG_UHID_INPUT: u8 = 13;
 const MSG_UHID_DESTROY: u8 = 14;
@@ -283,6 +284,8 @@ pub fn connect(serial: &str) -> Result<()> {
             "control=true",
             "tunnel_forward=true",
             "cleanup=true",
+            "stay_awake=true",
+            "power_on=true",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -409,6 +412,16 @@ impl TabletSink {
 
 fn clamp(v: i32) -> i8 {
     v.clamp(-127, 127) as i8
+}
+
+/// Wake the tablet's screen when taking control. The scrcpy control socket
+/// can't wake a slept physical screen with video disabled, so use adb's `input`
+/// path (KEYCODE_WAKEUP), which does. Fire-and-forget on its own thread.
+pub fn wake() {
+    let Some(serial) = connected_serial() else { return };
+    std::thread::spawn(move || {
+        let _ = adb().args(["-s", &serial, "shell", "input", "keyevent", "224"]).output();
+    });
 }
 
 /// Forward a relative move; large deltas are split into ≤127 steps.
