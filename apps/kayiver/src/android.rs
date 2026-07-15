@@ -236,17 +236,49 @@ fn kbd_report_msg(mods: u8, keys: &[u8]) -> Vec<u8> {
     uhid_input_msg(UHID_KBD_ID, &data)
 }
 
-/// Own the socket on its own thread; batch pending commands and coalesce
-/// consecutive moves so wireless never drowns in tiny packets.
+/// Minimum gap between UHID writes when input is flooding. Isolated moves fire
+/// immediately; only a continuous stream is capped to this rate (~125 Hz), with
+/// everything in the gap coalesced into one cumulative report. This bounds the
+/// backlog so the on-device cursor can't drift seconds behind over wireless
+/// (buffer bloat): position is preserved because coalesced deltas sum exactly.
+const WRITE_MIN_GAP: Duration = Duration::from_millis(8);
+
+/// Own the socket on its own thread; rate-limit + coalesce moves so a saturated
+/// wireless link sheds packets instead of accumulating latency.
 fn spawn_writer(mut stream: TcpStream, rx: std::sync::mpsc::Receiver<Cmd>) {
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Instant;
     std::thread::Builder::new()
         .name("kayiver-tablet-w".into())
         .spawn(move || {
+            // Seed so the very first move sends with zero added delay.
+            let mut last_send = Instant::now()
+                .checked_sub(WRITE_MIN_GAP)
+                .unwrap_or_else(Instant::now);
             while let Ok(first) = rx.recv() {
                 let mut batch = vec![first];
+                // If we just sent, hold briefly and gather more input to coalesce
+                // rather than firing another tiny packet into a backed-up link.
+                let since = last_send.elapsed();
+                if since < WRITE_MIN_GAP {
+                    let deadline = Instant::now() + (WRITE_MIN_GAP - since);
+                    loop {
+                        let now = Instant::now();
+                        if now >= deadline || batch.len() >= 512 {
+                            break;
+                        }
+                        match rx.recv_timeout(deadline - now) {
+                            Ok(c) => batch.push(c),
+                            Err(RecvTimeoutError::Timeout) => break,
+                            Err(RecvTimeoutError::Disconnected) => return,
+                        }
+                    }
+                }
+                // Sweep up anything else already queued.
                 while let Ok(c) = rx.try_recv() {
                     batch.push(c);
                 }
+                last_send = Instant::now();
                 let mut i = 0;
                 while i < batch.len() {
                     match &batch[i] {
