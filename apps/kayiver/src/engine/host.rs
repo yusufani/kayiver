@@ -139,7 +139,6 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         tablet_vpos: (0, 0),
         tablet_size: (2560, 1600),
         tablet_entry_ratio: 0.5,
-        tablet_return_armed: false,
     };
 
     // The layout editor rides along with the host process.
@@ -226,9 +225,6 @@ struct Router {
     tablet_vpos: (i32, i32),
     tablet_size: (i32, i32),
     tablet_entry_ratio: f32,
-    /// The return edge is disarmed until the cursor has moved well inside the
-    /// tablet, so entering at the edge doesn't instantly bounce back.
-    tablet_return_armed: bool,
 }
 
 impl Router {
@@ -297,14 +293,15 @@ impl Router {
         let (tw, th) = crate::android::size().unwrap_or((2560, 1600));
         self.tablet_size = (tw, th);
         self.tablet_entry_ratio = ratio;
-        // Where the cursor conceptually enters the tablet (opposite edge).
+        // Enter a little INSIDE the edge (not right on it), so pushing back
+        // toward that edge returns cleanly and there's no instant bounce.
+        let ins = 160.min(tw / 3).min(th / 3);
         self.tablet_vpos = match edge {
-            Edge::Right => (0, (ratio * th as f32) as i32),
-            Edge::Left => (tw, (ratio * th as f32) as i32),
-            Edge::Top => ((ratio * tw as f32) as i32, th),
-            Edge::Bottom => ((ratio * tw as f32) as i32, 0),
+            Edge::Right => (ins, (ratio * th as f32) as i32),
+            Edge::Left => (tw - ins, (ratio * th as f32) as i32),
+            Edge::Top => ((ratio * tw as f32) as i32, th - ins),
+            Edge::Bottom => ((ratio * tw as f32) as i32, ins),
         };
-        self.tablet_return_armed = false;
         self.set_tablet_control(true);
         true
     }
@@ -318,20 +315,8 @@ impl Router {
         crate::android::mouse_move(dx, dy);
         let te = *self.ctl.tablet_edge.read().unwrap();
         let (vx, vy) = self.tablet_vpos;
-        // Arm the return only once the cursor is well inside, so entering at the
-        // edge can't instantly bounce back (the entry and return edge are one).
-        let margin = 120;
-        let inside = match te {
-            Some(Edge::Right) => vx > margin,
-            Some(Edge::Left) => vx < tw - margin,
-            Some(Edge::Top) => vy < th - margin,
-            Some(Edge::Bottom) => vy > margin,
-            None => false,
-        };
-        if inside {
-            self.tablet_return_armed = true;
-        }
-        let back = self.tablet_return_armed && match te {
+        // Return to the desktop when the cursor walks back to the entry edge.
+        let back = match te {
             Some(Edge::Right) => vx <= 0,
             Some(Edge::Left) => vx >= tw,
             Some(Edge::Top) => vy >= th,
