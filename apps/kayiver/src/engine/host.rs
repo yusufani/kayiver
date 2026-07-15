@@ -340,7 +340,9 @@ impl Router {
         };
         if back {
             // Return to this desktop's edge at the same relative position.
-            let entry = te.map(|e| e.opposite()).unwrap_or(Edge::Left);
+            // Return to the SAME desktop edge we crossed out of (not the
+            // opposite one), at the entry position — that's where the cursor left.
+            let entry = te.unwrap_or(Edge::Left);
             self.set_tablet_control(false);
             let (x, y) = kayiver_core::layout::point_on_edge(self.ctl.bounds, entry, self.tablet_entry_ratio, EDGE_INSET);
             platform::warp_cursor_settled(x, y);
