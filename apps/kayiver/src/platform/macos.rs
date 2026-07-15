@@ -856,3 +856,64 @@ fn to_lines(v: i32) -> i32 {
         }
     }
 }
+
+// ------------------------------------------------------ clipboard / urls ----
+
+/// Read the general clipboard as text (via `pbpaste`).
+pub fn get_clipboard() -> Option<String> {
+    let out = std::process::Command::new("pbpaste").output().ok()?;
+    if out.status.success() {
+        String::from_utf8(out.stdout).ok()
+    } else {
+        None
+    }
+}
+
+/// Replace the general clipboard with `text` (via `pbcopy`).
+pub fn set_clipboard(text: &str) {
+    use std::io::Write;
+    if let Ok(mut child) = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(stdin) = child.stdin.as_mut() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        let _ = child.wait();
+    }
+}
+
+/// If a link is currently being dragged, return its URL. Reads the system drag
+/// pasteboard, which browsers populate with `public.url` when you drag a link
+/// or a tab. `None` when nothing URL-like is on it.
+pub fn drag_url() -> Option<String> {
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::NSString;
+    unsafe {
+        let name = NSString::from_str("Apple CFPasteboard drag");
+        let pb = NSPasteboard::pasteboardWithName(&name);
+        for ty in ["public.url", "public.utf8-plain-text"] {
+            let t = NSString::from_str(ty);
+            if let Some(s) = pb.stringForType(&t) {
+                let st = s.to_string();
+                let trimmed = st.trim();
+                if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Open a URL in the default browser.
+pub fn open_url(url: &str) {
+    let _ = std::process::Command::new("open").arg(url).spawn();
+}
+
+/// Monotonic clipboard change counter (cheap; avoids reading the whole
+/// clipboard every poll). Bumps on any change by any app.
+pub fn clipboard_seq() -> u64 {
+    use objc2_app_kit::NSPasteboard;
+    unsafe { NSPasteboard::generalPasteboard().changeCount() as u64 }
+}

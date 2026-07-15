@@ -66,3 +66,10 @@ impl Injector {
     pub fn key(&mut self, _hid: u16, _pressed: bool) {}
     pub fn release_all(&mut self) {}
 }
+
+pub fn get_clipboard() -> Option<String> { None }
+pub fn set_clipboard(_text: &str) {}
+pub fn drag_url() -> Option<String> { None }
+pub fn open_url(_url: &str) {}
+
+pub fn clipboard_seq() -> u64 { 0 }

@@ -876,3 +876,99 @@ impl Injector {
         }
     }
 }
+
+// ------------------------------------------------------ clipboard / urls ----
+
+const CF_UNICODETEXT: u32 = 13;
+
+/// Read the clipboard as text.
+pub fn get_clipboard() -> Option<String> {
+    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return None;
+        }
+        let result = (|| {
+            let h = GetClipboardData(CF_UNICODETEXT).ok()?;
+            if h.0.is_null() {
+                return None;
+            }
+            let ptr = GlobalLock(windows::Win32::Foundation::HGLOBAL(h.0)) as *const u16;
+            if ptr.is_null() {
+                return None;
+            }
+            let mut len = 0usize;
+            while *ptr.add(len) != 0 {
+                len += 1;
+            }
+            let slice = std::slice::from_raw_parts(ptr, len);
+            let s = String::from_utf16_lossy(slice);
+            let _ = GlobalUnlock(windows::Win32::Foundation::HGLOBAL(h.0));
+            Some(s)
+        })();
+        let _ = CloseClipboard();
+        result
+    }
+}
+
+/// Replace the clipboard with `text`.
+pub fn set_clipboard(text: &str) {
+    use windows::Win32::Foundation::HGLOBAL;
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    unsafe {
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let bytes = wide.len() * std::mem::size_of::<u16>();
+        if OpenClipboard(None).is_err() {
+            return;
+        }
+        let _ = EmptyClipboard();
+        if let Ok(hmem) = GlobalAlloc(GMEM_MOVEABLE, bytes) {
+            let dst = GlobalLock(hmem) as *mut u16;
+            if !dst.is_null() {
+                std::ptr::copy_nonoverlapping(wide.as_ptr(), dst, wide.len());
+                let _ = GlobalUnlock(hmem);
+                // On success the clipboard owns hmem; on the rare failure we
+                // leak a few bytes rather than pull in GlobalFree.
+                let _ = SetClipboardData(CF_UNICODETEXT, Some(windows::Win32::Foundation::HANDLE(hmem.0)));
+            }
+        }
+        let _ = CloseClipboard();
+    }
+}
+
+/// Windows drag payloads live in an OLE data object we don't hook; return None.
+/// (Dragging a link FROM Windows to the Mac isn't supported yet; the reverse —
+/// dragging from the Mac onto Windows — works via the host reading its own drag
+/// pasteboard.)
+pub fn drag_url() -> Option<String> {
+    None
+}
+
+/// Open a URL in the default browser.
+pub fn open_url(url: &str) {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    let target: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(target.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+/// Monotonic clipboard change counter (cheap change detection).
+pub fn clipboard_seq() -> u64 {
+    use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
+    unsafe { GetClipboardSequenceNumber() as u64 }
+}

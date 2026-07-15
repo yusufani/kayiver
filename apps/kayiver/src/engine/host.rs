@@ -93,7 +93,19 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     ));
     let (evt_tx, mut evt_rx) = mpsc::unbounded_channel();
 
-    tokio::spawn(accept_loop(listener, cfg.clone(), layout.clone(), sessions.clone(), peer_screens.clone(), evt_tx.clone()));
+    // Shared clipboard: watch ours and push changes to every connected peer.
+    let clip = crate::engine::clipsync::new_state();
+    {
+        let sessions_c = sessions.clone();
+        crate::engine::clipsync::watch(clip.clone(), move |text| {
+            let s = sessions_c.lock().unwrap();
+            for tx in s.values() {
+                let _ = tx.send(Msg::Clipboard { text: text.clone() });
+            }
+        });
+    }
+
+    tokio::spawn(accept_loop(listener, cfg.clone(), layout.clone(), sessions.clone(), peer_screens.clone(), clip.clone(), evt_tx.clone()));
     tokio::spawn(watch_layout(layout.clone(), shared.clone(), ctl.clone(), evt_tx));
 
     // Shared-monitor state: arm the hotkey. On start the host owns the panel
@@ -121,6 +133,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         focus: None,
         down_keys: HashSet::new(),
         down_buttons: HashSet::new(),
+        pending_drop_url: None,
     };
 
     // The layout editor rides along with the host process.
@@ -174,6 +187,9 @@ struct Router {
     focus: Option<String>,
     down_keys: HashSet<u16>,
     down_buttons: HashSet<MouseButton>,
+    /// A URL grabbed from the drag pasteboard when a link was dragged across to
+    /// the peer; opened on that peer when the drag is released (left button up).
+    pending_drop_url: Option<String>,
 }
 
 impl Router {
@@ -228,12 +244,28 @@ impl Router {
                     _ => {}
                 }
                 self.send_to_focus(Msg::Input(ev));
+                // A link dragged across is "dropped" when the left button comes
+                // up on the peer: open it there.
+                if let InputEvent::MouseButton { button: MouseButton::Left, pressed: false } = ev {
+                    if let Some(url) = self.pending_drop_url.take() {
+                        info!("dropped link on peer -> open {url}");
+                        self.send_to_focus(Msg::OpenUrl { url });
+                    }
+                }
             }
             Captured::EdgeHit { edge, ratio } => {
+                // If a link is being dragged as we cross, grab its URL now (it's
+                // on our drag pasteboard) to open on the peer when it's dropped.
+                let drag = if self.down_buttons.contains(&MouseButton::Left) {
+                    platform::drag_url()
+                } else {
+                    None
+                };
                 // Shared-panel edge → the peer's monitor beyond it (e.g. a
                 // Windows-only screen physically above the shared panel). Takes
                 // precedence over the machine-level layout link.
                 if self.try_shared_edge_cross(edge, ratio) {
+                    self.pending_drop_url = drag;
                     return;
                 }
                 match self.layout_target(&self.cfg.name, edge) {
@@ -241,6 +273,7 @@ impl Router {
                         info!("cursor -> {peer} (via {edge} edge)");
                         crate::ui::set_cross_flash(edge);
                         self.focus = Some(peer);
+                        self.pending_drop_url = drag;
                         self.send_to_focus(Msg::Enter { edge: entry_edge, ratio });
                     }
                     _ => {
@@ -618,23 +651,24 @@ async fn watch_layout(
     }
 }
 
-async fn accept_loop(listener: TcpListener, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, evt_tx: UnboundedSender<SessionEvent>) {
+async fn accept_loop(listener: TcpListener, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, clip: crate::engine::clipsync::ClipState, evt_tx: UnboundedSender<SessionEvent>) {
     loop {
         let Ok((stream, addr)) = listener.accept().await else { return };
         let cfg = cfg.clone();
         let layout = layout.clone();
         let sessions = sessions.clone();
         let peer_screens = peer_screens.clone();
+        let clip = clip.clone();
         let evt_tx = evt_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, cfg, layout, sessions, peer_screens, evt_tx).await {
+            if let Err(e) = handle_conn(stream, cfg, layout, sessions, peer_screens, clip, evt_tx).await {
                 debug!("connection from {addr}: {e}");
             }
         });
     }
 }
 
-async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, evt_tx: UnboundedSender<SessionEvent>) -> Result<()> {
+async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, clip: crate::engine::clipsync::ClipState, evt_tx: UnboundedSender<SessionEvent>) -> Result<()> {
     stream.set_nodelay(true)?;
     let intro = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stream)).await??;
     let name = match Intro::decode(&intro)? {
@@ -738,6 +772,11 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
                     // refresh the cache so the editor and crossing use the new shape.
                     debug!("{name}: geometry update, {} monitors", monitors.len());
                     cache_peer_screens(&name, &monitors, None, &peer_screens);
+                }
+                Msg::Clipboard { text } => crate::engine::clipsync::apply_remote(&clip, &text),
+                Msg::OpenUrl { url } => {
+                    info!("{name}: open url {url}");
+                    platform::open_url(&url);
                 }
                 Msg::Bye => return Ok(()),
                 other => debug!("unexpected from {name}: {other:?}"),

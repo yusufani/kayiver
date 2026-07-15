@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -116,6 +116,12 @@ pub enum Msg {
     /// host -> client: warp your cursor to this absolute point and take input
     /// (used when control crosses onto your copy of the shared panel).
     EnterAt { x: i32, y: i32 },
+    /// Either direction: the sender's clipboard changed — mirror this text into
+    /// your own clipboard (shared clipboard). Echo-guarded on both ends.
+    Clipboard { text: String },
+    /// Either direction: open this URL in the default browser. Sent when a link
+    /// is dragged across the boundary onto this machine.
+    OpenUrl { url: String },
 }
 
 impl Msg {

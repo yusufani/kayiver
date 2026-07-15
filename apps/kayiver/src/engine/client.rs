@@ -15,6 +15,7 @@ use kayiver_core::proto::{InputEvent, Intro, Msg, Rect, PROTOCOL_VERSION};
 use kayiver_core::secure;
 use kayiver_core::wire::write_frame;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::platform::{self, Injector};
@@ -195,6 +196,27 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
         blocked: None,
     };
 
+    // All outbound frames go through one writer task, so the read loop and the
+    // clipboard watcher can both send without sharing the writer half.
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Msg>();
+    let writer_task = tokio::spawn(async move {
+        while let Some(m) = out_rx.recv().await {
+            if writer.send(&m).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Shared clipboard: push our changes to the host.
+    let clip = crate::engine::clipsync::new_state();
+    {
+        let out = out_tx.clone();
+        crate::engine::clipsync::watch(clip.clone(), move |text| {
+            let _ = out.send(Msg::Clipboard { text });
+        });
+    }
+
+    let result: Result<()> = async {
     loop {
         let msg = tokio::time::timeout(RECV_TIMEOUT, reader.recv())
             .await
@@ -228,19 +250,24 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
                         state.injector.release_all();
                         platform::indicator::set_state(true, false);
                         info!("pushed through {edge} edge -> returning control to host");
-                        writer.send(&Msg::CursorLeft { edge, ratio }).await?;
+                        let _ = out_tx.send(Msg::CursorLeft { edge, ratio });
                     }
                     Some(Cross::Shared(fx, fy)) => {
                         state.active = false;
                         state.injector.release_all();
                         platform::indicator::set_state(true, false);
                         info!("moved onto shared panel -> handing back to host");
-                        writer.send(&Msg::SharedCross { fx, fy }).await?;
+                        let _ = out_tx.send(Msg::SharedCross { fx, fy });
                     }
                     None => {}
                 }
             }
-            Msg::Ping(n) => writer.send(&Msg::Pong(n)).await?,
+            Msg::Ping(n) => { let _ = out_tx.send(Msg::Pong(n)); }
+            Msg::Clipboard { text } => crate::engine::clipsync::apply_remote(&clip, &text),
+            Msg::OpenUrl { url } => {
+                info!("open url from host: {url}");
+                platform::open_url(&url);
+            }
             Msg::SharedBlock { rect } => {
                 info!("shared block -> {rect:?}");
                 state.blocked = rect;
@@ -254,6 +281,10 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
             other => warn!("unexpected message: {other:?}"),
         }
     }
+    }
+    .await;
+    writer_task.abort();
+    result
 }
 
 /// What a client input event triggered: a portal edge crossing, or moving onto
