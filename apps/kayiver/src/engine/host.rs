@@ -279,13 +279,13 @@ impl Router {
                 }
             }
             Captured::Input(ev) if self.tablet_active => {
-                // Tablet control: mouse buttons + wheel become UHID reports.
-                // (Keyboard-to-tablet is not wired yet.)
+                // Tablet control: mouse + keyboard become UHID reports.
                 match ev {
                     InputEvent::MouseButton { button, pressed } => {
                         crate::android::mouse_button(button_index(button), pressed);
                     }
                     InputEvent::Wheel { dx, dy } => crate::android::mouse_scroll(dx, dy),
+                    InputEvent::Key { key, pressed } => crate::android::key(key, pressed),
                     _ => {}
                 }
             }

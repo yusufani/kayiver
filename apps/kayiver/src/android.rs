@@ -25,6 +25,7 @@ use anyhow::{bail, Context, Result};
 const SERVER_VERSION: &str = "4.1";
 const FORWARD_PORT_BASE: u16 = 27600;
 const UHID_MOUSE_ID: u16 = 1;
+const UHID_KBD_ID: u16 = 2;
 
 // scrcpy control message types (v4.1).
 const MSG_UHID_CREATE: u8 = 12;
@@ -39,6 +40,16 @@ const MOUSE_REPORT_DESC: &[u8] = &[
     0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x38, 0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x03,
     0x81, 0x06, 0x05, 0x0C, 0x0A, 0x38, 0x02, 0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x01, 0x81,
     0x06, 0xC0, 0xC0,
+];
+
+/// Keyboard HID report descriptor, verbatim from scrcpy (includes the LED
+/// output report so Android accepts it). 8-byte input report
+/// [modifiers, reserved, key1..key6], key usages 0..0x65.
+const KBD_REPORT_DESC: &[u8] = &[
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x75, 0x08, 0x95, 0x01, 0x81, 0x01, 0x05, 0x08, 0x19, 0x01,
+    0x29, 0x05, 0x75, 0x01, 0x95, 0x05, 0x91, 0x02, 0x75, 0x03, 0x95, 0x01, 0x91, 0x01, 0x05, 0x07,
+    0x19, 0x00, 0x29, 0x65, 0x15, 0x00, 0x25, 0x65, 0x75, 0x08, 0x95, 0x06, 0x81, 0x00, 0xC0,
 ];
 
 // ------------------------------------------------------------- devices ----
@@ -113,7 +124,16 @@ pub fn list_devices() -> Vec<Device> {
             .unwrap_or("Android")
             .replace('_', " ");
         let connection = if serial.contains(':') { "wifi" } else { "usb" }.to_string();
-        devices.push(Device { serial, model, connection });
+        let d = Device { serial, model, connection };
+        // The same physical tablet can appear over both USB and Wi-Fi; keep one
+        // per model, preferring the USB link.
+        if let Some(slot) = devices.iter_mut().find(|e: &&mut Device| e.model == d.model) {
+            if slot.connection != "usb" && d.connection == "usb" {
+                *slot = d;
+            }
+        } else {
+            devices.push(d);
+        }
     }
     devices
 }
@@ -152,6 +172,9 @@ struct TabletSink {
     scid: String,
     port: u16,
     buttons: u8,
+    /// Keyboard state: modifier bitmask + up to 6 held non-modifier HID usages.
+    mods: u8,
+    keys: Vec<u8>,
 }
 
 fn sink() -> &'static Mutex<Option<TabletSink>> {
@@ -250,9 +273,26 @@ pub fn connect(serial: &str) -> Result<()> {
         }
     };
 
-    // Register the UHID mouse so Android shows a pointer.
-    let mut s = TabletSink { stream, server, serial: serial.to_string(), scid, port, buttons: 0 };
-    s.uhid_create_mouse()?;
+    // Register the UHID mouse (real pointer) and keyboard.
+    let mut s = TabletSink {
+        stream, server, serial: serial.to_string(), scid, port,
+        buttons: 0, mods: 0, keys: Vec::new(),
+    };
+    s.uhid_create(UHID_MOUSE_ID, b"kayiver mouse", MOUSE_REPORT_DESC)?;
+    s.uhid_create(UHID_KBD_ID, b"kayiver keyboard", KBD_REPORT_DESC)?;
+    // Drain device->client control messages (UHID LED output, clipboard, …) so
+    // the socket buffer can't fill and stall the server. Ends on disconnect.
+    if let Ok(mut rd) = s.stream.try_clone() {
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 1024];
+            loop {
+                match rd.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        });
+    }
     *sink().lock().unwrap() = Some(s);
     Ok(())
 }
@@ -272,24 +312,34 @@ fn stop_locked(guard: &mut Option<TabletSink>) {
 }
 
 impl TabletSink {
-    fn uhid_create_mouse(&mut self) -> Result<()> {
-        let name = b"kayiver mouse";
-        let mut msg = Vec::with_capacity(80);
+    fn uhid_create(&mut self, id: u16, name: &[u8], desc: &[u8]) -> Result<()> {
+        let mut msg = Vec::with_capacity(desc.len() + 16);
         msg.push(MSG_UHID_CREATE);
-        msg.extend_from_slice(&UHID_MOUSE_ID.to_be_bytes());
+        msg.extend_from_slice(&id.to_be_bytes());
         msg.extend_from_slice(&0u16.to_be_bytes()); // vendor id
         msg.extend_from_slice(&0u16.to_be_bytes()); // product id
         msg.push(name.len() as u8); // write_string_tiny: 1-byte length
         msg.extend_from_slice(name);
-        msg.extend_from_slice(&(MOUSE_REPORT_DESC.len() as u16).to_be_bytes());
-        msg.extend_from_slice(&MOUSE_REPORT_DESC);
+        msg.extend_from_slice(&(desc.len() as u16).to_be_bytes());
+        msg.extend_from_slice(desc);
         self.stream.write_all(&msg).context("uhid create failed")?;
         Ok(())
     }
 
     fn uhid_destroy(&mut self) -> Result<()> {
-        let mut msg = vec![MSG_UHID_DESTROY];
-        msg.extend_from_slice(&UHID_MOUSE_ID.to_be_bytes());
+        for id in [UHID_MOUSE_ID, UHID_KBD_ID] {
+            let mut msg = vec![MSG_UHID_DESTROY];
+            msg.extend_from_slice(&id.to_be_bytes());
+            let _ = self.stream.write_all(&msg);
+        }
+        Ok(())
+    }
+
+    fn uhid_input(&mut self, id: u16, data: &[u8]) -> Result<()> {
+        let mut msg = vec![MSG_UHID_INPUT];
+        msg.extend_from_slice(&id.to_be_bytes());
+        msg.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        msg.extend_from_slice(data);
         self.stream.write_all(&msg)?;
         Ok(())
     }
@@ -297,12 +347,17 @@ impl TabletSink {
     /// Send one 5-byte mouse report [buttons, dx, dy, wheel, hpan].
     fn report(&mut self, dx: i8, dy: i8, wheel: i8, hpan: i8) -> Result<()> {
         let data = [self.buttons, dx as u8, dy as u8, wheel as u8, hpan as u8];
-        let mut msg = vec![MSG_UHID_INPUT];
-        msg.extend_from_slice(&UHID_MOUSE_ID.to_be_bytes());
-        msg.extend_from_slice(&(data.len() as u16).to_be_bytes());
-        msg.extend_from_slice(&data);
-        self.stream.write_all(&msg)?;
-        Ok(())
+        self.uhid_input(UHID_MOUSE_ID, &data)
+    }
+
+    /// Send the 8-byte keyboard report from the current mods + held keys.
+    fn kbd_report(&mut self) -> Result<()> {
+        let mut data = [0u8; 8];
+        data[0] = self.mods;
+        for (i, k) in self.keys.iter().take(6).enumerate() {
+            data[2 + i] = *k;
+        }
+        self.uhid_input(UHID_KBD_ID, &data)
     }
 }
 
@@ -350,4 +405,33 @@ pub fn mouse_scroll(dx: i32, dy: i32) {
     let mut guard = sink().lock().unwrap();
     let Some(s) = guard.as_mut() else { return };
     let _ = s.report(0, 0, clamp(dy), clamp(dx));
+}
+
+/// Forward a key by HID usage code (`hid`). Modifiers (0xE0..=0xE7) set the
+/// modifier byte; other keys go into the 6-key rollover array.
+pub fn key(hid: u16, pressed: bool) {
+    if hid == 0 || hid > 0xFF {
+        return;
+    }
+    let hid = hid as u8;
+    let mut guard = sink().lock().unwrap();
+    let Some(s) = guard.as_mut() else { return };
+    if (0xE0..=0xE7).contains(&hid) {
+        let bit = 1u8 << (hid - 0xE0);
+        if pressed {
+            s.mods |= bit;
+        } else {
+            s.mods &= !bit;
+        }
+    } else if pressed {
+        if !s.keys.contains(&hid) {
+            if s.keys.len() >= 6 {
+                s.keys.remove(0);
+            }
+            s.keys.push(hid);
+        }
+    } else {
+        s.keys.retain(|k| *k != hid);
+    }
+    let _ = s.kbd_report();
 }
