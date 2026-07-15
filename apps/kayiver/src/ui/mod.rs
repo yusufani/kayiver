@@ -459,13 +459,13 @@ fn send_cmd(cmd: UiCmd) {
     }
 }
 
-/// POST /api/android/connect {"serial": "..."} — open the control session and
-/// immediately hand the keyboard/mouse to the tablet.
+/// POST /api/android/connect {"serial": "..."} — open the control session (get
+/// it ready). Taking control is a separate step: the hotkey or an edge cross,
+/// so a click doesn't yank the cursor away.
 fn api_android_connect(body: &[u8]) -> Result<()> {
     let v: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
     let serial = v.get("serial").and_then(|s| s.as_str()).context("missing 'serial'")?;
     crate::android::connect(serial)?;
-    send_cmd(UiCmd::TabletControl(true));
     Ok(())
 }
 

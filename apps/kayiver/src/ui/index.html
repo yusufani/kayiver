@@ -121,6 +121,7 @@
   .mon .sdot.on { background: var(--good); }
   .mon .sdot.off { background: var(--danger); }
   .mon.snapped { box-shadow: 0 0 0 2px var(--mc), var(--shadow); }
+  .mon.livefocus { box-shadow: 0 0 0 1.5px var(--mc), 0 0 26px -2px var(--mc); }
   .mon.focus { animation: glow 1.6s ease-in-out infinite; }
   @keyframes glow {
     0%,100% { box-shadow: 0 0 0 3px rgba(52,211,153,.30), var(--shadow); }
@@ -181,7 +182,11 @@
   }
 
   footer { display: flex; align-items: center; gap: 16px; padding: 12px 22px 16px; }
-  footer #save { flex: none; margin-left: auto; }
+  footer #save { flex: none; }
+  .dock-sep { width: 1px; height: 20px; background: var(--line); flex: none; }
+  .dock-btn { display: flex; align-items: center; gap: 7px; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 11px; font: inherit; font-size: 11.5px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+  .dock-btn:hover { border-color: var(--line2); }
+  .dock-btn.active { background: var(--accent-grad); color: #06121f; border: 0; font-weight: 600; }
   .card {
     background: linear-gradient(180deg, var(--panel), var(--panel2));
     border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px;
@@ -308,10 +313,11 @@
 
 <footer>
   <div id="msg">her monitörü ayrı ayrı sürükle; kenarlar değince geçiş olur</div>
-  <div class="hint">
-    <b>değdir</b> = geçiş · <b>üstüne bırak</b> = ortak panel · ortak panelde bir yarıya tıkla = o ekranı aktif et · panik: 3× <kbd>Esc</kbd>
-  </div>
   <button id="save">Kaydet</button>
+  <span class="dock-sep"></span>
+  <div id="ownerDock" style="display:flex;align-items:center;gap:8px;min-width:0"></div>
+  <div style="flex:1"></div>
+  <button class="dock-btn" id="liveBtn"><span class="dot" id="liveDot"></span><span id="liveLbl">canlı imleç</span></button>
 </footer>
 
 <div id="overlay">
@@ -371,7 +377,7 @@ const I18N = {
     tablet: "Tablet", tabletNone: "Tablet yok — USB kablosuyla bağla, tablette USB hata ayıklamayı aç",
     tabletNoTools: "scrcpy kurulu değil (brew install scrcpy)",
     tabletControlling: "kontrol ediliyor · çıkış: 3× Esc", tabletConnecting: "bağlanıyor…",
-    tabletDrag: "sürükle=yerleştir · tıkla=kontrol", tabletPlaced: "tablet yerleşti — kenardan geçince kontrol: ",
+    tabletDrag: "sürükle=yerleştir · tıkla=bağla", tabletReady: "hazır", tabletPlaced: "tablet yerleşti — kenardan geçince kontrol: ",
     connectBtn: "bağlan", disconnect: "bırak", wireless: "kablosuz", wirelessOn: "kablosuz açık: ",
     autostart: "Girişte başlat", autostartDesc: "oturum açılınca kayıver kendiliğinden çalışsın",
     remote: "Telefon / LAN kumandası", remoteDesc: "Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)",
@@ -384,7 +390,8 @@ const I18N = {
     saved: "kaydedildi ✓ — ~2 sn içinde uygulanır", saveFail: "kaydedilemedi: ",
     reach: "kayıver'a ulaşılamıyor: ",
     makeShared: "ortak panel yap", removeShared: "ortak panel ✓ (kaldır)",
-    sharedBadge: "ortak", activate: "aktif et", sharedSaved: "ortak panel kaydedildi ✓", sharedRemoved: "ortak panel kaldırıldı",
+    sharedBadge: "ortak", activate: "aktif et", panelOwners: "ortak panel:", liveOn: "canlı imleç", liveOff: "imleç kapalı",
+    sharedSaved: "ortak panel kaydedildi ✓", sharedRemoved: "ortak panel kaldırıldı",
     sharedNone: "Tek panel iki makinede mi? Bir makinenin o monitörünü diğerinin karşılık gelen monitörünün ÜSTÜNE bırak.",
     panelShows: "Panel şu an ", panelShowsEnd: " ekranını gösteriyor.", panelUnknown: "Panel durumu bilinmiyor.",
     removeSetting: "ayarı kaldır",
@@ -406,7 +413,7 @@ const I18N = {
     tablet: "Tablet", tabletNone: "No tablet — connect one over USB and enable USB debugging",
     tabletNoTools: "scrcpy not installed (brew install scrcpy)",
     tabletControlling: "controlling · exit: 3× Esc", tabletConnecting: "connecting…",
-    tabletDrag: "drag=place · click=control", tabletPlaced: "tablet placed — cross this edge to control: ",
+    tabletDrag: "drag=place · click=connect", tabletReady: "ready", tabletPlaced: "tablet placed — cross this edge to control: ",
     connectBtn: "connect", disconnect: "release", wireless: "wireless", wirelessOn: "wireless on: ",
     autostart: "Start at login", autostartDesc: "run kayiver automatically when you log in",
     remote: "Phone / LAN control", remoteDesc: "token-protected local API for the Android app (takes effect after a restart)",
@@ -419,7 +426,8 @@ const I18N = {
     saved: "saved ✓ — applies within ~2 s", saveFail: "save failed: ",
     reach: "can't reach kayiver: ",
     makeShared: "make shared panel", removeShared: "shared panel ✓ (remove)",
-    sharedBadge: "shared", activate: "activate", sharedSaved: "shared panel saved ✓", sharedRemoved: "shared panel removed",
+    sharedBadge: "shared", activate: "activate", panelOwners: "shared panel:", liveOn: "live cursor", liveOff: "cursor off",
+    sharedSaved: "shared panel saved ✓", sharedRemoved: "shared panel removed",
     sharedNone: "One panel on both machines? Drop that monitor onto the matching monitor of the other machine.",
     panelShows: "The panel is showing ", panelShowsEnd: " right now.", panelUnknown: "Panel state unknown.",
     removeSetting: "remove setting",
@@ -440,7 +448,8 @@ function applyStaticI18n() {
   const me = document.getElementById('msg');
   if (me && !me.className) me.textContent = t('layoutHint');
   set('#save', t('save'));
-  document.querySelector('.hint').innerHTML =
+  const hintEl = document.querySelector('.hint');
+  if (hintEl) hintEl.innerHTML =
     t('hint1a') + '<b>' + t('hintTouch') + '</b>' + t('hint1b') + '<b>' + t('hintDrop') + '</b>' + t('hint1c') +
     '<br>' + t('hintPanic') + '<kbd>Esc</kbd>' + t('hintShared') + '<kbd id="hotkeyHint">' + hk() + '</kbd>';
   // settings modal — everything addressed by id, so row order can change freely
@@ -463,7 +472,7 @@ function applyStaticI18n() {
   set('#setClose', t('close'));
 }
 function hk() { return /Mac/.test(navigator.platform) ? '⌘⌥M' : 'Ctrl+Alt+M'; }
-function setLang(l) { lang = l; localStorage.setItem('kayiver-lang', l); applyStaticI18n(); renderLegend(); }
+function setLang(l) { lang = l; localStorage.setItem('kayiver-lang', l); applyStaticI18n(); renderLegend(); renderDock(); }
 
 const SNAP = 16;
 const OVERLAP_MIN = 0.30;
@@ -550,7 +559,7 @@ function buildFromState(s) {
   mons.forEach(t => clamp(t));
   mergeShared();              // fold the shared pair into one split panel
   mons.forEach(pos);
-  refreshSnap(); renderLegend();
+  refreshSnap(); renderLegend(); renderDock();
 }
 
 // Position each machine cluster: me centered, others by link adjacency, rest in a row.
@@ -720,6 +729,7 @@ function updatePanelOwner() {
   panelEl.querySelectorAll('.splitseg').forEach(seg => {
     seg.classList.toggle('active', !!owner && seg.dataset.machine === owner);
   });
+  renderDock();
 }
 async function setOwner(name) {
   sharedLive.owner = name; updatePanelOwner(); // optimistic
@@ -862,6 +872,79 @@ function renderCorridors() {
   }
 }
 
+// ---- living cursor: an ambient pointer that tours the screens, with a trail
+// and a "from → to" caption, so the map feels alive. Toggle in the dock.
+let liveOn = localStorage.getItem('kayiver-live') !== '0';
+const curEl = document.createElement('div');
+curEl.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;z-index:46;opacity:0;transition:opacity .3s;';
+curEl.innerHTML = '<div style="position:absolute;left:-11px;top:-11px;width:26px;height:26px;border-radius:50%;background:radial-gradient(circle,var(--a1) 0%,transparent 70%);opacity:.5;"></div>'
+  + '<svg width="20" height="22" viewBox="0 0 20 22" style="position:absolute;left:-1px;top:-1px;filter:drop-shadow(0 3px 6px rgba(0,0,0,.6));"><path d="M1 1 L1 17 L5.5 13 L8.5 20 L11 19 L8 12 L14 12 Z" fill="var(--cursor-main)" stroke="rgba(0,0,0,.4)" stroke-width="1" stroke-linejoin="round"/></svg>';
+canvas.appendChild(curEl);
+const trailEl = document.createElement('div');
+trailEl.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:44;';
+canvas.appendChild(trailEl);
+const trailDots = [];
+for (let i = 0; i < 9; i++) { const d = document.createElement('div'); d.style.cssText = 'position:absolute;left:0;top:0;width:6px;height:6px;border-radius:50%;background:var(--a1);'; trailEl.appendChild(d); trailDots.push(d); }
+const capEl = document.createElement('div');
+capEl.style.cssText = 'position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:45;background:var(--panel);border:1px solid var(--line2);border-radius:20px;padding:5px 13px;font-size:11.5px;font-family:"IBM Plex Mono",monospace;color:var(--muted);box-shadow:var(--shadow);opacity:0;transition:opacity .25s;white-space:nowrap;';
+canvas.appendChild(capEl);
+let curPos = { x: 300, y: 200 }, curBuf = [], curFrom = null, curTo = null, curT = 0;
+function tickCursor(t) {
+  requestAnimationFrame(tickCursor);
+  const dt = Math.min(0.05, (t - (curT || t)) / 1000); curT = t;
+  document.querySelectorAll('.mon.livefocus').forEach(e => e.classList.remove('livefocus'));
+  const ns = mons.filter(m => m.el.style.display !== 'none').map(m => ({ id: m.machine + m.idx, cx: m.x + m.w / 2, cy: m.y + m.h / 2, machine: m.machine, el: m.el }));
+  const dragging = document.querySelector('.mon.dragging');
+  if (!liveOn || dragging || ns.length < 2) { curEl.style.opacity = '0'; capEl.style.opacity = '0'; return; }
+  curEl.style.opacity = '1';
+  const ids = ns.map(n => n.id);
+  if (curTo == null || !ids.includes(curTo)) { curFrom = ids[0]; curTo = ids[1 % ids.length]; }
+  const to = ns.find(n => n.id === curTo), from = ns.find(n => n.id === curFrom) || to;
+  const dx = to.cx - curPos.x, dy = to.cy - curPos.y, dist = Math.hypot(dx, dy), sp = 200 * dt;
+  if (dist < Math.max(3, sp)) { curPos.x = to.cx; curPos.y = to.cy; curFrom = curTo; const i = ids.indexOf(curFrom); curTo = ids[(i + 1) % ids.length]; }
+  else { curPos.x += dx / dist * sp; curPos.y += dy / dist * sp; }
+  if (to && to.el) to.el.classList.add('livefocus');
+  let cap = '';
+  if (from && to && from.machine !== to.machine) cap = from.machine + '  →  ' + to.machine;
+  capEl.textContent = cap; capEl.style.opacity = cap ? '1' : '0';
+  curEl.style.transform = 'translate(' + curPos.x + 'px,' + curPos.y + 'px)';
+  curBuf.unshift({ x: curPos.x, y: curPos.y }); if (curBuf.length > 36) curBuf.pop();
+  trailDots.forEach((d, i) => { const p = curBuf[(i + 1) * 4]; if (p) { const k = 1 - i / 9; d.style.transform = 'translate(' + (p.x - 3) + 'px,' + (p.y - 3) + 'px) scale(' + (0.4 + k * 0.6) + ')'; d.style.opacity = String(k * 0.5); } else d.style.opacity = '0'; });
+}
+requestAnimationFrame(tickCursor);
+function setLive(on) { liveOn = on; localStorage.setItem('kayiver-live', on ? '1' : '0'); renderDock(); }
+
+// Dock: shared-panel owner buttons (design puts them here, at the bottom) +
+// the live-cursor toggle state.
+function renderDock() {
+  const od = document.getElementById('ownerDock');
+  od.innerHTML = '';
+  if (sharedCfg) {
+    const lbl = document.createElement('span');
+    lbl.style.cssText = 'font-size:11.5px;color:var(--muted);white-space:nowrap;';
+    lbl.textContent = t('panelOwners');
+    od.appendChild(lbl);
+    for (const m of machines) {
+      if (!m.me && m.name !== sharedCfg.peer) continue;
+      const active = sharedLive.owner === m.name;
+      const b = document.createElement('button');
+      b.className = 'dock-btn' + (active ? ' active' : '');
+      b.textContent = m.name;
+      b.onclick = () => setOwner(m.name);
+      od.appendChild(b);
+    }
+    const rm = document.createElement('a');
+    rm.textContent = t('removeSetting');
+    rm.style.cssText = 'font-size:11px;color:var(--faint);cursor:pointer;';
+    rm.onclick = () => unshare();
+    od.appendChild(rm);
+  }
+  const dot = document.getElementById('liveDot');
+  dot.style.cssText = 'width:7px;height:7px;border-radius:50%;background:' + (liveOn ? 'var(--good)' : 'var(--faint)') + ';' + (liveOn ? 'box-shadow:0 0 7px var(--good);' : '');
+  document.getElementById('liveLbl').textContent = liveOn ? t('liveOn') : t('liveOff');
+  document.getElementById('liveBtn').classList.toggle('active', liveOn);
+}
+
 function renderLegend() {
   const el = document.getElementById('legend');
   el.innerHTML = '';
@@ -965,7 +1048,8 @@ function renderAndroid(a) {
   tabletTile.classList.toggle('on', on);
   tabletTile.innerHTML = '<div class="ticon"></div><div class="tname">' + d.model + '</div>';
   const sub = document.createElement('div'); sub.className = 'tsub';
-  sub.textContent = on ? t('tabletControlling') : ((d.connection === 'wifi' ? t('wireless') : 'USB') + ' · ' + t('tabletDrag'));
+  const hk = /Mac/.test(navigator.platform) ? '⌘⌥T' : 'Ctrl+Alt+T';
+  sub.textContent = on ? (t('tabletReady') + ' · ' + hk) : ((d.connection === 'wifi' ? t('wireless') : 'USB') + ' · ' + t('tabletDrag'));
   tabletTile.appendChild(sub);
   if (!on && d.connection === 'usb') {
     const wl = document.createElement('div'); wl.className = 'tsub'; wl.style.textDecoration = 'underline';
@@ -1131,6 +1215,7 @@ applyTheme(localStorage.getItem('kayiver-theme') || (window.matchMedia && window
 document.getElementById('themeBtn').addEventListener('click', () => {
   applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
 });
+document.getElementById('liveBtn').addEventListener('click', () => setLive(!liveOn));
 document.getElementById('gear').addEventListener('click', openSettings);
 document.getElementById('setClose').addEventListener('click', closeSettings);
 overlay.addEventListener('click', e => { if (e.target === overlay) closeSettings(); });
