@@ -116,6 +116,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         ctl.shared_hotkey.store(cfg.shared_monitor.hotkey, Ordering::SeqCst);
     }
     ctl.edge_dwell_ms.store(cfg.edge_dwell_ms, Ordering::Relaxed);
+    *ctl.tablet_edge.write().unwrap() = cfg.tablet_edge.as_deref().and_then(parse_edge);
     crate::ui::set_shared_state(
         cfg.shared_monitor.configured(),
         shared_peer.clone(),
@@ -135,6 +136,9 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         down_buttons: HashSet::new(),
         pending_drop_url: None,
         tablet_active: false,
+        tablet_vpos: (0, 0),
+        tablet_size: (2560, 1600),
+        tablet_entry_ratio: 0.5,
     };
 
     // The layout editor rides along with the host process.
@@ -172,6 +176,16 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     Ok(())
 }
 
+fn parse_edge(s: &str) -> Option<Edge> {
+    match s {
+        "left" => Some(Edge::Left),
+        "right" => Some(Edge::Right),
+        "top" => Some(Edge::Top),
+        "bottom" => Some(Edge::Bottom),
+        _ => None,
+    }
+}
+
 /// UHID mouse button bit index for a captured button.
 fn button_index(b: MouseButton) -> u8 {
     match b {
@@ -206,6 +220,11 @@ struct Router {
     /// While true, captured input is forwarded to the connected Android tablet
     /// (via scrcpy UHID) instead of the local desktop or a peer.
     tablet_active: bool,
+    /// Virtual cursor position on the tablet + its size, tracked from relative
+    /// deltas so we know when the cursor has walked back to the entry edge.
+    tablet_vpos: (i32, i32),
+    tablet_size: (i32, i32),
+    tablet_entry_ratio: f32,
 }
 
 impl Router {
@@ -254,6 +273,62 @@ impl Router {
         }
     }
 
+    /// If `edge` is the tablet's edge, hand control to the tablet. Returns true
+    /// if the crossing was for the tablet (handled).
+    fn try_tablet_cross(&mut self, edge: Edge, ratio: f32) -> bool {
+        let Some(te) = *self.ctl.tablet_edge.read().unwrap() else { return false };
+        if edge != te {
+            return false;
+        }
+        if !crate::android::is_connected() {
+            // Not ready — connect in the background and bounce the cursor back
+            // so the next crossing works.
+            std::thread::spawn(|| {
+                crate::android::ensure_connected();
+            });
+            self.return_local_at(edge, ratio);
+            return true;
+        }
+        let (tw, th) = crate::android::size().unwrap_or((2560, 1600));
+        self.tablet_size = (tw, th);
+        self.tablet_entry_ratio = ratio;
+        // Where the cursor conceptually enters the tablet (opposite edge).
+        self.tablet_vpos = match edge {
+            Edge::Right => (0, (ratio * th as f32) as i32),
+            Edge::Left => (tw, (ratio * th as f32) as i32),
+            Edge::Top => ((ratio * tw as f32) as i32, th),
+            Edge::Bottom => ((ratio * tw as f32) as i32, 0),
+        };
+        self.set_tablet_control(true);
+        true
+    }
+
+    /// Track the tablet's virtual cursor and, when it walks back to the entry
+    /// edge, return control to this desktop.
+    fn tablet_track(&mut self, dx: i32, dy: i32) {
+        let (tw, th) = self.tablet_size;
+        self.tablet_vpos.0 = (self.tablet_vpos.0 + dx).clamp(0, tw);
+        self.tablet_vpos.1 = (self.tablet_vpos.1 + dy).clamp(0, th);
+        crate::android::mouse_move(dx, dy);
+        let te = *self.ctl.tablet_edge.read().unwrap();
+        let (vx, vy) = self.tablet_vpos;
+        let back = match te {
+            Some(Edge::Right) => vx <= 0,
+            Some(Edge::Left) => vx >= tw,
+            Some(Edge::Top) => vy >= th,
+            Some(Edge::Bottom) => vy <= 0,
+            None => false,
+        };
+        if back {
+            // Return to this desktop's edge at the same relative position.
+            let entry = te.map(|e| e.opposite()).unwrap_or(Edge::Left);
+            self.set_tablet_control(false);
+            let (x, y) = kayiver_core::layout::point_on_edge(self.ctl.bounds, entry, self.tablet_entry_ratio, EDGE_INSET);
+            platform::warp_cursor_settled(x, y);
+            *self.ctl.cooldown_until.lock().unwrap() = Instant::now() + RETURN_COOLDOWN;
+        }
+    }
+
     fn on_captured(&mut self, ev: Captured, cap_rx: &mut UnboundedReceiver<Captured>) {
         match ev {
             Captured::Input(InputEvent::MouseMove { mut dx, mut dy }) => {
@@ -270,7 +345,7 @@ impl Router {
                     }
                 }
                 if self.tablet_active {
-                    crate::android::mouse_move(dx, dy);
+                    self.tablet_track(dx, dy);
                 } else {
                     self.send_to_focus(Msg::Input(InputEvent::MouseMove { dx, dy }));
                 }
@@ -310,6 +385,10 @@ impl Router {
                 }
             }
             Captured::EdgeHit { edge, ratio } => {
+                // Tablet edge takes precedence: cross onto the Android device.
+                if self.try_tablet_cross(edge, ratio) {
+                    return;
+                }
                 // If a link is being dragged as we cross, grab its URL now (it's
                 // on our drag pasteboard) to open on the peer when it's dropped.
                 let drag = if self.down_buttons.contains(&MouseButton::Left) {
@@ -608,6 +687,12 @@ impl Router {
                 }
             }
         }
+        // Arm the tablet's edge too, so crossing it hands control to the device.
+        if let Some(te) = *self.ctl.tablet_edge.read().unwrap() {
+            if crate::android::first_serial().is_some() && !active.contains(&te) {
+                active.push(te);
+            }
+        }
         *self.ctl.portals.write().unwrap() = active;
     }
 
@@ -673,6 +758,8 @@ async fn watch_layout(
         match Config::load_or_init() {
             Ok(new_cfg) => {
                 ctl.edge_dwell_ms.store(new_cfg.edge_dwell_ms, Ordering::Relaxed);
+                *ctl.tablet_edge.write().unwrap() = new_cfg.tablet_edge.as_deref().and_then(parse_edge);
+                let _ = evt_tx.send(SessionEvent::LayoutChanged); // re-arm portals
                 let changed = {
                     let mut l = layout.write().unwrap();
                     if *l != new_cfg.layout {

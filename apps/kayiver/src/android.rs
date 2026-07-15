@@ -175,6 +175,51 @@ struct TabletSink {
     /// Keyboard state: modifier bitmask + up to 6 held non-modifier HID usages.
     mods: u8,
     keys: Vec<u8>,
+    /// Tablet screen size in px, for the virtual cursor / edge return.
+    size: (i32, i32),
+}
+
+/// The tablet's screen size in px (for edge-return math), if connected.
+pub fn size() -> Option<(i32, i32)> {
+    sink().lock().unwrap().as_ref().map(|s| s.size)
+}
+
+/// Serial of the first visible device (for auto-connect on edge crossing).
+pub fn first_serial() -> Option<String> {
+    list_devices().into_iter().next().map(|d| d.serial)
+}
+
+/// Make sure a control session is up (connect the first device if not). Cheap
+/// when already connected. Returns whether a session is live.
+pub fn ensure_connected() -> bool {
+    if is_connected() {
+        return true;
+    }
+    if let Some(serial) = first_serial() {
+        let _ = connect(&serial);
+    }
+    is_connected()
+}
+
+fn query_size(serial: &str) -> (i32, i32) {
+    let out = adb().args(["-s", serial, "shell", "wm", "size"]).output();
+    if let Ok(o) = out {
+        let text = String::from_utf8_lossy(&o.stdout);
+        // Prefer "Override size", else "Physical size".
+        for key in ["Override size:", "Physical size:"] {
+            if let Some(line) = text.lines().find(|l| l.contains(key)) {
+                if let Some(dims) = line.split(':').nth(1) {
+                    let dims = dims.trim();
+                    if let Some((w, h)) = dims.split_once('x') {
+                        if let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse()) {
+                            return (w, h);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (2560, 1600)
 }
 
 fn sink() -> &'static Mutex<Option<TabletSink>> {
@@ -274,9 +319,10 @@ pub fn connect(serial: &str) -> Result<()> {
     };
 
     // Register the UHID mouse (real pointer) and keyboard.
+    let size = query_size(serial);
     let mut s = TabletSink {
         stream, server, serial: serial.to_string(), scid, port,
-        buttons: 0, mods: 0, keys: Vec::new(),
+        buttons: 0, mods: 0, keys: Vec::new(), size,
     };
     s.uhid_create(UHID_MOUSE_ID, b"kayiver mouse", MOUSE_REPORT_DESC)?;
     s.uhid_create(UHID_KBD_ID, b"kayiver keyboard", KBD_REPORT_DESC)?;

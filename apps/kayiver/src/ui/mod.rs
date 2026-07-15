@@ -425,6 +425,10 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
             Ok(json) => ("200 OK", "application/json", json.into_bytes()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
         },
+        ("POST", "/api/android/place") => match api_android_place(body) {
+            Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
+            Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+        },
         _ => ("404 Not Found", "text/plain", b"not found".to_vec()),
     }
 }
@@ -462,6 +466,26 @@ fn api_android_connect(body: &[u8]) -> Result<()> {
     let serial = v.get("serial").and_then(|s| s.as_str()).context("missing 'serial'")?;
     crate::android::connect(serial)?;
     send_cmd(UiCmd::TabletControl(true));
+    Ok(())
+}
+
+/// POST /api/android/place {"edge": "left"|"right"|"top"|"bottom"|null} — where
+/// the tablet sits relative to the desktop, so crossing that edge controls it.
+/// null clears the placement.
+fn api_android_place(body: &[u8]) -> Result<()> {
+    let v: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
+    let edge = v.get("edge").and_then(|e| e.as_str()).map(|s| s.to_string());
+    if let Some(e) = &edge {
+        anyhow::ensure!(["left", "right", "top", "bottom"].contains(&e.as_str()), "bad edge");
+    }
+    let mut cfg = Config::load_or_init()?;
+    let has = edge.is_some();
+    cfg.tablet_edge = edge;
+    cfg.save()?;
+    // Pre-establish the control session so the first crossing is instant.
+    if has {
+        std::thread::spawn(|| { crate::android::ensure_connected(); });
+    }
     Ok(())
 }
 

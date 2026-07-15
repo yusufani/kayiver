@@ -83,6 +83,11 @@ pub struct Config {
     /// edge.
     #[serde(default)]
     pub edge_dwell_ms: u64,
+    /// Which desktop edge leads to the Android tablet ("left"/"right"/"top"/
+    /// "bottom"), set by dragging the tablet tile in the editor. When set and a
+    /// device is available, crossing that edge hands control to the tablet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tablet_edge: Option<String>,
 }
 
 /// Opt-in LAN exposure of the status/control API (used by the mobile
@@ -184,6 +189,7 @@ impl Default for Config {
             shared_monitor: SharedMonitor::default(),
             remote: RemoteApi::default(),
             edge_dwell_ms: 0,
+            tablet_edge: None,
         }
     }
 }
@@ -264,6 +270,7 @@ mod tests {
             shared_monitor: SharedMonitor::default(),
             remote: RemoteApi::default(),
             edge_dwell_ms: 0,
+            tablet_edge: None,
         };
         let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), addrs: vec![], last_good: None, screens: vec![], os: None };
         peer.set_psk(&[9u8; 32]);

@@ -43,6 +43,9 @@ pub struct CaptureCtl {
     /// over this rect (never rests on it) so it can't sit on a screen that's
     /// physically displaying the other machine. None = no block.
     pub blocked: RwLock<Option<Rect>>,
+    /// Desktop edge that leads to the Android tablet, if placed. Crossing it
+    /// hands control to the tablet (like a peer portal, but local).
+    pub tablet_edge: RwLock<Option<Edge>>,
     pub bounds: Rect,
 }
 
@@ -55,6 +58,7 @@ impl CaptureCtl {
             shared_hotkey: AtomicBool::new(false),
             edge_dwell_ms: AtomicU64::new(0),
             blocked: RwLock::new(None),
+            tablet_edge: RwLock::new(None),
             bounds,
         }
     }

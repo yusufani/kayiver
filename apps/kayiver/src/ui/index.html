@@ -357,6 +357,7 @@ const I18N = {
     tablet: "Tablet", tabletNone: "Tablet yok — USB kablosuyla bağla, tablette USB hata ayıklamayı aç",
     tabletNoTools: "scrcpy kurulu değil (brew install scrcpy)",
     tabletControlling: "kontrol ediliyor · çıkış: 3× Esc", tabletConnecting: "bağlanıyor…",
+    tabletDrag: "sürükle=yerleştir · tıkla=kontrol", tabletPlaced: "tablet yerleşti — kenardan geçince kontrol: ",
     connectBtn: "bağlan", disconnect: "bırak", wireless: "kablosuz", wirelessOn: "kablosuz açık: ",
     autostart: "Girişte başlat", autostartDesc: "oturum açılınca kayıver kendiliğinden çalışsın",
     remote: "Telefon / LAN kumandası", remoteDesc: "Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)",
@@ -391,6 +392,7 @@ const I18N = {
     tablet: "Tablet", tabletNone: "No tablet — connect one over USB and enable USB debugging",
     tabletNoTools: "scrcpy not installed (brew install scrcpy)",
     tabletControlling: "controlling · exit: 3× Esc", tabletConnecting: "connecting…",
+    tabletDrag: "drag=place · click=control", tabletPlaced: "tablet placed — cross this edge to control: ",
     connectBtn: "connect", disconnect: "release", wireless: "wireless", wirelessOn: "wireless on: ",
     autostart: "Start at login", autostartDesc: "run kayiver automatically when you log in",
     remote: "Phone / LAN control", remoteDesc: "token-protected local API for the Android app (takes effect after a restart)",
@@ -896,35 +898,78 @@ async function refreshStateIfChanged() {
   } catch (_) {}
 }
 
-// ---- tablet: shown as a device tile in the canvas -------------------------
+// ---- tablet: shown as a draggable device tile in the canvas ---------------
+const TAB_W = 122, TAB_H = 96;
 const tabletTile = document.createElement('div');
 tabletTile.className = 'tablet-tile';
 tabletTile.style.display = 'none';
 canvas.appendChild(tabletTile);
+let tabPos = (() => { try { return JSON.parse(localStorage.getItem('kayiver-tabpos')); } catch (_) { return null; } })();
+let tabDevice = null, tabOn = false;
 async function pollAndroid() {
   try { renderAndroid(await (await fetch('/api/android')).json()); }
   catch (_) {}
 }
 function renderAndroid(a) {
   if (!a || !a.tools_ready || !(a.devices || []).length) { tabletTile.style.display = 'none'; return; }
-  const w = 122, h = 96;
-  tabletTile.style.width = w + 'px'; tabletTile.style.height = h + 'px';
-  tabletTile.style.left = Math.max(8, canvas.clientWidth - w - 26) + 'px';
-  tabletTile.style.top = Math.max(8, canvas.clientHeight - h - 26) + 'px';
-  tabletTile.style.display = 'flex';
   const d = (a.devices || []).find(x => x.serial === a.connected) || a.devices[0];
-  const on = !!a.connected;
+  tabDevice = d;
+  const on = !!a.connected; tabOn = on;
+  if (!tabPos) tabPos = { x: Math.max(8, canvas.clientWidth - TAB_W - 26), y: Math.max(8, canvas.clientHeight - TAB_H - 26) };
+  tabletTile.style.width = TAB_W + 'px'; tabletTile.style.height = TAB_H + 'px';
+  tabletTile.style.left = tabPos.x + 'px'; tabletTile.style.top = tabPos.y + 'px';
+  tabletTile.style.display = 'flex';
   tabletTile.classList.toggle('on', on);
   tabletTile.innerHTML = '<div class="ticon"></div><div class="tname">' + d.model + '</div>';
   const sub = document.createElement('div'); sub.className = 'tsub';
-  sub.textContent = on ? t('tabletControlling') : ((d.connection === 'wifi' ? t('wireless') : 'USB') + ' · ' + t('connectBtn'));
+  sub.textContent = on ? t('tabletControlling') : ((d.connection === 'wifi' ? t('wireless') : 'USB') + ' · ' + t('tabletDrag'));
   tabletTile.appendChild(sub);
-  tabletTile.onclick = on ? androidDisconnect : () => androidConnect(d.serial);
   if (!on && d.connection === 'usb') {
     const wl = document.createElement('div'); wl.className = 'tsub'; wl.style.textDecoration = 'underline';
     wl.textContent = t('wireless'); wl.onclick = e => { e.stopPropagation(); androidWireless(d.serial); };
     tabletTile.appendChild(wl);
   }
+}
+// Drag to position the tablet; on drop, save which desktop edge it sits beyond
+// so crossing that edge auto-controls it. A click (no drag) toggles control.
+tabletTile.addEventListener('pointerdown', e => {
+  if (e.target.textContent === t('wireless')) return; // let the wireless link handle it
+  tabletTile.setPointerCapture(e.pointerId);
+  const sx = e.clientX, sy = e.clientY, ox = tabPos.x, oy = tabPos.y;
+  let moved = false;
+  const move = ev => {
+    const dx = ev.clientX - sx, dy = ev.clientY - sy;
+    if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
+    tabPos.x = Math.max(0, Math.min(canvas.clientWidth - TAB_W, ox + dx));
+    tabPos.y = Math.max(0, Math.min(canvas.clientHeight - TAB_H, oy + dy));
+    tabletTile.style.left = tabPos.x + 'px'; tabletTile.style.top = tabPos.y + 'px';
+  };
+  const up = () => {
+    tabletTile.removeEventListener('pointermove', move);
+    tabletTile.removeEventListener('pointerup', up);
+    if (moved) { localStorage.setItem('kayiver-tabpos', JSON.stringify(tabPos)); placeTablet(); }
+    else if (tabOn) { androidDisconnect(); }
+    else if (tabDevice) { androidConnect(tabDevice.serial); } // click = control
+  };
+  tabletTile.addEventListener('pointermove', move);
+  tabletTile.addEventListener('pointerup', up);
+});
+// Which desktop edge is the tablet beyond? (relative to this machine's monitors)
+function tabletEdge() {
+  const me = mons.filter(m => m.me && m.el.style.display !== 'none');
+  if (!me.length) return null;
+  const x0 = Math.min(...me.map(t => t.x)), y0 = Math.min(...me.map(t => t.y));
+  const x1 = Math.max(...me.map(t => t.x + t.w)), y1 = Math.max(...me.map(t => t.y + t.h));
+  const cx = tabPos.x + TAB_W / 2, cy = tabPos.y + TAB_H / 2;
+  const dx = cx - (x0 + x1) / 2, dy = cy - (y0 + y1) / 2;
+  const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0);
+  return Math.abs(dx) / w >= Math.abs(dy) / h ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'bottom' : 'top');
+}
+async function placeTablet() {
+  const edge = tabletEdge();
+  if (!edge) return;
+  try { await fetch('/api/android/place', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ edge }) }); } catch (_) {}
+  setMsg(t('tabletPlaced') + edge, 'ok');
 }
 async function androidConnect(serial) {
   setMsg(t('tabletConnecting'), '');
