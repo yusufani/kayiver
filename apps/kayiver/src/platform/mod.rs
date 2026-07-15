@@ -92,14 +92,27 @@ pub fn start_cursor_guard(ctl: Arc<CaptureCtl>, tx: tokio::sync::mpsc::Unbounded
                 if point_in(b, x, y) {
                     if !inside {
                         inside = true;
-                        let fx = (x - b.x) as f32 / b.w.max(1) as f32;
-                        let fy = (y - b.y) as f32 / b.h.max(1) as f32;
+                        let (dx, dy) = (x - prev.0, y - prev.1);
+                        // Hand over at the edge we ENTERED through, preserving the
+                        // direction of travel: crossing rightward onto the panel
+                        // must land on the peer's LEFT edge at the same height —
+                        // not wherever the 8 ms poll happened to catch the cursor
+                        // after it flicked deep into the (invisible) panel, which
+                        // dumped it in the far corner.
+                        let along_y = ((y - b.y) as f32 / b.h.max(1) as f32).clamp(0.0, 1.0);
+                        let along_x = ((x - b.x) as f32 / b.w.max(1) as f32).clamp(0.0, 1.0);
+                        let (fx, fy) = if dx.abs() >= dy.abs() {
+                            if dx >= 0 { (0.0, along_y) } else { (1.0, along_y) }
+                        } else if dy >= 0 {
+                            (along_x, 0.0)
+                        } else {
+                            (along_x, 1.0)
+                        };
                         // Park just outside the edge we came in through so the
                         // local cursor isn't left sitting on the hidden panel.
-                        let (dx, dy) = (x - prev.0, y - prev.1);
                         let park = skip_out(b, x, y, -dx, -dy);
                         warp_cursor(park.0, park.1);
-                        let _ = tx.send(Captured::SharedEnter { fx: fx.clamp(0.0, 1.0), fy: fy.clamp(0.0, 1.0) });
+                        let _ = tx.send(Captured::SharedEnter { fx, fy });
                         prev = park;
                     }
                 } else {
