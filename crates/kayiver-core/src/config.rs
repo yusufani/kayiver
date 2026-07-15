@@ -130,6 +130,13 @@ pub struct SharedMonitor {
     /// Toggle ownership with Cmd+Alt+M (macOS) / Ctrl+Alt+M (Windows).
     #[serde(default = "default_true")]
     pub hotkey: bool,
+    /// Machine the panel was last showing, persisted on every switch so a
+    /// restart doesn't silently reset ownership to this machine while the
+    /// physical panel still shows the peer (which used to leave the peer's
+    /// copy blocked and the notice overlay covering whatever it was doing —
+    /// e.g. a fullscreen game).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_owner: Option<String>,
 }
 
 impl Default for SharedMonitor {
@@ -141,6 +148,7 @@ impl Default for SharedMonitor {
             peer_index: None,
             peer_rect: None,
             hotkey: true,
+            last_owner: None,
         }
     }
 }

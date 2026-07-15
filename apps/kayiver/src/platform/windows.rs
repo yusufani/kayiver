@@ -7,8 +7,10 @@
 //! raw motion we forward. The cursor is parked a safe inset away from the
 //! portal edge so proposed positions are never clamped by the screen bounds.
 //!
-//! Injection: SendInput with MOUSEEVENTF_ABSOLUTE|VIRTUALDESK for motion
-//! (normalized to the virtual desktop) and VK+scancode pairs for keys.
+//! Injection: relative SendInput deltas (so raw-input games see real motion)
+//! pinned to the exact position with SetCursorPos, and VK+scancode pairs for
+//! keys. Warps verify their landing and re-attach the input desktop if the
+//! cursor didn't move (lock screen / UAC desktop switches).
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -25,14 +27,14 @@ use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
     KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC,
-    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
     MOUSEEVENTF_XUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetCursorPos, GetMessageW, GetSystemMetrics, SetCursorPos, SetWindowsHookExW,
-    KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    CallNextHookEx, GetClipCursor, GetCursorPos, GetMessageW, GetSystemMetrics, SetCursorPos,
+    SetWindowsHookExW, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
     WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
@@ -400,28 +402,41 @@ pub fn monitors() -> Vec<Rect> {
 /// we read and the coordinates SendInput expects disagree, and the injected
 /// cursor lands in the wrong place. Must run before any geometry is read.
 pub fn init() {
-    use windows::Win32::System::StationsAndDesktops::{
-        OpenInputDesktop, SetThreadDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS,
-    };
     use windows::Win32::UI::HiDpi::{
         SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     };
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+    // Attach this thread to the session's *input* desktop. Without this, a
+    // kayiver launched from a service / scheduled task runs on a
+    // non-interactive desktop and its SendInput never reaches the visible
+    // cursor — even though everything reports success. The client injects on
+    // this same thread (single-threaded tokio runtime), so binding it here is
+    // what makes remote-launched kayiver actually move the cursor.
+    attach_input_desktop();
+}
 
-        // Attach this thread to the session's *input* desktop. Without this,
-        // a kayiver launched from a service / scheduled task runs on a
-        // non-interactive desktop and its SendInput never reaches the visible
-        // cursor — even though everything reports success. The client injects
-        // on this same thread (single-threaded tokio runtime), so binding it
-        // here is what makes remote-launched kayiver actually move the cursor.
-        // GENERIC_ALL = 0x10000000.
+/// (Re)bind the calling thread to the current input desktop. The input
+/// desktop is not stable: a lock screen or UAC prompt switches it, and a
+/// thread bound to the old handle keeps "succeeding" while its SendInput
+/// reaches nothing visible. Called at startup and again whenever a warp
+/// readback shows the cursor didn't actually move. GENERIC_ALL = 0x10000000.
+fn attach_input_desktop() -> bool {
+    use windows::Win32::System::StationsAndDesktops::{
+        OpenInputDesktop, SetThreadDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS,
+    };
+    unsafe {
         match OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_ACCESS_FLAGS(0x1000_0000)) {
             Ok(hdesk) => {
                 let ok = SetThreadDesktop(hdesk).is_ok();
                 tracing::info!("input-desktop attach: opened=true set_thread_desktop={ok}");
+                ok
             }
-            Err(e) => tracing::info!("input-desktop attach: OpenInputDesktop failed: {e:?}"),
+            Err(e) => {
+                tracing::info!("input-desktop attach: OpenInputDesktop failed: {e:?}");
+                false
+            }
         }
     }
 }
@@ -777,17 +792,19 @@ const EXTENDED_HIDS: &[u16] = &[
 ];
 
 pub struct Injector {
-    bounds: Rect,
     down_keys: Vec<u16>,
     down_buttons: Vec<MouseButton>,
+    /// Last time an injection problem was logged, to keep the log readable
+    /// while a game clips the cursor for minutes at a time.
+    last_issue_log: Option<Instant>,
 }
 
 impl Injector {
     pub fn new() -> Result<Self> {
-        Ok(Injector { bounds: desktop_bounds(), down_keys: Vec::new(), down_buttons: Vec::new() })
+        Ok(Injector { down_keys: Vec::new(), down_buttons: Vec::new(), last_issue_log: None })
     }
 
-    fn send_mouse(&self, flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, data: i32) {
+    fn send_mouse(&mut self, flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, data: i32) {
         let input = INPUT {
             r#type: INPUT_MOUSE,
             Anonymous: INPUT_0 {
@@ -801,16 +818,56 @@ impl Injector {
                 },
             },
         };
-        unsafe {
-            SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+        let sent = unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
+        if sent == 0 {
+            let err = unsafe { windows::Win32::Foundation::GetLastError() };
+            self.log_issue(format!("SendInput({flags:?}) injected nothing: {err:?}"));
         }
     }
 
-    pub fn mouse_to(&mut self, x: i32, y: i32, _dx: i32, _dy: i32) {
-        // Normalize to 0..65535 across the virtual desktop.
-        let nx = ((x - self.bounds.x) as i64 * 65535 / (self.bounds.w.max(1) as i64 - 1).max(1)) as i32;
-        let ny = ((y - self.bounds.y) as i64 * 65535 / (self.bounds.h.max(1) as i64 - 1).max(1)) as i32;
-        self.send_mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, nx, ny, 0);
+    /// Move the injected cursor. Two channels on purpose:
+    ///   - the RELATIVE delta goes through SendInput, because raw-input
+    ///     listeners (games doing mouselook) never see SetCursorPos warps;
+    ///   - the exact position is then pinned with SetCursorPos, which is
+    ///     immune to pointer acceleration (a relative-only stream drifts) and
+    ///     handles a negative-origin virtual desktop (monitor above the
+    ///     primary) without normalization games.
+    /// Warps (dx=dy=0 — Enter/EnterAt handoffs) are position-critical, so
+    /// they verify the landing with GetCursorPos and re-attach the input
+    /// desktop + retry once if the cursor didn't actually move (lock screen /
+    /// UAC switched desktops, or a fullscreen app clips the cursor).
+    pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) {
+        if dx != 0 || dy != 0 {
+            self.send_mouse(MOUSEEVENTF_MOVE, dx, dy, 0);
+        }
+        unsafe {
+            let warp = SetCursorPos(x, y);
+            if dx == 0 && dy == 0 {
+                let mut p = POINT::default();
+                let _ = GetCursorPos(&mut p);
+                if (p.x - x).abs() > 4 || (p.y - y).abs() > 4 {
+                    let mut clip = windows::Win32::Foundation::RECT::default();
+                    let _ = GetClipCursor(&mut clip);
+                    let reattached = attach_input_desktop();
+                    let retried = SetCursorPos(x, y);
+                    let mut q = POINT::default();
+                    let _ = GetCursorPos(&mut q);
+                    self.log_issue(format!(
+                        "warp to ({x},{y}) landed at ({},{}) [warp_ok={} clip={:?} \
+                         reattach={reattached} retry_ok={} now=({},{})]",
+                        p.x, p.y, warp.is_ok(), clip, retried.is_ok(), q.x, q.y
+                    ));
+                }
+            }
+        }
+    }
+
+    fn log_issue(&mut self, msg: String) {
+        let now = Instant::now();
+        if self.last_issue_log.map_or(true, |t| now.duration_since(t) > Duration::from_millis(500)) {
+            self.last_issue_log = Some(now);
+            tracing::warn!("inject: {msg}");
+        }
     }
 
     pub fn button(&mut self, b: MouseButton, pressed: bool) {

@@ -108,10 +108,16 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     tokio::spawn(accept_loop(listener, cfg.clone(), layout.clone(), sessions.clone(), peer_screens.clone(), clip.clone(), evt_tx.clone()));
     tokio::spawn(watch_layout(layout.clone(), shared.clone(), ctl.clone(), evt_tx));
 
-    // Shared-monitor state: arm the hotkey. On start the host owns the panel
-    // (its cursor is free; the peer is told to block its shared rect).
+    // Shared-monitor state: arm the hotkey. Ownership survives restarts —
+    // the physical panel doesn't change inputs just because kayiver did.
+    // Falling back to "host owns it" used to block the peer's copy (and cover
+    // it with the notice overlay) right after every deploy while the panel
+    // was in fact still showing the peer.
     let shared_peer = shared_peer_name(&cfg, &cfg.shared_monitor);
-    let shared_owner = cfg.name.clone();
+    let shared_owner = match cfg.shared_monitor.last_owner.clone() {
+        Some(o) if o == cfg.name || Some(o.as_str()) == shared_peer.as_deref() => o,
+        _ => cfg.name.clone(),
+    };
     if cfg.shared_monitor.configured() {
         ctl.shared_hotkey.store(cfg.shared_monitor.hotkey, Ordering::SeqCst);
     }
@@ -140,6 +146,14 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         tablet_size: (2560, 1600),
         tablet_entry_ratio: 0.5,
     };
+
+    // Re-apply the restored ownership locally right away: if the panel is
+    // showing the peer, this desk's copy must be blocked from the first
+    // frame, not from whenever the peer happens to connect.
+    if router.shared_owner != router.cfg.name {
+        let sm = router.shared.read().unwrap().clone();
+        *router.ctl.blocked.write().unwrap() = sm.local_rect;
+    }
 
     // The layout editor rides along with the host process.
     crate::ui::mark_running();
@@ -516,6 +530,18 @@ impl Router {
         let to_me = owner == self.cfg.name;
         info!("shared monitor -> {owner}");
         self.shared_owner = owner.clone();
+        // Persist so a restart resumes with the panel's real state instead of
+        // silently claiming it back for this machine. (Re-loaded fresh: the
+        // editor also writes the config, and reconnects re-call this with an
+        // unchanged owner — only a real switch touches the disk.)
+        if let Ok(mut c) = Config::load_or_init() {
+            if c.shared_monitor.last_owner.as_deref() != Some(owner.as_str()) {
+                c.shared_monitor.last_owner = Some(owner.clone());
+                if let Err(e) = c.save() {
+                    warn!("could not persist shared owner: {e:#}");
+                }
+            }
+        }
         crate::ui::set_shared_owner(Some(owner));
         crate::ui::set_shared_error(None);
 

@@ -22,8 +22,9 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostMessageW, RegisterClassW,
-    SetWindowPos, ShowWindow, HWND_TOPMOST, MSG, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNA, WNDCLASSW,
-    WM_APP, WM_PAINT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SetLayeredWindowAttributes, SetWindowPos, ShowWindow, HWND_TOPMOST, LWA_ALPHA, MSG,
+    SWP_NOACTIVATE, SW_HIDE, SW_SHOWNA, WNDCLASSW, WM_APP, WM_PAINT, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 static HWND_VAL: AtomicIsize = AtomicIsize::new(0);
@@ -64,8 +65,12 @@ unsafe fn run() {
     };
     RegisterClassW(&wc);
     let name = to_wide("Kayıver");
+    // Click-through (TRANSPARENT) + translucent (LAYERED): the notice must
+    // never eat input. If ownership state is ever wrong while something real
+    // (a fullscreen game) is on this panel, the user can still click through
+    // the veil instead of fighting an invisible wall.
     let hwnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED,
         PCWSTR(class.as_ptr()),
         PCWSTR(name.as_ptr()),
         WS_POPUP,
@@ -73,6 +78,7 @@ unsafe fn run() {
         None, None, Some(hinst.into()), None,
     );
     let Ok(hwnd) = hwnd else { return };
+    let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 210, LWA_ALPHA);
     HWND_VAL.store(hwnd.0 as isize, Ordering::Relaxed);
     apply(hwnd);
 

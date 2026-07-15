@@ -110,6 +110,15 @@ fn main() -> Result<()> {
         }
     }
 
+    // Panics must reach the log file: a background/autostarted instance dies
+    // silently otherwise (stderr goes nowhere) and all we ever see is "the
+    // process is gone".
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("panic: {info}");
+        default_panic(info);
+    }));
+
     // Platform init before anything reads screen geometry (Windows DPI).
     platform::init();
 
@@ -152,6 +161,17 @@ fn main() -> Result<()> {
 
 fn run(no_gui: bool) -> Result<()> {
     let _ = no_gui;
+    // One engine per machine. A watchdog task racing a live instance (or a
+    // double launch from the task scheduler) would double-inject every event;
+    // the loser exits instantly instead. Held for the process lifetime.
+    let guard = std::net::TcpListener::bind(("127.0.0.1", ui::UI_PORT + 3));
+    match guard {
+        Ok(l) => { Box::leak(Box::new(l)); }
+        Err(_) => {
+            tracing::info!("another kayiver instance is already running — exiting");
+            return Ok(());
+        }
+    }
     let cfg = Config::load_or_init()?;
     if cfg.peers.is_empty() {
         // A host can run before its first pairing (useful to verify
