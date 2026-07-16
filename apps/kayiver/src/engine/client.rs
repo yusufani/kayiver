@@ -225,6 +225,7 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
     // nonce (symptom: repeated `decrypt error` disconnects). The host's Ping
     // keeps frames arriving ~1/s, so a change is still noticed promptly.
     let mut last_geo = Instant::now();
+    let mut last_mons = platform::monitors();
     loop {
         let timed = tokio::time::timeout(RECV_TIMEOUT, reader.recv()).await;
         {
@@ -320,13 +321,18 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
         // writer task, so it can't interleave with other frames either.
         if last_geo.elapsed() >= Duration::from_secs(2) {
             last_geo = Instant::now();
-            let b = platform::desktop_bounds();
-            if b != state.bounds {
-                info!("desktop geometry changed: {:?} -> {b:?}", state.bounds);
+            // Compare the monitor LIST, not the bounding box: a monitor can
+            // move without changing the union (e.g. sliding along an edge),
+            // and the host's crossing math cares about each rect.
+            let mons = platform::monitors();
+            if mons != last_mons {
+                let b = platform::desktop_bounds();
+                info!("desktop geometry changed: {last_mons:?} -> {mons:?}");
+                last_mons = mons.clone();
                 state.bounds = b;
                 state.pos.0 = state.pos.0.clamp(b.x, b.right() - 1);
                 state.pos.1 = state.pos.1.clamp(b.y, b.bottom() - 1);
-                let _ = out_tx.send(Msg::Monitors { screen: b, monitors: platform::monitors() });
+                let _ = out_tx.send(Msg::Monitors { screen: b, monitors: mons });
             }
         }
     }

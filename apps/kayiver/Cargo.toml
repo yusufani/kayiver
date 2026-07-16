@@ -9,6 +9,18 @@ license.workspace = true
 name = "kayiver"
 path = "src/main.rs"
 
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+# Swap the OS backend for a scriptable virtual machine; `cargo test
+# --features sim` then runs real host<->client sessions on a virtual desk.
+sim = []
+
+[[test]]
+name = "sim_e2e"
+required-features = ["sim"]
+
 [dependencies]
 kayiver-core = { path = "../../crates/kayiver-core" }
 tokio = { version = "1", features = ["full"] }

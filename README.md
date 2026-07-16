@@ -183,9 +183,17 @@ Linux is on the bench:
 **[GitHub Sponsors](https://github.com/sponsors/yusufani)** ·
 **[PayPal](https://paypal.me/yusufani)**
 
+## Testing without hardware
+
+`cargo test --features sim -p kayiver` runs the full engine — real router,
+real Noise encryption, real TCP — on a **virtual two-machine desk** with
+scriptable monitors, cursor, and injection. Every bug class from the real
+desk has a regression scenario there. See [docs/TESTING.md](docs/TESTING.md).
+
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — components, threads, the crossing state machine, latency design
+- [docs/TESTING.md](docs/TESTING.md) — the simulated two-machine test desk
 - [docs/PROTOCOL.md](docs/PROTOCOL.md) — wire protocol specification
 - [docs/SECURITY.md](docs/SECURITY.md) — threat model, pairing & session crypto
 - [docs/PLATFORMS.md](docs/PLATFORMS.md) — per-OS implementation notes, Android/iOS plans, shared-monitor (DDC/CI) story

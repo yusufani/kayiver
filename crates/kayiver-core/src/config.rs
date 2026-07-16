@@ -204,6 +204,12 @@ impl Default for Config {
 
 impl Config {
     pub fn path() -> PathBuf {
+        // Override for tests and the sim harness, where several instances on
+        // one machine must each act like their own machine — never let them
+        // read or write the user's real config.
+        if let Some(dir) = std::env::var_os("KAYIVER_CONFIG_DIR") {
+            return PathBuf::from(dir).join("config.toml");
+        }
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("kayiver")

@@ -164,12 +164,15 @@ fn run(no_gui: bool) -> Result<()> {
     // One engine per machine. A watchdog task racing a live instance (or a
     // double launch from the task scheduler) would double-inject every event;
     // the loser exits instantly instead. Held for the process lifetime.
-    let guard = std::net::TcpListener::bind(("127.0.0.1", ui::UI_PORT + 3));
-    match guard {
-        Ok(l) => { Box::leak(Box::new(l)); }
-        Err(_) => {
-            tracing::info!("another kayiver instance is already running — exiting");
-            return Ok(());
+    // Sim processes are each their own virtual machine, so they skip it.
+    if std::env::var_os("KAYIVER_SIM_CTL").is_none() {
+        let guard = std::net::TcpListener::bind(("127.0.0.1", ui::UI_PORT + 3));
+        match guard {
+            Ok(l) => { Box::leak(Box::new(l)); }
+            Err(_) => {
+                tracing::info!("another kayiver instance is already running — exiting");
+                return Ok(());
+            }
         }
     }
     // Windows Search finds apps through the Start Menu only; keep our

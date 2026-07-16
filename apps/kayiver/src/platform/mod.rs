@@ -175,24 +175,33 @@ fn entry_on_rect(b: Rect, from: (i32, i32), to: (i32, i32)) -> (f32, f32) {
     }
 }
 
-#[cfg(target_os = "macos")]
+// The `sim` feature swaps the whole OS backend for a scriptable virtual
+// machine (virtual monitors/cursor, recorded injection, a JSON control
+// socket). `cargo test --features sim` runs real host↔client sessions —
+// real router, real Noise, real TCP — against that virtual desk.
+#[cfg(feature = "sim")]
+mod sim;
+#[cfg(feature = "sim")]
+pub use sim::*;
+
+#[cfg(all(target_os = "macos", not(feature = "sim")))]
 mod macos;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "sim")))]
 pub use macos::*;
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(feature = "sim")))]
 mod windows;
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(feature = "sim")))]
 pub use windows::*;
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", feature = "sim")))]
 mod stub;
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", feature = "sim")))]
 pub use stub::*;
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(feature = "sim")))]
 mod tray_windows;
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(feature = "sim")))]
 mod passive_windows;
 
 /// A full-screen notice drawn on the shared monitor while it's showing the
@@ -201,7 +210,7 @@ mod passive_windows;
 pub mod passive {
     use kayiver_core::proto::Rect;
     pub fn show(_state: Option<(Rect, String)>) {
-        #[cfg(target_os = "windows")]
+        #[cfg(all(target_os = "windows", not(feature = "sim")))]
         super::passive_windows::show(_state);
     }
 }
@@ -211,13 +220,13 @@ pub mod passive {
 pub mod indicator {
     /// Start the indicator (call once on the client). Non-fatal.
     pub fn start(_host: &str) {
-        #[cfg(target_os = "windows")]
+        #[cfg(all(target_os = "windows", not(feature = "sim")))]
         super::tray_windows::start(_host);
     }
 
     /// Update the indicator when connection / focus changes.
     pub fn set_state(_connected: bool, _cursor_here: bool) {
-        #[cfg(target_os = "windows")]
+        #[cfg(all(target_os = "windows", not(feature = "sim")))]
         super::tray_windows::set_state(_connected, _cursor_here);
     }
 }
