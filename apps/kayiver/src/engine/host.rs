@@ -665,19 +665,47 @@ impl Router {
         let mut new_peer = sm.peer_rect;
         if let Some(lr) = sm.local_rect {
             let mons = platform::monitors();
-            if !mons.contains(&lr) {
-                if let Some(m) = mons.iter().find(|m| m.w == lr.w && m.h == lr.h) {
-                    info!("shared panel moved locally: {lr:?} -> {m:?}");
-                    new_local = Some(*m);
+            // LOCAL side: size does NOT identify the panel here — another
+            // monitor can legitimately have the same resolution (this desk's
+            // A and B are both 2560x1440, and a size-match once re-anchored
+            // the panel onto A, gluing the peer's screens to the wrong
+            // monitor). Resolve by the configured display INDEX instead, and
+            // when the panel is simply absent (the transient while its input
+            // is switched away), keep the last known rect untouched.
+            if !mons.contains(&lr) && mons.len() >= 2 {
+                let idx = sm.local_index.map(|i| {
+                    (if cfg!(target_os = "macos") { i.saturating_sub(1) } else { i }) as usize
+                });
+                if let Some(m) = idx.and_then(|i| mons.get(i)).copied() {
+                    if m.w == lr.w && m.h == lr.h {
+                        info!("shared panel moved locally: {lr:?} -> {m:?}");
+                        new_local = Some(m);
+                    }
                 }
             }
         }
         if let (Some(pr), Some(peer)) = (sm.peer_rect, shared_peer_name(&self.cfg, &sm)) {
             let screens = self.peer_screens.read().unwrap().get(&peer).cloned().unwrap_or_default();
             if !screens.is_empty() && !screens.contains(&pr) {
-                if let Some(m) = screens.iter().find(|m| m.w == pr.w && m.h == pr.h) {
+                // PEER side: try the configured index first (0-based attached
+                // order on Windows), but a primary-display switch reorders
+                // that list, so fall back to a size match only when it is
+                // UNAMBIGUOUS — exactly one candidate.
+                let by_index = sm
+                    .peer_index
+                    .and_then(|i| screens.get(i as usize))
+                    .filter(|m| m.w == pr.w && m.h == pr.h)
+                    .copied();
+                let by_size = || {
+                    let mut it = screens.iter().filter(|m| m.w == pr.w && m.h == pr.h);
+                    match (it.next(), it.next()) {
+                        (Some(m), None) => Some(*m),
+                        _ => None,
+                    }
+                };
+                if let Some(m) = by_index.or_else(by_size) {
                     info!("shared panel moved on {peer}: {pr:?} -> {m:?} (primary display changed?)");
-                    new_peer = Some(*m);
+                    new_peer = Some(m);
                 }
             }
         }
