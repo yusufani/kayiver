@@ -1102,39 +1102,49 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
         .await?;
 
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Msg>();
-    sessions.lock().unwrap().insert(name.clone(), out_tx);
+    sessions.lock().unwrap().insert(name.clone(), out_tx.clone());
     let _ = evt_tx.send(SessionEvent::Connected { name: name.clone() });
     crate::ui::set_connected(&name, true);
 
     // Ping seq -> send time, so a Pong yields a round-trip measurement.
     let pending: Arc<Mutex<HashMap<u64, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
 
-    // Writer task: relays router messages and keeps the link warm with pings.
-    let writer_pending = pending.clone();
-    let writer_task = tokio::spawn(async move {
+    // Ping task: pushes keep-alive pings through the SAME channel the router
+    // uses, so the writer has ONE source. Never let a timer share the writer's
+    // `select!` with an in-flight `send` — cancelling a half-written frame
+    // desyncs the Noise nonce and the peer drops with `decrypt error`.
+    let ping_pending = pending.clone();
+    let ping_tx = out_tx.clone();
+    let ping_task = tokio::spawn(async move {
         let mut ping = tokio::time::interval(PING_INTERVAL);
         let mut seq = 0u64;
         loop {
-            tokio::select! {
-                msg = out_rx.recv() => match msg {
-                    Some(m) => { if writer.send(&m).await.is_err() { return; } }
-                    None => { let _ = writer.send(&Msg::Bye).await; return; }
-                },
-                _ = ping.tick() => {
-                    seq += 1;
-                    {
-                        let mut p = writer_pending.lock().unwrap();
-                        p.insert(seq, Instant::now());
-                        // Bound the map if pongs stop coming.
-                        if p.len() > 32 {
-                            let cutoff = Instant::now() - Duration::from_secs(30);
-                            p.retain(|_, t| *t > cutoff);
-                        }
-                    }
-                    if writer.send(&Msg::Ping(seq)).await.is_err() { return; }
+            ping.tick().await;
+            seq += 1;
+            {
+                let mut p = ping_pending.lock().unwrap();
+                p.insert(seq, Instant::now());
+                // Bound the map if pongs stop coming.
+                if p.len() > 32 {
+                    let cutoff = Instant::now() - Duration::from_secs(30);
+                    p.retain(|_, t| *t > cutoff);
                 }
             }
+            if ping_tx.send(Msg::Ping(seq)).is_err() {
+                return; // writer gone
+            }
         }
+    });
+
+    // Writer task: a single serial writer, no competing branch — every frame
+    // reaches the socket whole, so the nonce stays in lockstep with the peer.
+    let writer_task = tokio::spawn(async move {
+        while let Some(m) = out_rx.recv().await {
+            if writer.send(&m).await.is_err() {
+                return;
+            }
+        }
+        let _ = writer.send(&Msg::Bye).await;
     });
 
     // Reader loop with a liveness watchdog.
@@ -1177,6 +1187,7 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
     sessions.lock().unwrap().remove(&name);
     crate::ui::set_connected(&name, false);
     let _ = evt_tx.send(SessionEvent::Disconnected { name });
+    ping_task.abort();
     writer_task.abort();
     result
 }

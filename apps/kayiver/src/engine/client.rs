@@ -6,7 +6,7 @@
 //! with different resolutions and scaling factors interoperate.
 
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use kayiver_core::config::{Config, Peer};
@@ -217,15 +217,17 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
     }
 
     let result: Result<()> = async {
-    // Watch for desktop geometry changes (a monitor unplugged, the PRIMARY
-    // display switched — which re-anchors every rect on Windows). Stale
-    // bounds make portal detection fire at edges that no longer exist and
-    // stale host-side rects land the cursor on the wrong monitor.
-    let mut geo = tokio::time::interval(Duration::from_secs(2));
-    geo.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Geometry changes (a monitor unplugged, the PRIMARY display switched —
+    // which re-anchors every rect on Windows) are checked BETWEEN frames,
+    // never by racing `reader.recv()` in a `select!`: recv() reads a frame
+    // with `read_exact`, which is NOT cancel-safe, so a timer firing mid-read
+    // would leave the socket in the middle of a frame and desync the Noise
+    // nonce (symptom: repeated `decrypt error` disconnects). The host's Ping
+    // keeps frames arriving ~1/s, so a change is still noticed promptly.
+    let mut last_geo = Instant::now();
     loop {
-        tokio::select! {
-            timed = tokio::time::timeout(RECV_TIMEOUT, reader.recv()) => {
+        let timed = tokio::time::timeout(RECV_TIMEOUT, reader.recv()).await;
+        {
         let msg = timed.context("session timed out")??;
         match msg {
             Msg::Enter { edge, ratio } => {
@@ -286,16 +288,20 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
             Msg::Bye => return Ok(()),
             other => warn!("unexpected message: {other:?}"),
         }
-            }
-            _ = geo.tick() => {
-                let b = platform::desktop_bounds();
-                if b != state.bounds {
-                    info!("desktop geometry changed: {:?} -> {b:?}", state.bounds);
-                    state.bounds = b;
-                    state.pos.0 = state.pos.0.clamp(b.x, b.right() - 1);
-                    state.pos.1 = state.pos.1.clamp(b.y, b.bottom() - 1);
-                    let _ = out_tx.send(Msg::Monitors { screen: b, monitors: platform::monitors() });
-                }
+        }
+        // Cancel-safe geometry check: runs after a whole frame was handled
+        // (never mid-read), throttled so hot input traffic doesn't poll the
+        // OS on every event. `Msg::Monitors` goes through the serialized
+        // writer task, so it can't interleave with other frames either.
+        if last_geo.elapsed() >= Duration::from_secs(2) {
+            last_geo = Instant::now();
+            let b = platform::desktop_bounds();
+            if b != state.bounds {
+                info!("desktop geometry changed: {:?} -> {b:?}", state.bounds);
+                state.bounds = b;
+                state.pos.0 = state.pos.0.clamp(b.x, b.right() - 1);
+                state.pos.1 = state.pos.1.clamp(b.y, b.bottom() - 1);
+                let _ = out_tx.send(Msg::Monitors { screen: b, monitors: platform::monitors() });
             }
         }
     }
