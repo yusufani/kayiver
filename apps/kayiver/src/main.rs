@@ -172,6 +172,9 @@ fn run(no_gui: bool) -> Result<()> {
             return Ok(());
         }
     }
+    // Windows Search finds apps through the Start Menu only; keep our
+    // shortcut there so "kayiver" is always typeable into Start.
+    autostart::ensure_start_menu_shortcut();
     let cfg = Config::load_or_init()?;
     if cfg.peers.is_empty() {
         // A host can run before its first pairing (useful to verify

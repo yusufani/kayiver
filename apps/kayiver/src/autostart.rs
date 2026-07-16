@@ -18,6 +18,39 @@ pub fn is_enabled() -> bool {
     imp::is_enabled()
 }
 
+/// Windows: make the app findable. Search only indexes the Start Menu, and an
+/// exe sitting under `AppData\Local` is invisible to it — so typing "kayiver"
+/// into Start found nothing. Creates `Start Menu\Programs\Kayiver.lnk`
+/// pointing at the current exe (refreshed when missing; fire-and-forget so
+/// startup never blocks on it). No-op elsewhere.
+pub fn ensure_start_menu_shortcut() {
+    #[cfg(target_os = "windows")]
+    {
+        let Ok(exe) = std::env::current_exe() else { return };
+        let Some(appdata) = std::env::var_os("APPDATA") else { return };
+        let lnk = std::path::Path::new(&appdata)
+            .join(r"Microsoft\Windows\Start Menu\Programs\Kayiver.lnk");
+        if lnk.exists() {
+            return;
+        }
+        let dir = exe.parent().map(|p| p.display().to_string()).unwrap_or_default();
+        let script = format!(
+            "$ws = New-Object -ComObject WScript.Shell; \
+             $l = $ws.CreateShortcut('{lnk}'); \
+             $l.TargetPath = '{exe}'; \
+             $l.WorkingDirectory = '{dir}'; \
+             $l.IconLocation = '{exe},0'; \
+             $l.Description = 'Kayiver - one keyboard and mouse, every screen'; \
+             $l.Save()",
+            lnk = lnk.display(),
+            exe = exe.display(),
+        );
+        let _ = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
+            .spawn();
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
     use anyhow::{Context, Result};
