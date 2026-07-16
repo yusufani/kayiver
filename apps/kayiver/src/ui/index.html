@@ -297,6 +297,11 @@
   <div class="statusbar" id="statusbar">
     <div class="legend" id="legend"></div>
     <div class="stat"><span class="dot" id="hostDot"></span><span id="hostTxt">bağlanıyor…</span></div>
+    <div class="stat" id="linkStat" style="display:none;gap:6px;align-items:center">
+      <span id="linkTxt" style="opacity:.85"></span>
+      <select id="linkSel" title="Bağlantı yolu" style="max-width:210px"></select>
+      <button class="iconbtn" id="linkGo" title="Bu adresi kullan" style="font-size:13px;width:auto;padding:0 8px">değiştir</button>
+    </div>
     <button class="iconbtn" id="themeBtn" title="Tema" aria-label="Tema" style="font-size:15px">☾</button>
     <button class="iconbtn" id="gear" title="Ayarlar" aria-label="Ayarlar">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -1184,6 +1189,46 @@ async function androidWireless(serial) {
   setTimeout(pollAndroid, 1500);
 }
 
+// Connection-path widget: shows which interface the live session rides
+// (Wi-Fi / cable / LAN) with its RTT, and lets the user move the session to a
+// different host address. The selected value survives re-renders.
+let linkPeerName = null;
+function renderLink(st) {
+  const stat = document.getElementById('linkStat');
+  const entries = Object.entries(st.peers || {}).filter(([, p]) => p.connected);
+  if (!entries.length) { stat.style.display = 'none'; linkPeerName = null; return; }
+  const [name, p] = entries[0];
+  linkPeerName = name;
+  stat.style.display = 'flex';
+  const rtt = p.rtt_ms != null ? ` · ${p.rtt_ms.toFixed(1)} ms` : '';
+  const label = p.link_label || (p.local_addr ? p.local_addr.split(':')[0] : '?');
+  document.getElementById('linkTxt').textContent = `${label}${rtt}`;
+  document.getElementById('linkTxt').title =
+    `${p.local_addr || '?'} ↔ ${p.remote_addr || '?'}`;
+  const sel = document.getElementById('linkSel');
+  const cur = p.local_addr ? p.local_addr.split(':')[0] : '';
+  const want = (st.host_addrs || []).map(a => `${a.addr}|${a.label}`).join(';');
+  if (sel.dataset.opts !== want) {
+    sel.dataset.opts = want;
+    sel.innerHTML = '';
+    for (const a of (st.host_addrs || [])) {
+      const o = document.createElement('option');
+      o.value = a.addr;
+      o.textContent = (a.label ? `${a.label} — ` : '') + a.addr;
+      if (a.addr.startsWith(cur + ':')) o.selected = true;
+      sel.appendChild(o);
+    }
+  }
+}
+document.getElementById('linkGo').addEventListener('click', async () => {
+  const addr = document.getElementById('linkSel').value;
+  if (!linkPeerName || !addr) return;
+  try {
+    const r = await fetch('/api/link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ peer: linkPeerName, addr }) });
+    setMsg(r.ok ? `bağlantı ${addr} adresine taşınıyor…` : await r.text(), r.ok ? 'ok' : 'err');
+  } catch (e) { setMsg(String(e), 'err'); }
+});
+
 let pollN = 0;
 async function poll() {
   if (++pollN % 4 === 0) await refreshStateIfChanged();
@@ -1212,6 +1257,8 @@ async function poll() {
       const p = (st.peers || {})[t.machine];
       t.sdot.className = 'sdot ' + (p && p.connected ? 'on' : 'off');
     }
+
+    renderLink(st);
   } catch (_) {
     document.getElementById('hostDot').className = 'dot off';
     document.getElementById('hostTxt').textContent = t('unreachable');

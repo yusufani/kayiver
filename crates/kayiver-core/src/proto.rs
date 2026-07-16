@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 7;
+pub const PROTOCOL_VERSION: u16 = 8;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -95,6 +95,11 @@ pub enum Msg {
     /// detached/attached), so the layout editor and crossing math use the
     /// current monitors instead of the ones from the initial `Hello`.
     Monitors { screen: Rect, monitors: Vec<Rect> },
+    /// host -> client: reconnect to me at this address (the user picked a
+    /// different path — Wi-Fi vs direct cable — in the editor). The client
+    /// persists it as the peer's primary and drops the session; its reconnect
+    /// loop dials the new address.
+    UseAddr { addr: String },
     /// host -> client: treat `rect` as the shared monitor showing the OTHER
     /// machine. The cursor doesn't rest on it — moving onto it hands control to
     /// the machine it's displaying (see `SharedCross`). `None` clears it (you

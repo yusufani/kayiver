@@ -24,6 +24,13 @@ pub const UI_PORT: u16 = 24818;
 pub struct PeerLive {
     pub connected: bool,
     pub rtt_ms: Option<f64>,
+    /// This side's socket address for the live session ("ip:port").
+    pub local_addr: Option<String>,
+    /// The peer's socket address for the live session.
+    pub remote_addr: Option<String>,
+    /// Human label for the interface the session rides ("Wi-Fi (en0)",
+    /// "USB 10/100/1000 LAN (en8) · kablo").
+    pub link_label: Option<String>,
 }
 
 /// Commands the editor (or `kayiver monitor`) sends to the running host router.
@@ -32,6 +39,8 @@ pub enum UiCmd {
     /// Enter (true) or leave (false) tablet control: forward the keyboard/mouse
     /// to the connected Android device instead of the local desktop.
     TabletControl(bool),
+    /// Tell `peer` to reconnect to us at `addr` (path picked in the editor).
+    UseAddr { peer: String, addr: String },
 }
 
 #[derive(Default)]
@@ -73,6 +82,124 @@ pub fn set_connected(peer: &str, connected: bool) {
 pub fn set_rtt(peer: &str, rtt_ms: f64) {
     let mut s = live().lock().unwrap();
     s.peers.entry(peer.to_string()).or_default().rtt_ms = Some(rtt_ms);
+}
+
+/// Record which socket pair a peer's live session rides, so the editor can
+/// show the actual path (Wi-Fi vs cable) instead of leaving the user to guess
+/// why it lags.
+pub fn set_link(peer: &str, local: Option<std::net::SocketAddr>, remote: Option<std::net::SocketAddr>) {
+    let label = local.map(|a| iface_label(a.ip()));
+    let mut s = live().lock().unwrap();
+    let p = s.peers.entry(peer.to_string()).or_default();
+    p.local_addr = local.map(|a| a.to_string());
+    p.remote_addr = remote.map(|a| a.to_string());
+    p.link_label = label;
+}
+
+/// Human label for the local interface owning `ip`: "Wi-Fi (en0)",
+/// "USB 10/100/1000 LAN (en8) · kablo". Falls back to the bare device name
+/// (or nothing) where the platform can't say.
+fn iface_label(ip: std::net::IpAddr) -> String {
+    let dev = iface_for_ip(ip);
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(dev) = &dev {
+            let ports = std::process::Command::new("networksetup")
+                .arg("-listallhardwareports")
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default();
+            let mut port_name = None;
+            let mut current = None;
+            for line in ports.lines() {
+                if let Some(p) = line.strip_prefix("Hardware Port: ") {
+                    current = Some(p.trim().to_string());
+                } else if let Some(d) = line.strip_prefix("Device: ") {
+                    if d.trim() == dev {
+                        port_name = current.clone();
+                    }
+                }
+            }
+            let mut label = match port_name {
+                Some(p) => format!("{p} ({dev})"),
+                None => dev.clone(),
+            };
+            if matches!(ip, std::net::IpAddr::V4(v) if v.is_link_local()) {
+                label.push_str(" · doğrudan kablo");
+            }
+            return label;
+        }
+    }
+    let mut label = dev.unwrap_or_default();
+    if matches!(ip, std::net::IpAddr::V4(v) if v.is_link_local()) {
+        if !label.is_empty() {
+            label.push_str(" · ");
+        }
+        label.push_str("doğrudan kablo");
+    }
+    label
+}
+
+/// Device name (en0, en8, …) owning `ip`, via `ifconfig` on macOS.
+fn iface_for_ip(ip: std::net::IpAddr) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let out = std::process::Command::new("ifconfig").arg("-a").output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let needle = format!("inet {ip} ");
+        let mut dev = None;
+        for line in text.lines() {
+            if !line.starts_with(['\t', ' ']) {
+                dev = line.split(':').next().map(|s| s.to_string());
+            } else if line.trim_start().starts_with(&needle.trim_start().to_string()) {
+                return dev;
+            }
+        }
+        None
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = ip;
+        None
+    }
+}
+
+/// All local IPv4 addresses a client could dial for this host, labeled by
+/// interface — the editor's path picker. Excludes loopback.
+pub fn host_candidate_addrs(port: u16) -> Vec<(String, String)> {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(out) = std::process::Command::new("ifconfig").arg("-a").output().ok() else {
+            return Vec::new();
+        };
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let mut dev: Option<String> = None;
+        let mut found = Vec::new();
+        for line in text.lines() {
+            if !line.starts_with(['\t', ' ']) {
+                dev = line.split(':').next().map(|s| s.to_string());
+            } else if let Some(rest) = line.trim_start().strip_prefix("inet ") {
+                if let Some(ips) = rest.split_whitespace().next() {
+                    if let Ok(ip) = ips.parse::<std::net::Ipv4Addr>() {
+                        if !ip.is_loopback() {
+                            let _ = &dev;
+                            found.push((
+                                format!("{ip}:{port}"),
+                                iface_label(std::net::IpAddr::V4(ip)),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        found
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = port;
+        Vec::new()
+    }
 }
 
 pub fn set_focus(focus: Option<String>) {
@@ -396,6 +523,10 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
             Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
         },
+        ("POST", "/api/link") => match api_use_addr(body) {
+            Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
+            Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+        },
         ("POST", "/api/shared-config") => match api_shared_config(body) {
             Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
@@ -557,6 +688,19 @@ fn api_set_settings(body: &[u8]) -> Result<String> {
 
 /// POST /api/shared {"owner": "<machine>" | "toggle"} — hand the shared panel
 /// to a machine. Forwarded to the running host router.
+/// POST /api/link — {"peer":"name","addr":"ip:port"}: ask `peer` to reconnect
+/// to this host at `addr` (the user picked a path in the editor).
+fn api_use_addr(body: &[u8]) -> Result<()> {
+    let v: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
+    let peer = v.get("peer").and_then(|x| x.as_str()).context("missing 'peer'")?.to_string();
+    let addr = v.get("addr").and_then(|x| x.as_str()).context("missing 'addr'")?.to_string();
+    addr.parse::<std::net::SocketAddr>().context("addr must be ip:port")?;
+    let s = live().lock().unwrap();
+    let tx = s.cmd.as_ref().context("host not running")?;
+    tx.send(UiCmd::UseAddr { peer, addr }).ok().context("host router gone")?;
+    Ok(())
+}
+
 fn api_set_shared(body: &[u8]) -> Result<()> {
     let v: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
     let owner = v.get("owner").and_then(|o| o.as_str()).context("missing 'owner'")?;
@@ -660,13 +804,25 @@ fn api_status() -> String {
         .peers
         .iter()
         .map(|(name, p)| {
-            (name, serde_json::json!({ "connected": p.connected, "rtt_ms": p.rtt_ms }))
+            (name, serde_json::json!({
+                "connected": p.connected,
+                "rtt_ms": p.rtt_ms,
+                "local_addr": p.local_addr,
+                "remote_addr": p.remote_addr,
+                "link_label": p.link_label,
+            }))
         })
+        .collect();
+    let port = kayiver_core::config::Config::load_or_init().map(|c| c.port).unwrap_or(24817);
+    let host_addrs: Vec<serde_json::Value> = host_candidate_addrs(port)
+        .into_iter()
+        .map(|(addr, label)| serde_json::json!({ "addr": addr, "label": label }))
         .collect();
     serde_json::json!({
         "running": s.running,
         "focus": s.focus,
         "peers": peers,
+        "host_addrs": host_addrs,
         "link_error": s.link_error,
         "shared": {
             "configured": s.shared_configured,

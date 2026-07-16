@@ -180,6 +180,19 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
             cmd = cmd_rx.recv() => match cmd {
                 Some(crate::ui::UiCmd::SetSharedOwner(owner)) => router.set_shared_owner(&owner),
                 Some(crate::ui::UiCmd::TabletControl(on)) => router.set_tablet_control(on),
+                Some(crate::ui::UiCmd::UseAddr { peer, addr }) => {
+                    info!("asking {peer} to reconnect via {addr}");
+                    let sent = router
+                        .sessions
+                        .lock()
+                        .unwrap()
+                        .get(&peer)
+                        .map(|tx| tx.send(Msg::UseAddr { addr }).is_ok())
+                        .unwrap_or(false);
+                    if !sent {
+                        warn!("use-addr: peer '{peer}' offline");
+                    }
+                }
                 None => break,
             },
         }
@@ -1064,6 +1077,7 @@ async fn accept_loop(listener: TcpListener, cfg: Arc<Config>, layout: SharedLayo
 
 async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, clip: crate::engine::clipsync::ClipState, evt_tx: UnboundedSender<SessionEvent>) -> Result<()> {
     stream.set_nodelay(true)?;
+    let (link_local, link_remote) = (stream.local_addr().ok(), stream.peer_addr().ok());
     let intro = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stream)).await??;
     let name = match Intro::decode(&intro)? {
         Intro::Session { name } => name,
@@ -1105,6 +1119,7 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
     sessions.lock().unwrap().insert(name.clone(), out_tx.clone());
     let _ = evt_tx.send(SessionEvent::Connected { name: name.clone() });
     crate::ui::set_connected(&name, true);
+    crate::ui::set_link(&name, link_local, link_remote);
 
     // Ping seq -> send time, so a Pong yields a round-trip measurement.
     let pending: Arc<Mutex<HashMap<u64, Instant>>> = Arc::new(Mutex::new(HashMap::new()));

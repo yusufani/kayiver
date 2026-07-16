@@ -285,6 +285,31 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
                         .to_string())
                 }));
             }
+            Msg::UseAddr { addr } => {
+                // The user picked a different path (Wi-Fi / cable) in the
+                // host's editor. Persist it as the primary AND the last-good
+                // so the reconnect loop dials it first, then drop the session.
+                info!("host asked to reconnect via {addr}");
+                if let Ok(mut c) = kayiver_core::config::Config::load_or_init() {
+                    if let Some(p) = c.peers.iter_mut().find(|p| p.name == peer.name) {
+                        // Keep the old primary as a fallback; never list the
+                        // new primary twice.
+                        if let Some(old) = p.addr.clone() {
+                            if old != addr && !p.addrs.contains(&old) {
+                                p.addrs.push(old);
+                            }
+                        }
+                        p.addrs.retain(|a| a != &addr);
+                        p.addr = Some(addr.clone());
+                        p.last_good = Some(addr.clone());
+                    }
+                    if let Err(e) = c.save() {
+                        warn!("could not persist new address: {e:#}");
+                    }
+                }
+                crate::ui::set_link_error(Some(format!("adres değişti — {addr} üzerinden yeniden bağlanılıyor")));
+                return Ok(());
+            }
             Msg::Bye => return Ok(()),
             other => warn!("unexpected message: {other:?}"),
         }
