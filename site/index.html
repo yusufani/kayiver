@@ -1,0 +1,491 @@
+<title>Kayıver — one keyboard & mouse, every screen</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --ink: #0c0f16;
+    --ink-2: #11151f;
+    --ink-3: #171c29;
+    --line: #232a3a;
+    --text: #e8eaf2;
+    --text-dim: #8a93a8;
+    --accent: #ff6b4a;
+    --accent-soft: rgba(255, 107, 74, .14);
+    --good: #5fd39a;
+    --seam: rgba(255, 107, 74, .55);
+    --screen-a: #131826;
+    --screen-b: #10141f;
+    --card: #11151f;
+    --code-bg: #0a0d13;
+    --shadow: 0 24px 60px rgba(0, 0, 0, .5);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ink: #f2f4f8;
+      --ink-2: #ffffff;
+      --ink-3: #e7eaf1;
+      --line: #d6dbe6;
+      --text: #14181f;
+      --text-dim: #5b6474;
+      --accent: #e14b2c;
+      --accent-soft: rgba(225, 75, 44, .1);
+      --good: #1f9d61;
+      --seam: rgba(225, 75, 44, .5);
+      --screen-a: #ffffff;
+      --screen-b: #f7f8fb;
+      --card: #ffffff;
+      --code-bg: #14181f;
+      --shadow: 0 20px 50px rgba(20, 24, 31, .12);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #0c0f16; --ink-2: #11151f; --ink-3: #171c29; --line: #232a3a;
+    --text: #e8eaf2; --text-dim: #8a93a8; --accent: #ff6b4a;
+    --accent-soft: rgba(255,107,74,.14); --good: #5fd39a;
+    --seam: rgba(255,107,74,.55); --screen-a: #131826; --screen-b: #10141f;
+    --card: #11151f; --code-bg: #0a0d13; --shadow: 0 24px 60px rgba(0,0,0,.5);
+  }
+  :root[data-theme="light"] {
+    --ink: #f2f4f8; --ink-2: #ffffff; --ink-3: #e7eaf1; --line: #d6dbe6;
+    --text: #14181f; --text-dim: #5b6474; --accent: #e14b2c;
+    --accent-soft: rgba(225,75,44,.1); --good: #1f9d61;
+    --seam: rgba(225,75,44,.5); --screen-a: #ffffff; --screen-b: #f7f8fb;
+    --card: #ffffff; --code-bg: #14181f; --shadow: 0 20px 50px rgba(20,24,31,.12);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace; }
+
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+
+  /* ------------------------------------------------------------- hero --- */
+  .hero {
+    min-height: 92vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+    border-bottom: 1px solid var(--line);
+  }
+  .hero-inner { display: grid; gap: 48px; padding: 96px 0 72px; }
+  .brand {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 14px; letter-spacing: .18em; text-transform: lowercase;
+    color: var(--accent);
+  }
+  h1 {
+    font-size: clamp(44px, 7vw, 84px);
+    line-height: 1.02;
+    margin: 0;
+    font-weight: 750;
+    letter-spacing: -.025em;
+    text-wrap: balance;
+    max-width: 14ch;
+  }
+  h1 .glide { color: var(--accent); white-space: nowrap; }
+  .sub {
+    font-size: clamp(17px, 2vw, 21px);
+    color: var(--text-dim);
+    max-width: 52ch;
+    margin: 0;
+  }
+  .sub strong { color: var(--text); font-weight: 600; }
+  .cta-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 10px;
+    padding: 13px 22px; border-radius: 10px;
+    font-weight: 600; font-size: 15.5px; text-decoration: none;
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 8px 24px var(--accent-soft); }
+  .btn-ghost { border: 1px solid var(--line); color: var(--text); background: transparent; }
+  .hint { font-size: 13.5px; color: var(--text-dim); }
+
+  /* the desk diorama */
+  .desk {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    max-width: 780px;
+    margin-top: 8px;
+  }
+  .screen {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--screen-a);
+    aspect-ratio: 16 / 9.2;
+    position: relative;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+  .screen + .screen { background: var(--screen-b); }
+  .screen .bar {
+    height: 22px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 5px; padding: 0 10px;
+  }
+  .screen .bar i { width: 7px; height: 7px; border-radius: 50%; background: var(--line); display: block; }
+  .screen .os {
+    position: absolute; bottom: 8px; right: 12px;
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--text-dim);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  .screen .win-mock { position: absolute; border: 1px solid var(--line); border-radius: 6px; opacity: .6; }
+  .seam {
+    position: absolute; top: 6%; bottom: 6%; left: 50%;
+    width: 2px; transform: translateX(-50%);
+    background: linear-gradient(to bottom, transparent, var(--seam), transparent);
+    filter: blur(.5px);
+    animation: seam-pulse 5.2s ease-in-out infinite;
+  }
+  .cursor {
+    position: absolute; top: 0; left: 0; width: 22px; height: 22px; z-index: 3;
+    animation: glide 5.2s cubic-bezier(.45,.05,.35,1) infinite;
+    filter: drop-shadow(0 2px 6px rgba(0,0,0,.45));
+  }
+  .cursor svg { display: block; }
+  .trail {
+    position: absolute; top: 0; left: 0; width: 10px; height: 10px; z-index: 2;
+    border-radius: 50%;
+    background: var(--accent);
+    opacity: 0;
+    animation: glide 5.2s cubic-bezier(.45,.05,.35,1) infinite, fade 5.2s linear infinite;
+  }
+  .t2 { animation-delay: -.06s, -.06s; }
+  .t3 { animation-delay: -.12s, -.12s; }
+  @keyframes glide {
+    0%   { transform: translate(9%, 58%); }
+    22%  { transform: translate(30%, 40%); }
+    46%  { transform: translate(49.4%, 44%); } /* the seam */
+    50%  { transform: translate(50.6%, 44%); }
+    72%  { transform: translate(78%, 30%); }
+    86%  { transform: translate(66%, 52%); }
+    100% { transform: translate(9%, 58%); }
+  }
+  @keyframes fade { 0%,100% { opacity: 0; } 40%,60% { opacity: .5; } }
+  @keyframes seam-pulse { 0%,100% { opacity: .25; } 46%,52% { opacity: 1; } }
+  .desk-stage { position: relative; }
+  .desk-note {
+    margin-top: 14px; font-size: 13px; color: var(--text-dim);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    letter-spacing: .04em;
+  }
+  .desk-note b { color: var(--accent); font-weight: 500; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cursor, .trail, .seam { animation: none; }
+    .cursor { transform: translate(49%, 44%); }
+    .trail { display: none; }
+    .reveal { opacity: 1 !important; transform: none !important; }
+  }
+
+  /* ------------------------------------------------------- stat strip --- */
+  .stats {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    border-bottom: 1px solid var(--line);
+  }
+  .stat { padding: 34px 24px; border-left: 1px solid var(--line); }
+  .stat:first-child { border-left: none; }
+  .stat .n {
+    font-size: clamp(26px, 3.4vw, 38px); font-weight: 700; letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat .n em { font-style: normal; color: var(--accent); }
+  .stat .l { font-size: 13px; color: var(--text-dim); letter-spacing: .08em; text-transform: uppercase; margin-top: 4px;
+    font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+  /* --------------------------------------------------------- sections --- */
+  section { padding: 88px 0; border-bottom: 1px solid var(--line); }
+  .eyebrow {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12.5px; letter-spacing: .22em; text-transform: uppercase;
+    color: var(--accent); margin: 0 0 14px;
+  }
+  h2 {
+    font-size: clamp(28px, 4vw, 42px); font-weight: 720; letter-spacing: -.02em;
+    line-height: 1.12; margin: 0 0 18px; text-wrap: balance; max-width: 24ch;
+  }
+  .lede { color: var(--text-dim); max-width: 62ch; margin: 0 0 40px; font-size: 17px; }
+  .lede a { color: var(--text); }
+
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 26px 24px;
+  }
+  .card h3 { margin: 0 0 8px; font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+  .card p { margin: 0; font-size: 15px; color: var(--text-dim); }
+  .card .k {
+    display: inline-block; margin-bottom: 14px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px; color: var(--accent);
+    background: var(--accent-soft); border-radius: 6px; padding: 4px 8px;
+    letter-spacing: .06em;
+  }
+
+  /* code block */
+  pre {
+    background: var(--code-bg); color: #dfe6f3;
+    border: 1px solid var(--line); border-radius: 12px;
+    padding: 22px 24px; overflow-x: auto;
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    font-size: 14px; line-height: 1.75; margin: 0;
+  }
+  pre .c { color: #67718a; }
+  pre .p { color: #ff8f73; }
+
+  /* the real desk */
+  .setup { display: grid; grid-template-columns: 1.1fr .9fr; gap: 44px; align-items: start; }
+  @media (max-width: 820px) { .setup { grid-template-columns: 1fr; } .desk { grid-template-columns: 1fr 1fr; } }
+  .setup-list { display: grid; gap: 0; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .setup-row {
+    display: grid; grid-template-columns: 150px 1fr; gap: 14px;
+    padding: 16px 20px; background: var(--card);
+    border-top: 1px solid var(--line); font-size: 14.5px;
+  }
+  .setup-row:first-child { border-top: none; }
+  .setup-row .lbl {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--text-dim); padding-top: 2px;
+  }
+  .setup-row .val { color: var(--text); }
+  .setup-row .val small { color: var(--text-dim); display: block; }
+
+  /* mini desk diagram */
+  .diagram {
+    border: 1px solid var(--line); border-radius: 14px; background: var(--card);
+    padding: 26px; position: relative;
+  }
+  .diagram .dg { display: grid; grid-template-columns: repeat(12, 1fr); grid-auto-rows: 34px; gap: 6px; }
+  .dg .blk {
+    border: 1px solid var(--line); border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11.5px; letter-spacing: .08em; color: var(--text-dim);
+    background: var(--ink-3);
+  }
+  .dg .a { grid-column: 1 / 6; grid-row: 3 / 6; }
+  .dg .b { grid-column: 6 / 11; grid-row: 3 / 6; border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .dg .c { grid-column: 6 / 10; grid-row: 1 / 3; }
+  .dg .t { grid-column: 11 / 13; grid-row: 3 / 6; }
+  .diagram figcaption { margin-top: 16px; font-size: 13px; color: var(--text-dim); }
+
+  /* sponsors */
+  .sponsor-row { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
+  .heart { color: var(--accent); }
+
+  footer { padding: 44px 0 64px; color: var(--text-dim); font-size: 14px; }
+  footer .wrap { display: flex; justify-content: space-between; gap: 18px; flex-wrap: wrap; }
+  footer a { color: var(--text-dim); }
+  footer a:hover { color: var(--text); }
+
+  /* scroll reveal — pure CSS scroll-driven animation. Geometric (element
+     position vs viewport), so it needs no scroll events and degrades to
+     fully-visible wherever view() timelines are unsupported. */
+  @supports (animation-timeline: view()) {
+    .reveal {
+      animation: rise both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 45%;
+    }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(18px); }
+      to { opacity: 1; transform: none; }
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { animation: none !important; }
+  }
+</style>
+
+<header class="hero">
+  <div class="wrap hero-inner">
+    <div>
+      <div class="brand">kayıver&nbsp;/&nbsp;<span style="letter-spacing:.06em">kah-yuh-ver</span> — Turkish: “just glide over”</div>
+      <h1 style="margin-top:18px">Your cursor doesn’t know<br>where one computer <span class="glide">ends.</span></h1>
+    </div>
+    <p class="sub">Kayıver is an open-source software KVM written in Rust. Push your mouse
+      off the edge of your Mac and it lands on your Windows PC — same desk, same keyboard,
+      <strong>~5&nbsp;ms away</strong>. No dock, no dongle, no 400&nbsp;MB agent.</p>
+
+    <div class="desk-stage">
+      <div class="desk">
+        <div class="screen">
+          <div class="bar"><i></i><i></i><i></i></div>
+          <div class="win-mock" style="top:32%;left:8%;width:44%;height:46%"></div>
+          <div class="win-mock" style="top:40%;left:58%;width:30%;height:30%"></div>
+          <div class="os">macOS · host</div>
+        </div>
+        <div class="screen">
+          <div class="bar"><i></i><i></i><i></i></div>
+          <div class="win-mock" style="top:28%;left:12%;width:56%;height:52%"></div>
+          <div class="os">windows · client</div>
+        </div>
+        <div class="seam"></div>
+        <div class="trail t3"></div>
+        <div class="trail t2"></div>
+        <div class="cursor" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24"><path d="M4 2 L4 19 L8.6 15 L11.4 21.4 L14.2 20.2 L11.4 14 L18 14 Z" fill="#fff" stroke="#0c0f16" stroke-width="1.4"/></svg>
+        </div>
+      </div>
+      <div class="desk-note">edge crossing <b>armed</b> · one keyboard follows the cursor · Esc×3 always comes home</div>
+    </div>
+
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/yusufani/kayiver">Get Kayıver on GitHub</a>
+      <a class="btn btn-ghost" href="#quickstart">60-second setup</a>
+      <span class="hint mono">macOS ✓ &nbsp;Windows 10/11 ✓ &nbsp;Android (tablet) ✓</span>
+    </div>
+  </div>
+</header>
+
+<div class="stats">
+  <div class="stat wrap-pad"><div class="n"><em>~5 ms</em></div><div class="l">round-trip, Wi-Fi, measured</div></div>
+  <div class="stat"><div class="n">2.5 MB</div><div class="l">single Rust binary</div></div>
+  <div class="stat"><div class="n">0</div><div class="l">events leaked on a crossing</div></div>
+  <div class="stat"><div class="n">E2E</div><div class="l">noise · chacha20-poly1305</div></div>
+</div>
+
+<section id="why">
+  <div class="wrap">
+    <p class="eyebrow reveal">Why it feels native</p>
+    <h2 class="reveal">Built inside the OS input path, not on top of it.</h2>
+    <p class="lede reveal">Most software KVMs poll the cursor and hope. Kayıver flips into
+      forwarding mode <em>inside</em> the OS input callback — CGEventTap on macOS,
+      low-level hooks on Windows — so the instant you cross an edge, every event is
+      already going to the right machine. Nothing double-applies, nothing leaks.</p>
+    <div class="grid">
+      <div class="card reveal"><span class="k">crossings</span>
+        <h3>Geometry, not guesswork</h3>
+        <p>Screens are stitched into one coordinate space. The entry edge is computed from
+        where your cursor actually crossed the boundary — diagonal entries land at the
+        exact height you left, not in a corner.</p></div>
+      <div class="card reveal"><span class="k">shared panel</span>
+        <h3>One monitor, two computers</h3>
+        <p>A panel cabled to both machines is a first-class citizen. Flip the monitor input,
+        hit Ctrl/Cmd+Alt+M, and the cursor skips over the hidden copy so it can never
+        strand itself on a screen nobody can see. Ownership survives restarts.</p></div>
+      <div class="card reveal"><span class="k">games</span>
+        <h3>Fullscreen-game safe</h3>
+        <p>Raw-input games get true relative mouse deltas; the visible cursor is pinned with
+        exact warps immune to pointer acceleration. Lock screens and UAC prompts are
+        detected and healed automatically — with the clip rect in the log when a game
+        grabs the cursor.</p></div>
+      <div class="card reveal"><span class="k">tablet</span>
+        <h3>Your Android tablet is a screen too</h3>
+        <p>Place a tablet on any edge; crossing onto it streams control over scrcpy with an
+        idle heartbeat that keeps the Wi-Fi radio hot — no first-move lag.</p></div>
+      <div class="card reveal"><span class="k">clipboard + drag</span>
+        <h3>Clipboard follows, links drop</h3>
+        <p>Copy on one machine, paste on the other. Drag a link across the seam and release —
+        it opens over there.</p></div>
+      <div class="card reveal"><span class="k">panic</span>
+        <h3>Esc ×3 always wins</h3>
+        <p>If the remote side ever wedges, a triple-tap of Esc yanks input home. You are
+        never locked out of the machine in front of you.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="desk">
+  <div class="wrap">
+    <p class="eyebrow reveal">The desk it’s built on</p>
+    <h2 class="reveal">Tested daily on a real, messy setup.</h2>
+    <p class="lede reveal">Kayıver isn’t developed against emulators. Every commit ships to the
+      desk below and has to survive real crossings, real games, and a real shared monitor
+      before it lands on <span class="mono">main</span>.</p>
+    <div class="setup">
+      <div class="setup-list reveal">
+        <div class="setup-row"><span class="lbl">Host</span>
+          <span class="val">MacBook Pro (Apple&nbsp;silicon) — 2560×1440 main screen
+            <small>signed .app, menu-bar UI, Accessibility + Input Monitoring</small></span></div>
+        <div class="setup-row"><span class="lbl">Client</span>
+          <span class="val">Windows 11 desktop
+            <small>tray exe, autostarted into the interactive console session</small></span></div>
+        <div class="setup-row"><span class="lbl">Shared panel</span>
+          <span class="val">One 2560×1440 monitor cabled to <em>both</em> machines
+            <small>ownership toggled with the monitor’s input switch + Ctrl/Cmd+Alt+M</small></span></div>
+        <div class="setup-row"><span class="lbl">Extra screen</span>
+          <span class="val">1920×1080 above the shared panel, Windows-only
+            <small>reachable straight up from the Mac, through the panel — pure geometry</small></span></div>
+        <div class="setup-row"><span class="lbl">Third device</span>
+          <span class="val">Android tablet on the left edge via scrcpy
+            <small>wireless, with idle heartbeat to defeat Wi-Fi power saving</small></span></div>
+        <div class="setup-row"><span class="lbl">Network</span>
+          <span class="val">Ordinary Wi-Fi LAN — ~5 ms median RTT
+            <small>works across VPNs: static address first, mDNS second</small></span></div>
+      </div>
+      <figure class="diagram reveal" style="margin:0">
+        <div class="dg">
+          <div class="blk c">C · 1080p</div>
+          <div class="blk a">A · mac 1440p</div>
+          <div class="blk b">B · shared 1440p</div>
+          <div class="blk t">tab</div>
+        </div>
+        <figcaption>A→B is a seam. B→C goes straight up. B belongs to whoever the
+          monitor is showing — the other side’s cursor skips it.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <div class="wrap">
+    <p class="eyebrow reveal">Quick start</p>
+    <h2 class="reveal">Paired in one PIN.<br>Running in one minute.</h2>
+    <div class="grid" style="grid-template-columns: 1fr; max-width: 720px;">
+      <pre class="reveal"><span class="c"># machine with the keyboard &amp; mouse</span>
+<span class="p">$</span> kayiver pair          <span class="c"># shows a 6-digit PIN + IP</span>
+
+<span class="c"># the other machine</span>
+<span class="p">$</span> kayiver join 192.168.0.11
+<span class="p">$</span> kayiver run           <span class="c"># both sides</span>
+
+<span class="c"># drag your screens to match your desk (live, no restart)</span>
+<span class="p">$</span> kayiver ui
+
+<span class="c"># survive reboots</span>
+<span class="p">$</span> kayiver autostart enable</pre>
+      <p class="lede reveal" style="margin:0">Pairing is SPAKE2 with a one-time PIN; sessions are Noise
+        <span class="mono">NNpsk0</span> end-to-end encrypted. Nothing ever leaves your LAN.</p>
+    </div>
+  </div>
+</section>
+
+<section id="sponsor">
+  <div class="wrap">
+    <p class="eyebrow reveal">Support</p>
+    <h2 class="reveal">Free forever. Fueled by sponsors <span class="heart">♥</span></h2>
+    <p class="lede reveal">Kayıver is MIT-licensed and always will be. If it saved your desk
+      from a hardware KVM (or a second keyboard), consider fueling the next platform —
+      Linux support is on the bench.</p>
+    <div class="sponsor-row reveal">
+      <a class="btn btn-primary" href="https://github.com/sponsors/yusufani">Sponsor on GitHub</a>
+      <a class="btn btn-ghost" href="https://paypal.me/yusufani">Donate via PayPal</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>© 2026 Yusuf ANI · MIT License</div>
+    <div class="mono" style="display:flex;gap:18px">
+      <a href="https://github.com/yusufani/kayiver">github</a>
+      <a href="https://github.com/sponsors/yusufani">sponsors</a>
+      <a href="https://paypal.me/yusufani">paypal</a>
+    </div>
+  </div>
+</footer>
+

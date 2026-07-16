@@ -2,6 +2,10 @@
 
 # Kayıver
 
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-red?logo=github)](https://github.com/sponsors/yusufani)
+[![PayPal](https://img.shields.io/badge/PayPal-00457C?logo=paypal&logoColor=white)](https://paypal.me/yusufani)
+[![License: MIT](https://img.shields.io/badge/License-MIT-4c1)](LICENSE)
+
 **Karşıya kayıver — one keyboard & mouse, every screen.**
 
 Kayıver is a lightweight, open-source software KVM. Slide your cursor off the
@@ -27,8 +31,15 @@ between two monitors of the same computer. Keyboard input follows the cursor.
 - **Shared-monitor aware** — one panel cabled to both machines? Mark it in
   the editor; when you flip the panel's input, `kayiver monitor <machine>`
   (or Cmd/Ctrl+Alt+M, the menu-bar item, the editor, or the Android app)
-  attaches the display on the visible machine and detaches it on the hidden
-  one, so the cursor never wanders onto a screen nobody can see.
+  tells kayiver who the panel is showing: the hidden machine's cursor skips
+  over its copy so it can never strand itself on a screen nobody can see,
+  crossings through the panel resolve by real monitor geometry, and the
+  ownership survives restarts.
+- **Fullscreen-game safe** — raw-input games receive true relative mouse
+  deltas while the visible cursor is pinned with exact warps (immune to
+  pointer acceleration); lock-screen/UAC desktop switches are detected and
+  healed, and a game's `ClipCursor` shows up in the log instead of as a
+  mystery.
 - **Real apps** — a menu-bar app with a native editor window on macOS
   (`packaging/macos/build-app.sh --install` → `Kayiver.app`), tray icon +
   embedded-icon exe on Windows, and an Android companion
@@ -142,6 +153,35 @@ Only TCP port **24817** (configurable) between the machines is required.
 | Occasional lag spikes | Wi-Fi adapter power-saving. Use Ethernet, or disable "Allow the computer to turn off this device" on the adapter. |
 | Keys stuck after crossing | Shouldn't happen (both sides release held keys on every focus change) — file a bug with `RUST_LOG=debug` output. |
 | Need logs from a background instance | Set `KAYIVER_LOGFILE=/path/to/kayiver.log` before launching; every event is written and flushed there. |
+
+## The desk it's tested on
+
+Every commit ships to a real desk and has to survive it before it lands on
+`main`:
+
+- **Host:** MacBook Pro (Apple silicon), 2560×1440 main screen — signed
+  `Kayiver.app`, menu-bar UI.
+- **Client:** Windows 11 desktop — tray exe, autostarted into the interactive
+  console session by a scheduled task.
+- **Shared panel:** one 2560×1440 monitor cabled to *both* machines;
+  ownership flips with the monitor's input switch + Ctrl/Cmd+Alt+M.
+- **Extra screen:** a Windows-only 1920×1080 sitting physically *above* the
+  shared panel — reachable from the Mac straight up through the panel, by
+  pure geometry.
+- **Third device:** an Android tablet on the left edge via scrcpy (wireless,
+  with an idle heartbeat that defeats Wi-Fi power saving).
+- **Network:** ordinary Wi-Fi LAN, ~5 ms median RTT.
+
+The marketing page with the same setup lives in [site/index.html](site/index.html).
+
+## Support
+
+Kayıver is MIT-licensed and always will be. If it saved your desk from a
+hardware KVM (or a second keyboard), consider fueling the next platform —
+Linux is on the bench:
+
+**[GitHub Sponsors](https://github.com/sponsors/yusufani)** ·
+**[PayPal](https://paypal.me/yusufani)**
 
 ## Documentation
 
