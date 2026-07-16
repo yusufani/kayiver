@@ -567,6 +567,9 @@ impl Router {
         match ev {
             SessionEvent::Connected { name } => {
                 info!("client connected: {name}");
+                // The peer's Hello may carry a different geometry than we
+                // last saw (primary display switched while disconnected).
+                self.refresh_shared_rects();
                 self.refresh_portals();
                 // Re-establish the shared-monitor block on the (re)connected
                 // peer to match the current owner.
@@ -586,7 +589,10 @@ impl Router {
                 }
                 self.refresh_portals();
             }
-            SessionEvent::LayoutChanged => self.refresh_portals(),
+            SessionEvent::LayoutChanged => {
+                self.refresh_shared_rects();
+                self.refresh_portals();
+            }
             SessionEvent::SharedCross { name, fx, fy } => {
                 if self.focus.as_deref() != Some(name.as_str()) {
                     return; // stale
@@ -642,6 +648,56 @@ impl Router {
 
     fn session_exists(&self, name: &str) -> bool {
         self.sessions.lock().unwrap().contains_key(name)
+    }
+
+    /// Re-derive the shared-panel rects from live geometry. The panel is the
+    /// same physical glass on both sides, so it is identified by SIZE:
+    /// Windows re-anchors every monitor rect when the primary display
+    /// changes (macOS when the arrangement changes) — position is not stable
+    /// across those, resolution is. Persists any change and re-applies the
+    /// block so both sides skip the panel's REAL location.
+    fn refresh_shared_rects(&mut self) {
+        let sm = self.shared.read().unwrap().clone();
+        if !sm.configured() {
+            return;
+        }
+        let mut new_local = sm.local_rect;
+        let mut new_peer = sm.peer_rect;
+        if let Some(lr) = sm.local_rect {
+            let mons = platform::monitors();
+            if !mons.contains(&lr) {
+                if let Some(m) = mons.iter().find(|m| m.w == lr.w && m.h == lr.h) {
+                    info!("shared panel moved locally: {lr:?} -> {m:?}");
+                    new_local = Some(*m);
+                }
+            }
+        }
+        if let (Some(pr), Some(peer)) = (sm.peer_rect, shared_peer_name(&self.cfg, &sm)) {
+            let screens = self.peer_screens.read().unwrap().get(&peer).cloned().unwrap_or_default();
+            if !screens.is_empty() && !screens.contains(&pr) {
+                if let Some(m) = screens.iter().find(|m| m.w == pr.w && m.h == pr.h) {
+                    info!("shared panel moved on {peer}: {pr:?} -> {m:?} (primary display changed?)");
+                    new_peer = Some(*m);
+                }
+            }
+        }
+        if new_local == sm.local_rect && new_peer == sm.peer_rect {
+            return;
+        }
+        {
+            let mut s = self.shared.write().unwrap();
+            s.local_rect = new_local;
+            s.peer_rect = new_peer;
+        }
+        if let Ok(mut c) = Config::load_or_init() {
+            c.shared_monitor.local_rect = new_local;
+            c.shared_monitor.peer_rect = new_peer;
+            if let Err(e) = c.save() {
+                warn!("could not persist shared rects: {e:#}");
+            }
+        }
+        let owner = self.shared_owner.clone();
+        self.set_shared_owner(&owner);
     }
 
     /// Resolve a host edge crossing toward the shared peer by GEOMETRY, not the
@@ -1071,10 +1127,12 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
                     }
                 }
                 Msg::Monitors { monitors, .. } => {
-                    // The peer's desktop changed (a display was attached/detached);
-                    // refresh the cache so the editor and crossing use the new shape.
-                    debug!("{name}: geometry update, {} monitors", monitors.len());
+                    // The peer's desktop changed (a display was attached/detached,
+                    // or its PRIMARY switched — which re-anchors every rect);
+                    // refresh the cache and let the router re-derive rects.
+                    info!("{name}: geometry update, {} monitors: {monitors:?}", monitors.len());
                     cache_peer_screens(&name, &monitors, None, &peer_screens);
+                    let _ = evt_tx.send(SessionEvent::LayoutChanged);
                 }
                 Msg::Clipboard { text } => crate::engine::clipsync::apply_remote(&clip, &text),
                 Msg::OpenUrl { url } => {

@@ -217,10 +217,16 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
     }
 
     let result: Result<()> = async {
+    // Watch for desktop geometry changes (a monitor unplugged, the PRIMARY
+    // display switched — which re-anchors every rect on Windows). Stale
+    // bounds make portal detection fire at edges that no longer exist and
+    // stale host-side rects land the cursor on the wrong monitor.
+    let mut geo = tokio::time::interval(Duration::from_secs(2));
+    geo.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        let msg = tokio::time::timeout(RECV_TIMEOUT, reader.recv())
-            .await
-            .context("session timed out")??;
+        tokio::select! {
+            timed = tokio::time::timeout(RECV_TIMEOUT, reader.recv()) => {
+        let msg = timed.context("session timed out")??;
         match msg {
             Msg::Enter { edge, ratio } => {
                 state.pos = point_on_edge(state.bounds, edge, ratio, EDGE_INSET);
@@ -279,6 +285,18 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
             }
             Msg::Bye => return Ok(()),
             other => warn!("unexpected message: {other:?}"),
+        }
+            }
+            _ = geo.tick() => {
+                let b = platform::desktop_bounds();
+                if b != state.bounds {
+                    info!("desktop geometry changed: {:?} -> {b:?}", state.bounds);
+                    state.bounds = b;
+                    state.pos.0 = state.pos.0.clamp(b.x, b.right() - 1);
+                    state.pos.1 = state.pos.1.clamp(b.y, b.bottom() - 1);
+                    let _ = out_tx.send(Msg::Monitors { screen: b, monitors: platform::monitors() });
+                }
+            }
         }
     }
     }
