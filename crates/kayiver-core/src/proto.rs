@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 8;
+pub const PROTOCOL_VERSION: u16 = 9;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -100,6 +100,11 @@ pub enum Msg {
     /// persists it as the peer's primary and drops the session; its reconnect
     /// loop dials the new address.
     UseAddr { addr: String },
+    /// host -> client: the host's full editor view (machines with real
+    /// monitor shapes, links, shared-monitor config) as JSON, plus live
+    /// shared-panel state. The client's editor serves this instead of its
+    /// own half-blind config, so both machines show the SAME map.
+    StateSync { state: String, shared_configured: bool, owner: String },
     /// host -> client: treat `rect` as the shared monitor showing the OTHER
     /// machine. The cursor doesn't rest on it — moving onto it hands control to
     /// the machine it's displaying (see `SharedCross`). `None` clears it (you

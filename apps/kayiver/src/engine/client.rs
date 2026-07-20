@@ -290,6 +290,11 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
                         .to_string())
                 }));
             }
+            Msg::StateSync { state, shared_configured, owner } => {
+                debug!("state synced from host ({} bytes)", state.len());
+                crate::ui::set_synced_state(state);
+                crate::ui::set_shared_state(shared_configured, Some(peer.name.clone()), Some(owner));
+            }
             Msg::UseAddr { addr } => {
                 // The user picked a different path (Wi-Fi / cable) in the
                 // host's editor. Persist it as the primary AND the last-good

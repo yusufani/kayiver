@@ -410,6 +410,7 @@ const I18N = {
     connectBtn: "bağlan", disconnect: "bırak", wireless: "kablosuz", wirelessOn: "kablosuz açık: ",
     autostart: "Girişte başlat", autostartDesc: "oturum açılınca kayıver kendiliğinden çalışsın",
     macShort: "Windows'ta Mac kısayolları", macShortDesc: "Windows'taki makineyi yönetirken Mac değiştiricilerini yeniden eşle",
+    clientView: "bu görünüm ana makineden canlı eşitlenir — düzenlemeyi orada yap",
     remote: "Telefon / LAN kumandası", remoteDesc: "Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)",
     cfgFile: "Config dosyası", close: "Kapat", language: "Dil",
     thisMachine: "(bu makine)", running: "kayıver çalışıyor", stopped: "çalışmıyor", unreachable: "ulaşılamıyor",
@@ -454,6 +455,7 @@ const I18N = {
     connectBtn: "connect", disconnect: "release", wireless: "wireless", wirelessOn: "wireless on: ",
     autostart: "Start at login", autostartDesc: "run kayiver automatically when you log in",
     macShort: "Mac shortcuts on Windows", macShortDesc: "remap Mac modifiers while controlling a Windows machine",
+    clientView: "this view mirrors the host live — edit the layout there",
     remote: "Phone / LAN control", remoteDesc: "token-protected local API for the Android app (takes effect after a restart)",
     cfgFile: "Config file", close: "Close", language: "Language",
     thisMachine: "(this machine)", running: "kayiver running", stopped: "not running", unreachable: "unreachable",
@@ -1410,10 +1412,20 @@ window.addEventListener('resize', () => {
   }, 150);
 });
 (async () => {
-  const s = await (await fetch('/api/state')).json();
   applyStaticI18n();
-  stateSig = stateSignature(s);
-  buildFromState(s);
+  try { settings = await (await fetch('/api/settings')).json(); } catch (_) { settings = settings || {}; }
+  // Never die on a failed first fetch — keep polling; refreshStateIfChanged
+  // rebuilds the map as soon as the state (or a host StateSync) arrives.
+  try {
+    const s = await (await fetch('/api/state')).json();
+    stateSig = stateSignature(s);
+    buildFromState(s);
+  } catch (e) { setMsg(t('reach') + e, 'err'); }
+  if (settings.mode === 'client') {
+    // The map mirrors the host; layout is edited there.
+    document.getElementById('save').style.display = 'none';
+    document.getElementById('msg').textContent = t('clientView');
+  }
   poll();
   pollAndroid();
 })().catch(e => setMsg(t('reach') + e, 'err'));

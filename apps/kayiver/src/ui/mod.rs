@@ -57,6 +57,9 @@ pub struct LiveState {
     pub link_error: Option<String>,
     /// Channel into the router; present while a host is running.
     pub cmd: Option<tokio::sync::mpsc::UnboundedSender<UiCmd>>,
+    /// Client: the host's editor view (StateSync payload). The client's
+    /// editor serves this so both machines show the same map.
+    pub synced_state: Option<String>,
 }
 
 static LIVE: OnceLock<Mutex<LiveState>> = OnceLock::new();
@@ -200,6 +203,11 @@ pub fn host_candidate_addrs(port: u16) -> Vec<(String, String)> {
         let _ = port;
         Vec::new()
     }
+}
+
+/// Client: store the host's pushed editor view.
+pub fn set_synced_state(state: String) {
+    live().lock().unwrap().synced_state = Some(state);
 }
 
 pub fn set_focus(focus: Option<String>) {
@@ -772,8 +780,30 @@ fn api_shared_config(body: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// The host's editor view as JSON — served over HTTP and pushed to clients
+/// via `Msg::StateSync` so their editors mirror it.
+pub fn state_json() -> Result<String> {
+    api_state()
+}
+
 fn api_state() -> Result<String> {
     let cfg = Config::load_or_init()?;
+    // Clients serve the HOST's synced view (same machines, real shapes,
+    // links, shared panel) with only the "me" flags recomputed for this side.
+    if cfg.mode == kayiver_core::config::Mode::Client {
+        let synced = live().lock().unwrap().synced_state.clone();
+        if let Some(raw) = synced {
+            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(ms) = v.get_mut("machines").and_then(|m| m.as_array_mut()) {
+                    for m in ms {
+                        let me = m.get("name").and_then(|n| n.as_str()) == Some(cfg.name.as_str());
+                        m["me"] = serde_json::Value::Bool(me);
+                    }
+                }
+                return Ok(v.to_string());
+            }
+        }
+    }
     let fallback = vec![kayiver_core::proto::Rect { x: 0, y: 0, w: 1920, h: 1080 }];
     let mut machines = vec![serde_json::json!({
         "name": cfg.name,

@@ -207,6 +207,9 @@ fn desk(scenario: &'static str, base: u16) -> (Machine, Machine) {
     wait_until("host sees the client", Duration::from_secs(15), || {
         host.log_text().contains("client connected: simwin")
     });
+    // The host pushes its editor view on connect; the client's /api/state
+    // must mirror it (machines by name, links, shared panel) — that is what
+    // keeps the two editors in sync.
     (host, client)
 }
 

@@ -582,6 +582,7 @@ impl Router {
         }
         crate::ui::set_shared_owner(Some(owner));
         crate::ui::set_shared_error(None);
+        self.broadcast_state();
 
         // Cursor-skip model (no display is ever touched): the machine that is
         // NOT being shown blocks its shared rect so the cursor skips over it.
@@ -615,6 +616,7 @@ impl Router {
                     let owner = self.shared_owner.clone();
                     self.set_shared_owner(&owner);
                 }
+                self.broadcast_state();
             }
             SessionEvent::Disconnected { name } => {
                 info!("client disconnected: {name}");
@@ -630,6 +632,7 @@ impl Router {
             SessionEvent::LayoutChanged => {
                 self.refresh_shared_rects();
                 self.refresh_portals();
+                self.broadcast_state();
             }
             SessionEvent::SharedCross { name, fx, fy } => {
                 if self.focus.as_deref() != Some(name.as_str()) {
@@ -708,6 +711,22 @@ impl Router {
             0xE6 => opt_to + 4,
             0xE7 => cmd_to + 4,
             k => k,
+        }
+    }
+
+    /// Push the host's editor view to every client so their editors mirror
+    /// this one (machines with real shapes, links, shared panel, owner).
+    fn broadcast_state(&self) {
+        let Ok(state) = crate::ui::state_json() else { return };
+        let configured = self.shared.read().unwrap().configured();
+        let msg = Msg::StateSync {
+            state,
+            shared_configured: configured,
+            owner: self.shared_owner.clone(),
+        };
+        let sessions = self.sessions.lock().unwrap();
+        for tx in sessions.values() {
+            let _ = tx.send(msg.clone());
         }
     }
 
