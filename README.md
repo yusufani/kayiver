@@ -4,14 +4,14 @@
 
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-red?logo=github)](https://github.com/sponsors/yusufani)
 [![PayPal](https://img.shields.io/badge/PayPal-00457C?logo=paypal&logoColor=white)](https://paypal.me/yusufani)
-[![License: MIT](https://img.shields.io/badge/License-MIT-4c1)](LICENSE)
+[![License](https://img.shields.io/badge/License-Free_for_personal_use-4c1)](LICENSE)
 
-**Karşıya kayıver — one keyboard & mouse, every screen.**
+**One keyboard & mouse, every screen.**
 
-Kayıver is a lightweight, open-source software KVM. Slide your cursor off the
-edge of one machine's screen and it appears on the next, exactly like moving
-between two monitors of the same computer. Keyboard input follows the cursor.
-(The name is Turkish: *"kayıvermek"* — to just glide over.)
+Kayıver is a lightweight, source-available software KVM. Slide your cursor off
+the edge of one machine's screen and it appears on the next, exactly like
+moving between two monitors of the same computer. Keyboard input follows the
+cursor.
 
 <p align="center">
   <img src="assets/screenshots/demo.gif" width="820" alt="A real crossing, captured live from the layout editor: the cursor glides from the Mac onto the shared panel and the Windows machine takes over — over a direct cable at 1.5 ms">
@@ -53,14 +53,6 @@ between two monitors of the same computer. Keyboard input follows the cursor.
   embedded-icon exe on Windows, and an Android companion
   ([apps/android](apps/android)) for remote status + shared-monitor handoff.
 - **Autostart** — `kayiver autostart enable` and it's just *there* after boot.
-
-<p align="center">
-  <img src="assets/screenshots/editor.png" width="820" alt="Kayıver layout editor — drag monitors, touching edges become crossings; the shared panel and the live cursor are first-class">
-  <br>
-  <sub>The layout editor mid-crossing: both machines green, the live cursor at the shared panel,
-  and the status bar showing the real connection path — "direct cable · 1.5 ms" — with a picker
-  to move the session to another path (no addresses on screen, ever).</sub>
-</p>
 
 | Platform | Give input (host) | Receive input (client) |
 |----------|:-:|:-:|
@@ -188,9 +180,7 @@ Every commit ships to a real desk and has to survive it before it lands on
   with an idle heartbeat that defeats Wi-Fi power saving).
 - **Network:** ordinary Wi-Fi LAN, ~5 ms median RTT.
 
-The marketing page with the same setup lives in [site/index.html](site/index.html):
-
-<p align="center"><img src="assets/screenshots/site-hero.png" width="720" alt="kayiver marketing page hero"></p>
+The marketing page with the same setup lives at [site/index.html](site/index.html).
 
 ## Support
 
@@ -219,4 +209,7 @@ desk has a regression scenario there. See [docs/TESTING.md](docs/TESTING.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+**Free for personal use.** Kayıver is licensed under the
+[PolyForm Noncommercial License 1.0.0](LICENSE): individuals and other
+noncommercial users can use it freely. **Companies and any commercial use
+need a commercial license** — get in touch: **yusuf.ani@dbrain.tech**.

@@ -5,7 +5,7 @@ members = ["crates/kayiver-core", "apps/kayiver"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/yusufani/kayiver"
 
 [profile.release]
