@@ -800,6 +800,27 @@ fn api_state() -> Result<String> {
                         m["me"] = serde_json::Value::Bool(me);
                     }
                 }
+                // The shared-monitor block is written from the HOST's
+                // perspective (local = host, peer = us). The editor reads
+                // local_* as "me", so flip it for this side — otherwise the
+                // panel resolves to two of OUR monitors and the map scrambles.
+                let host_name = v["machines"]
+                    .as_array()
+                    .and_then(|ms| {
+                        ms.iter()
+                            .find(|m| m["name"].as_str() != Some(cfg.name.as_str()))
+                            .and_then(|m| m["name"].as_str().map(String::from))
+                    });
+                let flip = v["shared_monitor"].as_object().is_some()
+                    && v["shared_monitor"]["peer"].as_str() == Some(cfg.name.as_str());
+                if let (true, Some(host)) = (flip, host_name) {
+                    let sm = &mut v["shared_monitor"];
+                    let host_local = sm["local_monitor"].clone();
+                    let host_peer_mon = sm["peer_monitor"].clone();
+                    sm["local_monitor"] = host_peer_mon;
+                    sm["peer_monitor"] = host_local;
+                    sm["peer"] = serde_json::Value::String(host);
+                }
                 return Ok(v.to_string());
             }
         }
