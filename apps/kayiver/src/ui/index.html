@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="tr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -78,6 +78,11 @@
     display: flex; align-items: center; justify-content: center; padding: 0;
   }
   .iconbtn:hover { border-color: var(--a1); color: var(--text); }
+  #linkSel {
+    background: var(--chip); color: var(--muted); border: 1.5px solid var(--line2);
+    border-radius: 9px; height: 34px; padding: 0 8px; font: inherit; font-size: 12.5px;
+  }
+  #linkSel:hover { border-color: var(--a1); color: var(--text); }
   .iconbtn svg { width: 18px; height: 18px; }
 
   #canvas {
@@ -291,19 +296,19 @@
     </svg>
     <div>
       <h1>kayıver</h1>
-      <div class="sub">tek klavye &amp; fare, bütün ekranlar — her monitörü ayrı sürükle</div>
+      <div class="sub">one keyboard &amp; mouse, every screen — drag each monitor</div>
     </div>
   </div>
   <div class="statusbar" id="statusbar">
     <div class="legend" id="legend"></div>
-    <div class="stat"><span class="dot" id="hostDot"></span><span id="hostTxt">bağlanıyor…</span></div>
+    <div class="stat"><span class="dot" id="hostDot"></span><span id="hostTxt">connecting…</span></div>
     <div class="stat" id="linkStat" style="display:none;gap:6px;align-items:center">
       <span id="linkTxt" style="opacity:.85"></span>
-      <select id="linkSel" title="Bağlantı yolu" style="max-width:210px"></select>
-      <button class="iconbtn" id="linkGo" title="Bu adresi kullan" style="font-size:13px;width:auto;padding:0 8px">değiştir</button>
+      <select id="linkSel" title="Connection path" style="max-width:210px"></select>
+      <button class="iconbtn" id="linkGo" title="Move the session to this address" style="font-size:13px;width:auto;padding:0 8px">switch</button>
     </div>
-    <button class="iconbtn" id="themeBtn" title="Tema" aria-label="Tema" style="font-size:15px">☾</button>
-    <button class="iconbtn" id="gear" title="Ayarlar" aria-label="Ayarlar">
+    <button class="iconbtn" id="themeBtn" title="Theme" aria-label="Theme" style="font-size:15px">☾</button>
+    <button class="iconbtn" id="gear" title="Settings" aria-label="Settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3"/>
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -319,17 +324,17 @@
 <div id="canvas"><button id="sharedBtn"></button></div>
 
 <footer>
-  <div id="msg">her monitörü ayrı ayrı sürükle; kenarlar değince geçiş olur</div>
+  <div id="msg">drag each monitor; touching edges become crossings</div>
   <button id="save">Kaydet</button>
   <span class="dock-sep"></span>
   <div id="ownerDock" style="display:flex;align-items:center;gap:8px;min-width:0"></div>
   <div style="flex:1"></div>
-  <button class="dock-btn" id="liveBtn"><span class="dot" id="liveDot"></span><span id="liveLbl">canlı imleç</span></button>
+  <button class="dock-btn" id="liveBtn"><span class="dot" id="liveDot"></span><span id="liveLbl">live cursor</span></button>
 </footer>
 
 <div id="overlay">
   <div id="settings">
-    <h2>Ayarlar</h2>
+    <h2 id="settingsH2">Settings</h2>
     <div class="subttl" id="setSub">—</div>
     <div class="srow">
       <div class="lbl"><b id="langLbl">Dil</b></div>
@@ -446,7 +451,7 @@ const I18N = {
     port: "port",
   },
 };
-let lang = localStorage.getItem('kayiver-lang') || (navigator.language && navigator.language.startsWith('tr') ? 'tr' : 'en');
+let lang = localStorage.getItem('kayiver-lang') || 'en'; // English by default everywhere
 const t = k => (I18N[lang] && I18N[lang][k]) || I18N.en[k] || k;
 function applyStaticI18n() {
   document.documentElement.lang = lang;
@@ -1201,7 +1206,7 @@ function renderLink(st) {
   linkPeerName = name;
   stat.style.display = 'flex';
   const rtt = p.rtt_ms != null ? ` · ${p.rtt_ms.toFixed(1)} ms` : '';
-  const label = p.link_label || (p.local_addr ? p.local_addr.split(':')[0] : '?');
+  const label = p.link_label || 'link';
   document.getElementById('linkTxt').textContent = `${label}${rtt}`;
   document.getElementById('linkTxt').title =
     `${p.local_addr || '?'} ↔ ${p.remote_addr || '?'}`;
@@ -1214,7 +1219,7 @@ function renderLink(st) {
     for (const a of (st.host_addrs || [])) {
       const o = document.createElement('option');
       o.value = a.addr;
-      o.textContent = (a.label ? `${a.label} — ` : '') + a.addr;
+      o.textContent = a.label || a.addr;
       if (a.addr.startsWith(cur + ':')) o.selected = true;
       sel.appendChild(o);
     }
@@ -1225,7 +1230,7 @@ document.getElementById('linkGo').addEventListener('click', async () => {
   if (!linkPeerName || !addr) return;
   try {
     const r = await fetch('/api/link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ peer: linkPeerName, addr }) });
-    setMsg(r.ok ? `bağlantı ${addr} adresine taşınıyor…` : await r.text(), r.ok ? 'ok' : 'err');
+    setMsg(r.ok ? 'moving the session over…' : await r.text(), r.ok ? 'ok' : 'err');
   } catch (e) { setMsg(String(e), 'err'); }
 });
 

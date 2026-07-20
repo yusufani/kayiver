@@ -64,7 +64,7 @@ pub fn run(cfg: Config) -> Result<()> {
             match connect_once(&cfg, &peer).await {
                 Ok(()) => {
                     info!("session ended, reconnecting");
-                    crate::ui::set_link_error(Some("oturum kapandı — yeniden bağlanılıyor".into()));
+                    crate::ui::set_link_error(Some("session ended — reconnecting".into()));
                     backoff = Duration::from_secs(1);
                 }
                 Err(e) => {
@@ -86,41 +86,45 @@ pub fn run(cfg: Config) -> Result<()> {
 /// A short probe (PROBE_TIMEOUT) filters dead addresses quickly (link-local
 /// IPs drift whenever a cable is re-plugged, so any of these can go stale).
 async fn find_host(peer: &Peer) -> std::result::Result<SocketAddr, String> {
-    let mut candidates: Vec<String> = Vec::new();
-    let push = |a: &str, v: &mut Vec<String>| {
-        if !a.is_empty() && !v.iter().any(|x| x == a) {
-            v.push(a.to_string());
+    // The CONFIGURED primary is a deliberate user choice (e.g. picked in the
+    // editor's path selector), so it gets the full connect timeout: on a bad
+    // Wi-Fi day a single lost SYN pushes the handshake past the quick-probe
+    // window and the choice would silently fall back to another path.
+    let mut candidates: Vec<(String, Duration)> = Vec::new();
+    let push = |a: &str, t: Duration, v: &mut Vec<(String, Duration)>| {
+        if !a.is_empty() && !v.iter().any(|(x, _)| x == a) {
+            v.push((a.to_string(), t));
         }
     };
-    if let Some(a) = &peer.last_good {
-        push(a, &mut candidates);
-    }
     if let Some(a) = &peer.addr {
-        push(a, &mut candidates);
+        push(a, CONNECT_TIMEOUT, &mut candidates);
+    }
+    if let Some(a) = &peer.last_good {
+        push(a, PROBE_TIMEOUT, &mut candidates);
     }
     for a in &peer.addrs {
-        push(a, &mut candidates);
+        push(a, PROBE_TIMEOUT, &mut candidates);
     }
 
     let mut failures: Vec<String> = Vec::new();
-    for cand in &candidates {
+    for (cand, timeout) in &candidates {
         match cand.to_socket_addrs().ok().and_then(|mut it| it.next()) {
             Some(a) => {
-                match tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(a)).await {
+                match tokio::time::timeout(*timeout, TcpStream::connect(a)).await {
                     Ok(Ok(_)) => return Ok(a),
                     Ok(Err(e)) => failures.push(format!("{cand}: {e}")),
-                    Err(_) => failures.push(format!("{cand}: zaman aşımı")),
+                    Err(_) => failures.push(format!("{cand}: timed out")),
                 }
             }
-            None => failures.push(format!("{cand}: adres çözülemedi")),
+            None => failures.push(format!("{cand}: could not resolve")),
         }
     }
     if let Some(a) = kayiver_core::discovery::resolve(&peer.name, Duration::from_secs(3)).await {
         return Ok(a);
     }
-    failures.push("mDNS: bulunamadı".into());
+    failures.push("mDNS: no answer".into());
     Err(format!(
-        "'{}' bulunamadı — denenen yollar: {}",
+        "'{}' unreachable — tried: {}",
         peer.name,
         failures.join(" · ")
     ))
@@ -281,8 +285,8 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
                 info!("shared block -> {rect:?}");
                 state.blocked = rect;
                 platform::passive::show(rect.map(|r| {
-                    (r, "Diğer makine gösteriliyor. Fiziksel girişi bu makineye alıp \
-                         Ctrl+Alt+M'e basınca imleç buraya gelir."
+                    (r, "This panel is showing the other machine. Switch the monitor's \
+                         input here and press Ctrl+Alt+M to bring the cursor over."
                         .to_string())
                 }));
             }
@@ -308,7 +312,7 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
                         warn!("could not persist new address: {e:#}");
                     }
                 }
-                crate::ui::set_link_error(Some(format!("adres değişti — {addr} üzerinden yeniden bağlanılıyor")));
+                crate::ui::set_link_error(Some(format!("address changed — reconnecting via {addr}")));
                 return Ok(());
             }
             Msg::Bye => return Ok(()),

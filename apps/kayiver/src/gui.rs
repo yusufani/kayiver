@@ -81,26 +81,26 @@ fn status_summary() -> (String, bool) {
         .ok()
         .and_then(|(code, body)| if code == 200 { serde_json::from_str::<serde_json::Value>(&body).ok() } else { None });
     let Some(v) = parsed else {
-        return ("Motor başlatılıyor / izin bekleniyor…".into(), true);
+        return ("Engine starting / waiting for permissions…".into(), true);
     };
     if !v["running"].as_bool().unwrap_or(false) {
-        return ("Motor çalışmıyor (izin bekleniyor olabilir)".into(), true);
+        return ("Engine not running (possibly waiting for permissions)".into(), true);
     }
     let peers = v["peers"].as_object().cloned().unwrap_or_default();
     if peers.is_empty() {
-        return ("Eş bekleniyor…".into(), true);
+        return ("Waiting for a peer…".into(), true);
     }
     let mut parts = Vec::new();
     let mut any_down = false;
     for (name, p) in peers {
         if p["connected"].as_bool().unwrap_or(false) {
             match p["rtt_ms"].as_f64() {
-                Some(rtt) => parts.push(format!("{name}: bağlı ({rtt:.1} ms)")),
-                None => parts.push(format!("{name}: bağlı")),
+                Some(rtt) => parts.push(format!("{name}: connected ({rtt:.1} ms)")),
+                None => parts.push(format!("{name}: connected")),
             }
         } else {
             any_down = true;
-            parts.push(format!("{name}: çevrimdışı"));
+            parts.push(format!("{name}: offline"));
         }
     }
     (parts.join(" · "), any_down)
@@ -268,9 +268,9 @@ fn show_in_dock(target: &EventLoopWindowTarget<UserEvent>, window: &Window) {
 
 fn build_tray() -> Result<(TrayIcon, MenuIds, MenuItem)> {
     let menu = Menu::new();
-    let status = MenuItem::new("Durum alınıyor…", false, None);
+    let status = MenuItem::new("Fetching status…", false, None);
     let open = MenuItem::new("Kayıver'ı Aç", true, None);
-    let toggle_shared = MenuItem::new("Ortak Monitörü Değiştir\t⌘⌥M", true, None);
+    let toggle_shared = MenuItem::new("Toggle Shared Monitor\t⌘⌥M", true, None);
     let quit = MenuItem::new("Kayıver'dan Çık", true, None);
     menu.append(&status)?;
     menu.append(&PredefinedMenuItem::separator())?;

@@ -110,7 +110,7 @@ unsafe fn refresh_with(connected_balloon: bool, lost_balloon: bool) {
         fill(&mut data.szInfoTitle, "Kayıver bağlantısı koptu");
         fill(
             &mut data.szInfo,
-            &format!("{host} ile bağlantı kesildi — yeniden deneniyor. Sebep için editörü aç (sağ tık → Aç)."),
+            &format!("Disconnected from {host} — retrying. Open the editor for details (right-click → Open)."),
         );
         data.dwInfoFlags = NIIF_WARNING;
     }

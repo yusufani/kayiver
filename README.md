@@ -16,8 +16,9 @@ between two monitors of the same computer. Keyboard input follows the cursor.
 <p align="center">
   <img src="assets/screenshots/demo.gif" width="820" alt="A real crossing, captured live from the layout editor: the cursor glides from the Mac onto the shared panel and the Windows machine takes over — over a direct cable at 1.5 ms">
   <br>
-  <sub>Real footage from the layout editor during a live crossing: the cursor leaves the Mac,
-  the shared panel hands over, and the Windows machine takes focus — direct cable, 1.5 ms RTT.</sub>
+  <sub>Real footage, fully dark-mode: the cursor crosses from the Mac onto the shared panel and the
+  Windows machine takes focus; then the session is moved to Wi-Fi live — watch the RTT badge jump —
+  and back to the direct cable, settling at ~1&nbsp;ms.</sub>
 </p>
 
 - **Native feel, no lag** — a single ~2.5 MB Rust binary per machine, raw OS
@@ -56,9 +57,9 @@ between two monitors of the same computer. Keyboard input follows the cursor.
 <p align="center">
   <img src="assets/screenshots/editor.png" width="820" alt="Kayıver layout editor — drag monitors, touching edges become crossings; the shared panel and the live cursor are first-class">
   <br>
-  <sub>The layout editor mid-crossing: both machines green, the live cursor sitting on the
-  peer's screen, and the status bar showing the actual connection path —
-  "USB LAN · direct cable · 1.5 ms" — with a picker to move the session to another path.</sub>
+  <sub>The layout editor mid-crossing: both machines green, the live cursor at the shared panel,
+  and the status bar showing the real connection path — "direct cable · 1.5 ms" — with a picker
+  to move the session to another path (no addresses on screen, ever).</sub>
 </p>
 
 | Platform | Give input (host) | Receive input (client) |

@@ -33,9 +33,9 @@ pub struct Peer {
     /// session succeeds via mDNS or a fallback, that address is remembered.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub addrs: Vec<String>,
-    /// Address of the most recent successful session; tried first on
-    /// reconnect. Kept separate from `addr` so the user's configured primary
-    /// is never overwritten.
+    /// Address of the most recent successful session; tried right after the
+    /// configured primary on reconnect. Kept separate from `addr` so the
+    /// user's configured primary is never overwritten.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_good: Option<String>,
     /// Last known physical displays of this peer (cached from its Hello so

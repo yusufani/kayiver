@@ -126,7 +126,7 @@ fn iface_label(ip: std::net::IpAddr) -> String {
                 None => dev.clone(),
             };
             if matches!(ip, std::net::IpAddr::V4(v) if v.is_link_local()) {
-                label.push_str(" · doğrudan kablo");
+                label.push_str(" · direct cable");
             }
             return label;
         }
@@ -136,7 +136,7 @@ fn iface_label(ip: std::net::IpAddr) -> String {
         if !label.is_empty() {
             label.push_str(" · ");
         }
-        label.push_str("doğrudan kablo");
+        label.push_str("direct cable");
     }
     label
 }

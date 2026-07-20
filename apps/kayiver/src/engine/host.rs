@@ -485,7 +485,7 @@ impl Router {
                 } else {
                     // Connect in the background (blocking); press again once up.
                     std::thread::spawn(|| { crate::android::ensure_connected(); });
-                    crate::ui::set_link_error(Some("tablet bağlanıyor — tekrar dene".into()));
+                    crate::ui::set_link_error(Some("tablet connecting — try again".into()));
                 }
             }
             Captured::SharedEnter { fx, fy } => {
