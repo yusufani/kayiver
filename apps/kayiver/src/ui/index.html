@@ -528,7 +528,9 @@ function bbox(rects) {
 let stateSig = '';
 function stateSignature(s) { return JSON.stringify(s.machines.map(m => [m.name, m.me, m.monitors])); }
 
+let lastBuiltState = null; // kept so a window resize can re-fit the whole map
 function buildFromState(s) {
+  lastBuiltState = s;
   document.querySelectorAll('.mon').forEach(e => e.remove());
   sharedBtn.style.display = 'none'; candidate = null;
   sharedCfg = s.shared_monitor;
@@ -1328,7 +1330,18 @@ document.getElementById('setHotkey').addEventListener('change', e => saveSetting
 document.getElementById('setAutostart').addEventListener('change', e => saveSetting({ autostart: e.target.checked }, e.target.checked ? t('autostartOn') : t('autostartOff')));
 document.getElementById('setRemote').addEventListener('change', e => saveSetting({ remote_enabled: e.target.checked }, t('remoteNote')));
 
-window.addEventListener('resize', () => mons.forEach(t => { clamp(t); pos(t); }));
+// Re-fit the whole map on window resize (recompute scale + center), not just
+// clamp: growing or shrinking the window used to leave the panel at its old
+// size, glued to wherever the previous canvas put it. Debounced; never mid-drag.
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (document.querySelector('.mon.dragging')) return;
+    if (lastBuiltState) buildFromState(lastBuiltState);
+    else mons.forEach(t => { clamp(t); pos(t); });
+  }, 150);
+});
 (async () => {
   const s = await (await fetch('/api/state')).json();
   applyStaticI18n();
