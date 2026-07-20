@@ -392,7 +392,10 @@ const I18N = {
     tabletControlling: "kontrol ediliyor · çıkış: 3× Esc", tabletConnecting: "bağlanıyor…",
     tabletDrag: "sürükle=yerleştir · tıkla=bağla", tabletReady: "hazır", tabletPlaced: "tablet yerleşti — kenardan geçince kontrol: ",
     addDevice: "cihaz", addDeviceOk: "cihaz eklendi ✓",
-    addDeviceHint: "En kolayı: tableti bir kez USB ile bağla — Ayarlar → Tablet'te görünür, tek tıkla kablosuza geçer. Bu kutu, kablosuz hata ayıklaması zaten açık bir cihazın IP'si için.",
+    addDeviceTitle: "Android tablet ekle",
+    addDeviceMonNote: "Normal monitörler buradan eklenmez — kabloyu takınca sistemden otomatik gelir ve haritada kendiliğinden belirir.",
+    addDeviceHint: "En kolay yol: tableti bir kez USB ile bağla; burada görünür, tek tıkla kablosuza geçer. Ya da kablosuz hata ayıklaması zaten açık bir cihazın IP'sini gir:",
+    addBtn: "ekle",
     addDeviceSteps: "Tablet nasıl eklenir:\n1) Tablette: Ayarlar → Tablet hakkında → Yapı numarasına 7 kez dokun → Geliştirici seçenekleri → USB hata ayıklama AÇIK\n2) USB kabloyla bu makineye bağla, tabletteki izin sorusuna İzin ver de\n3) Cihaz burada görününce: bağlan → kablosuz (kablo artık gereksiz)\n4) Tablet karosunu bir kenara sürükle — imleç o kenardan geçince tableti yönetirsin\nBu kutu: kablosuz hata ayıklaması ZATEN açık bir cihazın IP'si için.",
     addDevicePh: "tablet IP (ör. 192.168.0.20)",
     connectBtn: "bağlan", disconnect: "bırak", wireless: "kablosuz", wirelessOn: "kablosuz açık: ",
@@ -432,7 +435,10 @@ const I18N = {
     tabletControlling: "controlling · exit: 3× Esc", tabletConnecting: "connecting…",
     tabletDrag: "drag=place · click=connect", tabletReady: "ready", tabletPlaced: "tablet placed — cross this edge to control: ",
     addDevice: "device", addDeviceOk: "device added ✓",
-    addDeviceHint: "Easiest: plug the tablet in over USB once — it shows up under Settings → Tablet and one click makes it wireless. This box is for a device that already has wireless debugging on.",
+    addDeviceTitle: "Add an Android tablet",
+    addDeviceMonNote: "Regular monitors are not added here — plug one into either machine and it appears on the map automatically, straight from the system.",
+    addDeviceHint: "Easiest: plug the tablet in over USB once; it shows up here and one click makes it wireless. Or enter the IP of a device that already has wireless debugging on:",
+    addBtn: "add",
     addDeviceSteps: "How to add a tablet:\n1) On the tablet: Settings → About → tap Build number 7x → Developer options → USB debugging ON\n2) Plug it into this machine over USB, allow debugging on the tablet\n3) When the device appears here: connect → wireless (cable no longer needed)\n4) Drag the tablet tile to an edge — crossing that edge controls the tablet\nThis box: enter the IP of a device that ALREADY has wireless debugging on.",
     addDevicePh: "tablet IP (e.g. 192.168.0.20)",
     connectBtn: "connect", disconnect: "release", wireless: "wireless", wirelessOn: "wireless on: ",
@@ -1083,9 +1089,12 @@ const addTile = document.createElement('div');
 addTile.className = 'add-tile';
 canvas.appendChild(addTile);
 function placeAddTile() {
-  // The form pops up above its dock button — bottom-right of the canvas.
-  addTile.style.left = Math.max(8, canvas.clientWidth - 268) + 'px';
-  addTile.style.top = Math.max(8, canvas.clientHeight - 132) + 'px';
+  // Anchor to the canvas corner with right/bottom so the panel can NEVER
+  // overflow past the edge, whatever its content height.
+  addTile.style.left = 'auto';
+  addTile.style.top = 'auto';
+  addTile.style.right = '14px';
+  addTile.style.bottom = '14px';
 }
 function renderAddTile(open) {
   placeAddTile();
@@ -1096,24 +1105,40 @@ function renderAddTile(open) {
   if (!open) { addTile.style.display = 'none'; return; }
   addTile.style.display = 'flex';
   addTile.style.flexDirection = 'column';
-  addTile.style.alignItems = 'flex-start';
+  addTile.style.alignItems = 'stretch';
+  addTile.style.width = '292px';
+  addTile.style.padding = '14px';
+  addTile.style.gap = '8px';
+  addTile.style.background = 'var(--panel)';
+  addTile.style.border = '1px solid var(--line2)';
+  addTile.style.boxShadow = 'var(--shadow)';
+  addTile.style.cursor = 'default';
   addTile.onclick = null;
   addTile.innerHTML = '';
-  // The IP path is only for a tablet already in wireless-debugging mode; the
-  // painless path is USB — say so instead of presenting a bare IP box.
+  const title = document.createElement('div');
+  title.textContent = t('addDeviceTitle');
+  title.style.cssText = 'font-size:12.5px;font-weight:750;color:var(--text);';
+  const monNote = document.createElement('div');
+  monNote.textContent = t('addDeviceMonNote');
+  monNote.style.cssText = 'font-size:11px;color:var(--muted);line-height:1.5;';
   const hint = document.createElement('div');
   hint.textContent = t('addDeviceHint');
-  hint.style.cssText = 'font-size:10.5px;color:var(--muted);max-width:230px;line-height:1.45;margin-bottom:6px;';
-  addTile.appendChild(hint);
-  const inp = document.createElement('input'); inp.placeholder = t('addDevicePh'); inp.style.cssText = 'width:150px;background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 7px;font:inherit;font-size:11px;';
-  const go = document.createElement('button'); go.className = 'dock-btn'; go.textContent = '↵'; go.style.padding = '4px 8px';
+  hint.style.cssText = 'font-size:11px;color:var(--muted);line-height:1.5;';
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  const inp = document.createElement('input'); inp.placeholder = t('addDevicePh'); inp.style.cssText = 'flex:1;min-width:0;background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit;font-size:11.5px;';
+  const go = document.createElement('button'); go.className = 'dock-btn'; go.textContent = t('addBtn'); go.style.padding = '6px 10px';
+  const close = document.createElement('button'); close.className = 'dock-btn'; close.textContent = '✕'; close.style.padding = '6px 9px';
+  close.onclick = () => renderAddTile(false);
   const add = async () => {
     const ip = inp.value.trim(); if (!ip) { renderAddTile(false); return; }
     try { const r = await fetch('/api/android/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip }) }); setMsg(r.ok ? t('addDeviceOk') : await r.text(), r.ok ? 'ok' : 'err'); } catch (e) { setMsg(String(e), 'err'); }
     renderAddTile(false); setTimeout(pollAndroid, 800);
   };
   go.onclick = add; inp.addEventListener('keydown', e => { if (e.key === 'Enter') add(); if (e.key === 'Escape') renderAddTile(false); });
-  addTile.appendChild(inp); addTile.appendChild(go); inp.focus();
+  row.appendChild(inp); row.appendChild(go); row.appendChild(close);
+  addTile.appendChild(title); addTile.appendChild(monNote); addTile.appendChild(hint); addTile.appendChild(row);
+  inp.focus();
 }
 renderAddTile(false);
 let tabPos = (() => { try { return JSON.parse(localStorage.getItem('kayiver-tabpos')); } catch (_) { return null; } })();
