@@ -903,14 +903,19 @@ function refreshSnap() {
 // A subtle crossing marker along every seam where two different machines'
 // monitors meet — a thin soft line, not a loud animated bar.
 const corridorLayer = document.createElement('div');
-corridorLayer.style.cssText = 'position:absolute;inset:0;pointer-events:none;';
+corridorLayer.style.cssText = 'position:absolute;inset:0;pointer-events:none;z-index:30;';
 canvas.appendChild(corridorLayer);
 function renderCorridors() {
   corridorLayer.innerHTML = '';
   const seen = new Set();
   const vis = mons.filter(t => t.el.style.display !== 'none');
+  // The merged shared panel belongs to BOTH machines, so its seams are
+  // crossings too — this keeps the corridors identical on host and client
+  // (whose "me" side of the split differs).
+  const sp = sharedPair(); const panel = sp && sp.a;
   for (const a of vis) for (const b of vis) {
-    if (a === b || a.machine === b.machine) continue;
+    if (a === b) continue;
+    if (a.machine === b.machine && a !== panel && b !== panel) continue;
     const key = [a.machine + a.idx, b.machine + b.idx].sort().join('|');
     if (seen.has(key)) continue;
     let bar = null;
