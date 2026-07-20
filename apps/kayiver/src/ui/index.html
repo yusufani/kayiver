@@ -330,6 +330,7 @@
   <div id="ownerDock" style="display:flex;align-items:center;gap:8px;min-width:0"></div>
   <div style="flex:1"></div>
   <button class="dock-btn" id="liveBtn"><span class="dot" id="liveDot"></span><span id="liveLbl">live cursor</span></button>
+  <button class="dock-btn" id="addDevBtn">+ <span id="addDevLbl">device</span></button>
 </footer>
 
 <div id="overlay">
@@ -1082,13 +1083,20 @@ const addTile = document.createElement('div');
 addTile.className = 'add-tile';
 canvas.appendChild(addTile);
 function placeAddTile() {
-  addTile.style.left = Math.max(8, canvas.clientWidth - 148) + 'px';
-  addTile.style.top = Math.max(8, canvas.clientHeight - 44) + 'px';
+  // The form pops up above its dock button — bottom-right of the canvas.
+  addTile.style.left = Math.max(8, canvas.clientWidth - 268) + 'px';
+  addTile.style.top = Math.max(8, canvas.clientHeight - 132) + 'px';
 }
 function renderAddTile(open) {
   placeAddTile();
-  addTile.title = t('addDeviceSteps');
-  if (!open) { addTile.innerHTML = '<span>+ ' + t('addDevice') + '</span>'; addTile.onclick = () => renderAddTile(true); return; }
+  const dockBtn = document.getElementById('addDevBtn');
+  dockBtn.title = t('addDeviceSteps');
+  document.getElementById('addDevLbl').textContent = t('addDevice');
+  dockBtn.onclick = () => renderAddTile(true);
+  if (!open) { addTile.style.display = 'none'; return; }
+  addTile.style.display = 'flex';
+  addTile.style.flexDirection = 'column';
+  addTile.style.alignItems = 'flex-start';
   addTile.onclick = null;
   addTile.innerHTML = '';
   // The IP path is only for a tablet already in wireless-debugging mode; the
