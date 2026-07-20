@@ -28,7 +28,7 @@ echo "==> stopping running app"
 pkill -f "Kayiver.app/Contents/MacOS/kayiver" 2>/dev/null || true
 sleep 1
 
-security unlock-keychain -p kayiver-local "$KC"
+security unlock-keychain -p "${KAYIVER_SIGN_PW:?set KAYIVER_SIGN_PW (local signing keychain password)}" "$KC"
 for APP in "${APPS[@]}"; do
   [ -d "$APP" ] || continue
   echo "==> installing + signing $APP"

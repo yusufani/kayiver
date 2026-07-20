@@ -62,6 +62,18 @@ cursor.
 | Android  | — | 🚧 planned (see [docs/PLATFORMS.md](docs/PLATFORMS.md)) |
 | iOS/iPadOS | 🚧 controller only | ❌ OS restriction (see [docs/PLATFORMS.md](docs/PLATFORMS.md)) |
 
+## Download
+
+Grab the latest build from **[Releases](https://github.com/yusufani/kayiver/releases/latest)**:
+
+- **macOS (Apple silicon):** `Kayiver-macos-arm64.zip` — unzip, move to
+  Applications, then **right-click → Open** the first time (the app is
+  self-signed, not notarized).
+- **Windows 10/11 (x64):** `kayiver-windows-x64.exe` — put it anywhere and run
+  it; if SmartScreen appears, choose "More info → Run anyway".
+
+Or build from source:
+
 ## Quick start
 
 Build (Rust 1.85+):

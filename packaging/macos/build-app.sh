@@ -48,7 +48,7 @@ PLIST
 # interactive keychain prompt.
 SIGN_ID="Kayiver Self-Signed"
 SIGN_KC="$HOME/Library/Keychains/kayiver-signing.keychain-db"
-SIGN_KC_PW="kayiver-local"
+SIGN_KC_PW="${KAYIVER_SIGN_PW:?set KAYIVER_SIGN_PW (local signing keychain password)}"
 
 ensure_signing_identity() {
   if [[ ! -f "$SIGN_KC" ]]; then
