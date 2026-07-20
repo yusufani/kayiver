@@ -654,6 +654,7 @@ fn api_get_settings() -> Result<String> {
         "remote_port": UI_PORT + 1,
         "autostart": crate::autostart::is_enabled(),
         "edge_dwell_ms": cfg.edge_dwell_ms,
+        "mac_shortcuts": cfg.mac_shortcuts,
         "config_path": Config::path().display().to_string(),
     })
     .to_string())
@@ -676,6 +677,9 @@ fn api_set_settings(body: &[u8]) -> Result<String> {
     }
     if let Some(ms) = v.get("edge_dwell_ms").and_then(|x| x.as_u64()) {
         cfg.edge_dwell_ms = ms.min(10_000); // cap at 10 s
+    }
+    if let Some(b) = v.get("mac_shortcuts").and_then(|x| x.as_bool()) {
+        cfg.mac_shortcuts = b;
     }
     cfg.save()?;
 

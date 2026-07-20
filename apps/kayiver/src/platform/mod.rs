@@ -46,6 +46,8 @@ pub struct CaptureCtl {
     /// Desktop edge that leads to the Android tablet, if placed. Crossing it
     /// hands control to the tablet (like a peer portal, but local).
     pub tablet_edge: RwLock<Option<Edge>>,
+    /// macOS host: swap ⌘↔Ctrl while a Windows peer has focus.
+    pub mac_shortcuts: AtomicBool,
     pub bounds: Rect,
 }
 
@@ -59,6 +61,7 @@ impl CaptureCtl {
             edge_dwell_ms: AtomicU64::new(0),
             blocked: RwLock::new(None),
             tablet_edge: RwLock::new(None),
+            mac_shortcuts: AtomicBool::new(true),
             bounds,
         }
     }

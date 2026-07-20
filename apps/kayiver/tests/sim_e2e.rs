@@ -256,6 +256,25 @@ fn diagonal_cross_lands_at_entry_height() {
         host.state()["forwarding"].as_bool().unwrap(),
         "host must be forwarding after the handover"
     );
+
+    // Mac-shortcut remap: the sim host build runs on macOS and the peer's
+    // config says os = "windows", so ⌘ (HID 0xE3) must arrive as Ctrl (0xE0)
+    // and ⌃ (0xE0) as the Win key (0xE3) — both directions, press+release.
+    client.injected();
+    for (send, want) in [(0xE3u16, 224i64), (0xE0u16, 227i64)] {
+        for pressed in [true, false] {
+            let r = host.ctl(serde_json::json!({ "op": "input_key", "key": send, "pressed": pressed }));
+            assert!(r["ok"].as_bool().unwrap(), "key inject failed: {r}");
+        }
+        let mut got = Vec::new();
+        wait_until("client receives the remapped key", Duration::from_secs(5), || {
+            got.extend(client.injected());
+            got.iter().filter(|e| e["kind"] == "key").count() >= 2
+        });
+        for e in got.iter().filter(|e| e["kind"] == "key") {
+            assert_eq!(e["key"].as_i64().unwrap(), want, "HID {send:#x} must remap to {want}");
+        }
+    }
 }
 
 /// Bug class #2: switching the client's primary display re-anchors every rect

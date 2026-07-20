@@ -363,6 +363,10 @@
       <div class="lbl"><b id="autostartLbl">Girişte başlat</b><small id="autostartDescS">oturum açılınca kayıver kendiliğinden çalışsın</small></div>
       <label class="switch"><input type="checkbox" id="setAutostart"><span class="slider"></span></label>
     </div>
+    <div class="srow">
+      <div class="lbl"><b id="macShortLbl">Mac shortcuts on Windows</b><small id="macShortDescS">⌘ acts as Ctrl on Windows peers (⌘C → Ctrl+C); ⌃ becomes the Win key</small></div>
+      <label class="switch"><input type="checkbox" id="setMacShort"><span class="slider"></span></label>
+    </div>
     <div class="srow" style="flex-wrap:wrap">
       <div class="lbl"><b id="remoteLbl">Telefon / LAN kumandası</b><small id="remoteDescS">Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)</small></div>
       <label class="switch"><input type="checkbox" id="setRemote"><span class="slider"></span></label>
@@ -400,6 +404,7 @@ const I18N = {
     addDevicePh: "tablet IP (ör. 192.168.0.20)",
     connectBtn: "bağlan", disconnect: "bırak", wireless: "kablosuz", wirelessOn: "kablosuz açık: ",
     autostart: "Girişte başlat", autostartDesc: "oturum açılınca kayıver kendiliğinden çalışsın",
+    macShort: "Windows'ta Mac kısayolları", macShortDesc: "Windows'a geçince ⌘ Ctrl gibi davranır (⌘C → Ctrl+C); ⌃ ise Win tuşu olur",
     remote: "Telefon / LAN kumandası", remoteDesc: "Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)",
     cfgFile: "Config dosyası", close: "Kapat", language: "Dil",
     thisMachine: "(bu makine)", running: "kayıver çalışıyor", stopped: "çalışmıyor", unreachable: "ulaşılamıyor",
@@ -443,6 +448,7 @@ const I18N = {
     addDevicePh: "tablet IP (e.g. 192.168.0.20)",
     connectBtn: "connect", disconnect: "release", wireless: "wireless", wirelessOn: "wireless on: ",
     autostart: "Start at login", autostartDesc: "run kayiver automatically when you log in",
+    macShort: "Mac shortcuts on Windows", macShortDesc: "⌘ acts as Ctrl on Windows peers (⌘C → Ctrl+C); ⌃ becomes the Win key",
     remote: "Phone / LAN control", remoteDesc: "token-protected local API for the Android app (takes effect after a restart)",
     cfgFile: "Config file", close: "Close", language: "Language",
     thisMachine: "(this machine)", running: "kayiver running", stopped: "not running", unreachable: "unreachable",
@@ -492,6 +498,7 @@ function applyStaticI18n() {
     o.textContent = v === 0 ? t('dwellImmediate') : (v / 1000) + ' ' + t('secShort');
   });
   byId('autostartLbl', t('autostart'));
+  byId('macShortLbl', t('macShort')); byId('macShortDescS', t('macShortDesc'));
   byId('autostartDescS', t('autostartDesc'));
   byId('remoteLbl', t('remote'));
   byId('remoteDescS', t('remoteDesc'));
@@ -1336,6 +1343,7 @@ async function openSettings() {
   document.getElementById('setSub').textContent = (settings.name || '?') + ' · ' + (settings.mode || '?') + ' · ' + t('port') + ' ' + (settings.port || '?');
   document.getElementById('setHotkey').checked = settings.hotkey !== false;
   document.getElementById('setAutostart').checked = !!settings.autostart;
+  document.getElementById('setMacShort').checked = settings.mac_shortcuts !== false;
   document.getElementById('setRemote').checked = !!settings.remote_enabled;
   document.getElementById('setLang').value = lang;
   document.getElementById('setDwell').value = String(settings.edge_dwell_ms || 0);
@@ -1358,6 +1366,7 @@ async function saveSetting(patch, note) {
 }
 document.getElementById('setLang').addEventListener('change', e => setLang(e.target.value));
 document.getElementById('setDwell').addEventListener('change', e => saveSetting({ edge_dwell_ms: +e.target.value }, t('savedOk')));
+document.getElementById('setMacShort').addEventListener('change', e => saveSetting({ mac_shortcuts: e.target.checked }, t('savedOk')));
 // theme (dark default; follows the design's dark/light system)
 function applyTheme(th) {
   document.documentElement.setAttribute('data-theme', th);

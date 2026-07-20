@@ -83,6 +83,11 @@ pub struct Config {
     /// edge.
     #[serde(default)]
     pub edge_dwell_ms: u64,
+    /// macOS host only: while controlling a Windows peer, swap ⌘↔Ctrl so
+    /// Mac muscle memory works (⌘C arrives as Ctrl+C; ⌃ becomes the Win
+    /// key). Default on.
+    #[serde(default = "default_true")]
+    pub mac_shortcuts: bool,
     /// Which desktop edge leads to the Android tablet ("left"/"right"/"top"/
     /// "bottom"), set by dragging the tablet tile in the editor. When set and a
     /// device is available, crossing that edge hands control to the tablet.
@@ -197,6 +202,7 @@ impl Default for Config {
             shared_monitor: SharedMonitor::default(),
             remote: RemoteApi::default(),
             edge_dwell_ms: 0,
+            mac_shortcuts: true,
             tablet_edge: None,
         }
     }
@@ -284,6 +290,7 @@ mod tests {
             shared_monitor: SharedMonitor::default(),
             remote: RemoteApi::default(),
             edge_dwell_ms: 0,
+            mac_shortcuts: true,
             tablet_edge: None,
         };
         let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), addrs: vec![], last_good: None, screens: vec![], os: None };

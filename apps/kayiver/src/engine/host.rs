@@ -122,6 +122,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         ctl.shared_hotkey.store(cfg.shared_monitor.hotkey, Ordering::SeqCst);
     }
     ctl.edge_dwell_ms.store(cfg.edge_dwell_ms, Ordering::Relaxed);
+    ctl.mac_shortcuts.store(cfg.mac_shortcuts, Ordering::Relaxed);
     *ctl.tablet_edge.write().unwrap() = cfg.tablet_edge.as_deref().and_then(parse_edge);
     crate::ui::set_shared_state(
         cfg.shared_monitor.configured(),
@@ -275,6 +276,15 @@ impl Router {
     }
 
     fn send_to_focus(&self, msg: Msg) {
+        // Mac-style shortcuts on Windows peers: swap ⌘↔Ctrl at the wire
+        // boundary. Presses and releases pass through the same remap (and
+        // release_all sends through here too), so nothing can get stuck.
+        let msg = match msg {
+            Msg::Input(InputEvent::Key { key, pressed }) => {
+                Msg::Input(InputEvent::Key { key: self.remap_key(key), pressed })
+            }
+            m => m,
+        };
         if let Some(name) = &self.focus {
             let dead = {
                 let sessions = self.sessions.lock().unwrap();
@@ -659,6 +669,30 @@ impl Router {
         }
     }
 
+    /// ⌘↔Ctrl swap for Windows peers (macOS host, `mac_shortcuts` on):
+    /// LGui↔LCtrl and RGui↔RCtrl, so ⌘C lands as Ctrl+C and ⌃ still reaches
+    /// the Win key. Identity everywhere else.
+    fn remap_key(&self, key: u16) -> u16 {
+        if !cfg!(target_os = "macos") || !self.ctl.mac_shortcuts.load(Ordering::Relaxed) {
+            return key;
+        }
+        let win_peer = self
+            .focus
+            .as_ref()
+            .and_then(|f| self.cfg.peers.iter().find(|p| &p.name == f))
+            .map_or(false, |p| p.os.as_deref() == Some("windows"));
+        if !win_peer {
+            return key;
+        }
+        match key {
+            0xE0 => 0xE3, // LCtrl -> LWin
+            0xE3 => 0xE0, // LCmd  -> LCtrl
+            0xE4 => 0xE7, // RCtrl -> RWin
+            0xE7 => 0xE4, // RCmd  -> RCtrl
+            k => k,
+        }
+    }
+
     fn session_exists(&self, name: &str) -> bool {
         self.sessions.lock().unwrap().contains_key(name)
     }
@@ -1018,6 +1052,7 @@ async fn watch_layout(
         match Config::load_or_init() {
             Ok(new_cfg) => {
                 ctl.edge_dwell_ms.store(new_cfg.edge_dwell_ms, Ordering::Relaxed);
+                ctl.mac_shortcuts.store(new_cfg.mac_shortcuts, Ordering::Relaxed);
                 *ctl.tablet_edge.write().unwrap() = new_cfg.tablet_edge.as_deref().and_then(parse_edge);
                 let _ = evt_tx.send(SessionEvent::LayoutChanged); // re-arm portals
                 let changed = {
