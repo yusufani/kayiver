@@ -391,6 +391,8 @@ const I18N = {
     tabletControlling: "kontrol ediliyor · çıkış: 3× Esc", tabletConnecting: "bağlanıyor…",
     tabletDrag: "sürükle=yerleştir · tıkla=bağla", tabletReady: "hazır", tabletPlaced: "tablet yerleşti — kenardan geçince kontrol: ",
     addDevice: "cihaz", addDeviceOk: "cihaz eklendi ✓",
+    addDeviceHint: "En kolayı: tableti bir kez USB ile bağla — Ayarlar → Tablet'te görünür, tek tıkla kablosuza geçer. Bu kutu, kablosuz hata ayıklaması zaten açık bir cihazın IP'si için.",
+    addDevicePh: "tablet IP (ör. 192.168.0.20)",
     connectBtn: "bağlan", disconnect: "bırak", wireless: "kablosuz", wirelessOn: "kablosuz açık: ",
     autostart: "Girişte başlat", autostartDesc: "oturum açılınca kayıver kendiliğinden çalışsın",
     remote: "Telefon / LAN kumandası", remoteDesc: "Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)",
@@ -428,6 +430,8 @@ const I18N = {
     tabletControlling: "controlling · exit: 3× Esc", tabletConnecting: "connecting…",
     tabletDrag: "drag=place · click=connect", tabletReady: "ready", tabletPlaced: "tablet placed — cross this edge to control: ",
     addDevice: "device", addDeviceOk: "device added ✓",
+    addDeviceHint: "Easiest: plug the tablet in over USB once — it shows up under Settings → Tablet and one click makes it wireless. This box is for a device that already has wireless debugging on.",
+    addDevicePh: "tablet IP (e.g. 192.168.0.20)",
     connectBtn: "connect", disconnect: "release", wireless: "wireless", wirelessOn: "wireless on: ",
     autostart: "Start at login", autostartDesc: "run kayiver automatically when you log in",
     remote: "Phone / LAN control", remoteDesc: "token-protected local API for the Android app (takes effect after a restart)",
@@ -1084,7 +1088,13 @@ function renderAddTile(open) {
   if (!open) { addTile.innerHTML = '<span>+ ' + t('addDevice') + '</span>'; addTile.onclick = () => renderAddTile(true); return; }
   addTile.onclick = null;
   addTile.innerHTML = '';
-  const inp = document.createElement('input'); inp.placeholder = 'ip:5555'; inp.style.cssText = 'width:96px;background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 7px;font:inherit;font-size:11px;';
+  // The IP path is only for a tablet already in wireless-debugging mode; the
+  // painless path is USB — say so instead of presenting a bare IP box.
+  const hint = document.createElement('div');
+  hint.textContent = t('addDeviceHint');
+  hint.style.cssText = 'font-size:10.5px;color:var(--muted);max-width:230px;line-height:1.45;margin-bottom:6px;';
+  addTile.appendChild(hint);
+  const inp = document.createElement('input'); inp.placeholder = t('addDevicePh'); inp.style.cssText = 'width:150px;background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 7px;font:inherit;font-size:11px;';
   const go = document.createElement('button'); go.className = 'dock-btn'; go.textContent = '↵'; go.style.padding = '4px 8px';
   const add = async () => {
     const ip = inp.value.trim(); if (!ip) { renderAddTile(false); return; }
