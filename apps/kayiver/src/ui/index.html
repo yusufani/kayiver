@@ -538,9 +538,16 @@ const sharedBtn = document.getElementById('sharedBtn');
 const machineByName = n => machines.find(m => m.name === n);
 const colorOf = name => COLORS[(machineByName(name) || {}).colorIdx % COLORS.length] || COLORS[0];
 
+// Surface any uncaught error in the footer instead of silently freezing the
+// whole editor (one null lookup used to kill the entire script on Windows).
+window.addEventListener('error', e => {
+  try { document.getElementById('msg').textContent = 'ui error: ' + e.message; } catch (_) {}
+});
 if (!/Mac/.test(navigator.platform)) {
-  document.getElementById('hotkeyHint').textContent = 'Ctrl+Alt+M';
-  document.getElementById('hkLabel').textContent = 'Ctrl+Alt+M';
+  // hotkeyHint is rendered later by the hint template via hk(), which is
+  // already platform-aware — only the static settings label needs fixing.
+  const el = document.getElementById('hkLabel');
+  if (el) el.textContent = 'Ctrl+Alt+M';
 }
 function setMsg(m, cls) { msgEl.textContent = m; msgEl.className = cls || ''; }
 
