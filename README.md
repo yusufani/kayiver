@@ -46,6 +46,14 @@ between two monitors of the same computer. Keyboard input follows the cursor.
   ([apps/android](apps/android)) for remote status + shared-monitor handoff.
 - **Autostart** — `kayiver autostart enable` and it's just *there* after boot.
 
+<p align="center">
+  <img src="assets/screenshots/editor.png" width="820" alt="Kayıver layout editor — drag monitors, touching edges become crossings; the shared panel and the live cursor are first-class">
+  <br>
+  <sub>The layout editor: drag each monitor to match your desk. Touching edges become crossings,
+  the blue <em>shared</em> panel belongs to whichever machine the monitor is showing, and the
+  status bar shows the live connection path (Wi-Fi / direct cable) with its RTT.</sub>
+</p>
+
 | Platform | Give input (host) | Receive input (client) |
 |----------|:-:|:-:|
 | macOS    | ✅ | ✅ |
@@ -172,7 +180,9 @@ Every commit ships to a real desk and has to survive it before it lands on
   with an idle heartbeat that defeats Wi-Fi power saving).
 - **Network:** ordinary Wi-Fi LAN, ~5 ms median RTT.
 
-The marketing page with the same setup lives in [site/index.html](site/index.html).
+The marketing page with the same setup lives in [site/index.html](site/index.html):
+
+<p align="center"><img src="assets/screenshots/site-hero.png" width="720" alt="kayiver marketing page hero"></p>
 
 ## Support
 
