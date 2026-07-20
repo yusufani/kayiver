@@ -392,6 +392,7 @@ const I18N = {
     tabletDrag: "sürükle=yerleştir · tıkla=bağla", tabletReady: "hazır", tabletPlaced: "tablet yerleşti — kenardan geçince kontrol: ",
     addDevice: "cihaz", addDeviceOk: "cihaz eklendi ✓",
     addDeviceHint: "En kolayı: tableti bir kez USB ile bağla — Ayarlar → Tablet'te görünür, tek tıkla kablosuza geçer. Bu kutu, kablosuz hata ayıklaması zaten açık bir cihazın IP'si için.",
+    addDeviceSteps: "Tablet nasıl eklenir:\n1) Tablette: Ayarlar → Tablet hakkında → Yapı numarasına 7 kez dokun → Geliştirici seçenekleri → USB hata ayıklama AÇIK\n2) USB kabloyla bu makineye bağla, tabletteki izin sorusuna İzin ver de\n3) Cihaz burada görününce: bağlan → kablosuz (kablo artık gereksiz)\n4) Tablet karosunu bir kenara sürükle — imleç o kenardan geçince tableti yönetirsin\nBu kutu: kablosuz hata ayıklaması ZATEN açık bir cihazın IP'si için.",
     addDevicePh: "tablet IP (ör. 192.168.0.20)",
     connectBtn: "bağlan", disconnect: "bırak", wireless: "kablosuz", wirelessOn: "kablosuz açık: ",
     autostart: "Girişte başlat", autostartDesc: "oturum açılınca kayıver kendiliğinden çalışsın",
@@ -431,6 +432,7 @@ const I18N = {
     tabletDrag: "drag=place · click=connect", tabletReady: "ready", tabletPlaced: "tablet placed — cross this edge to control: ",
     addDevice: "device", addDeviceOk: "device added ✓",
     addDeviceHint: "Easiest: plug the tablet in over USB once — it shows up under Settings → Tablet and one click makes it wireless. This box is for a device that already has wireless debugging on.",
+    addDeviceSteps: "How to add a tablet:\n1) On the tablet: Settings → About → tap Build number 7x → Developer options → USB debugging ON\n2) Plug it into this machine over USB, allow debugging on the tablet\n3) When the device appears here: connect → wireless (cable no longer needed)\n4) Drag the tablet tile to an edge — crossing that edge controls the tablet\nThis box: enter the IP of a device that ALREADY has wireless debugging on.",
     addDevicePh: "tablet IP (e.g. 192.168.0.20)",
     connectBtn: "connect", disconnect: "release", wireless: "wireless", wirelessOn: "wireless on: ",
     autostart: "Start at login", autostartDesc: "run kayiver automatically when you log in",
@@ -1085,6 +1087,7 @@ function placeAddTile() {
 }
 function renderAddTile(open) {
   placeAddTile();
+  addTile.title = t('addDeviceSteps');
   if (!open) { addTile.innerHTML = '<span>+ ' + t('addDevice') + '</span>'; addTile.onclick = () => renderAddTile(true); return; }
   addTile.onclick = null;
   addTile.innerHTML = '';
