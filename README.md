@@ -114,9 +114,9 @@ kayiver ui
 
 opens the visual layout editor — a native window on macOS, browser app-window
 elsewhere. Drag the machines to match your desk; touching edges become
-crossings, and "Ortak monitörü seç" marks a physically shared panel. Saving
-applies **live** to a running host, no restart needed. (Prefer a file?
-`kayiver config-path` works too.)
+crossings, and dropping one monitor onto another marks a physically shared
+panel. Saving applies **live** to a running host, no restart needed. (Prefer
+a file? `kayiver config-path` works too.)
 
 **4. Make it permanent:**
 
