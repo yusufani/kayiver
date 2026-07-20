@@ -462,14 +462,57 @@ pub fn launch_in_active_session() -> Result<()> {
 
     unsafe {
         let session = WTSGetActiveConsoleSessionId();
-        anyhow::ensure!(session != 0xFFFF_FFFF, "no active console session (no one logged in)");
+        anyhow::ensure!(session != 0xFFFF_FFFF, "no active console session");
 
+        // Interactive user logged in → run as that user on the default
+        // desktop. Nobody logged in (boot / sign-out) → run as SYSTEM on the
+        // SECURE desktop (winsta0\Winlogon), which only SYSTEM may attach to
+        // — that is what lets the password be typed through kayiver at the
+        // login screen. The pre-logon instance exits by itself once a user
+        // signs in (see `start_prelogon_handover`).
         let mut token = HANDLE::default();
-        WTSQueryUserToken(session, &mut token)
-            .map_err(|e| anyhow::anyhow!("WTSQueryUserToken failed (must run as SYSTEM): {e:?}"))?;
+        let mut desktop_name = "winsta0\\default";
+        let mut prelogon = false;
+        if WTSQueryUserToken(session, &mut token).is_err() {
+            use windows::Win32::Security::{
+                DuplicateTokenEx, SecurityImpersonation, SetTokenInformation, TokenPrimary,
+                TokenSessionId, TOKEN_ALL_ACCESS,
+            };
+            use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+            tracing::info!("no interactive user — starting the pre-logon (secure desktop) instance");
+            let mut own = HANDLE::default();
+            OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut own)
+                .map_err(|e| anyhow::anyhow!("OpenProcessToken: {e:?}"))?;
+            DuplicateTokenEx(own, TOKEN_ALL_ACCESS, None, SecurityImpersonation, TokenPrimary, &mut token)
+                .map_err(|e| anyhow::anyhow!("DuplicateTokenEx: {e:?}"))?;
+            let _ = CloseHandle(own);
+            SetTokenInformation(
+                token,
+                TokenSessionId,
+                &session as *const u32 as *const std::ffi::c_void,
+                std::mem::size_of::<u32>() as u32,
+            )
+            .map_err(|e| anyhow::anyhow!("SetTokenInformation(session): {e:?}"))?;
+            desktop_name = "winsta0\\Winlogon";
+            prelogon = true;
+
+            // The SYSTEM profile has no kayiver config — point the child at
+            // the newest real user's config, and give it a fixed log file.
+            // (Passed through the parent environment: the pre-logon child is
+            // created with lpEnvironment = NULL below, so it inherits ours.)
+            if let Some(dir) = newest_user_config_dir() {
+                tracing::info!("pre-logon config: {}", dir.display());
+                std::env::set_var("KAYIVER_CONFIG_DIR", &dir);
+            }
+            let logdir = std::path::Path::new(r"C:\ProgramData\kayiver");
+            let _ = std::fs::create_dir_all(logdir);
+            std::env::set_var("KAYIVER_LOGFILE", logdir.join("prelogon.log"));
+        }
 
         let mut env: *mut std::ffi::c_void = std::ptr::null_mut();
-        let _ = CreateEnvironmentBlock(&mut env, Some(token), false);
+        if !prelogon {
+            let _ = CreateEnvironmentBlock(&mut env, Some(token), false);
+        }
 
         let exe = std::env::current_exe()?;
         // Subcommand to launch in-session (default "run"; overridable for
@@ -479,7 +522,7 @@ pub fn launch_in_active_session() -> Result<()> {
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        let mut desktop: Vec<u16> = "winsta0\\default\0".encode_utf16().collect();
+        let mut desktop: Vec<u16> = format!("{desktop_name}\0").encode_utf16().collect();
 
         let mut si = STARTUPINFOW {
             cb: std::mem::size_of::<STARTUPINFOW>() as u32,
@@ -488,6 +531,8 @@ pub fn launch_in_active_session() -> Result<()> {
         };
         let mut pi = PROCESS_INFORMATION::default();
 
+        // Pre-logon: lpEnvironment = NULL inherits THIS process's env (SYSTEM
+        // env + the config/log overrides set above).
         let res = CreateProcessAsUserW(
             Some(token),
             None,
@@ -496,7 +541,7 @@ pub fn launch_in_active_session() -> Result<()> {
             None,
             false,
             CREATE_UNICODE_ENVIRONMENT | NORMAL_PRIORITY_CLASS,
-            Some(env),
+            if prelogon { None } else { Some(env) },
             None,
             &si as *const _ as *const STARTUPINFOW as *mut _,
             &mut pi,
@@ -514,6 +559,55 @@ pub fn launch_in_active_session() -> Result<()> {
         let _ = &mut si;
         Ok(())
     }
+}
+
+/// The most recently used real user's kayiver config dir — the pre-logon
+/// instance runs as SYSTEM, whose own profile has no pairing/config.
+fn newest_user_config_dir() -> Option<std::path::PathBuf> {
+    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for e in std::fs::read_dir(r"C:\Users").ok()?.flatten() {
+        let dir = e.path().join(r"AppData\Roaming\kayiver");
+        if let Ok(md) = std::fs::metadata(dir.join("config.toml")) {
+            let t = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            if best.as_ref().map_or(true, |(bt, _)| t > *bt) {
+                best = Some((t, dir));
+            }
+        }
+    }
+    best.map(|(_, d)| d)
+}
+
+/// Pre-logon (SYSTEM / secure desktop) instances exit as soon as a real user
+/// signs in, so the per-user At-logon instance can take over cleanly (its
+/// single-instance guard retries long enough to bridge the gap). No-op when
+/// not running as SYSTEM.
+pub fn start_prelogon_handover() {
+    let is_system = std::env::var("USERNAME")
+        .map(|u| u.eq_ignore_ascii_case("SYSTEM"))
+        .unwrap_or(true);
+    if !is_system {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("kayiver-prelogon-watch".into())
+        .spawn(|| {
+            use windows::Win32::Foundation::{CloseHandle, HANDLE};
+            use windows::Win32::System::RemoteDesktop::{
+                WTSGetActiveConsoleSessionId, WTSQueryUserToken,
+            };
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                unsafe {
+                    let mut tok = HANDLE::default();
+                    if WTSQueryUserToken(WTSGetActiveConsoleSessionId(), &mut tok).is_ok() {
+                        let _ = CloseHandle(tok);
+                        tracing::info!("user signed in — pre-logon instance handing over");
+                        std::process::exit(0);
+                    }
+                }
+            }
+        })
+        .ok();
 }
 
 pub fn doctor_permissions() {

@@ -26,6 +26,10 @@ pub fn is_enabled() -> bool {
 pub fn ensure_start_menu_shortcut() {
     #[cfg(target_os = "windows")]
     {
+        // The pre-logon SYSTEM instance must not seed the SYSTEM profile.
+        if std::env::var("USERNAME").map(|u| u.eq_ignore_ascii_case("SYSTEM")).unwrap_or(true) {
+            return;
+        }
         let Ok(exe) = std::env::current_exe() else { return };
         let Some(appdata) = std::env::var_os("APPDATA") else { return };
         let lnk = std::path::Path::new(&appdata)

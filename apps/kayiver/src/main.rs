@@ -170,7 +170,9 @@ fn run(no_gui: bool) -> Result<()> {
     // machine, so they skip the guard.
     if std::env::var_os("KAYIVER_SIM_CTL").is_none() {
         let mut acquired = false;
-        for _ in 0..12 {
+        // 20×300ms also bridges the logon handover: the pre-logon instance
+        // notices the sign-in within ~2s and exits while we retry.
+        for _ in 0..20 {
             match std::net::TcpListener::bind(("127.0.0.1", ui::UI_PORT + 3)) {
                 Ok(l) => {
                     Box::leak(Box::new(l));
@@ -188,6 +190,10 @@ fn run(no_gui: bool) -> Result<()> {
     // Windows Search finds apps through the Start Menu only; keep our
     // shortcut there so "kayiver" is always typeable into Start.
     autostart::ensure_start_menu_shortcut();
+    // Pre-logon (SYSTEM/secure-desktop) instances bow out once a user signs
+    // in; a no-op for normal per-user instances.
+    #[cfg(all(target_os = "windows", not(feature = "sim")))]
+    platform::start_prelogon_handover();
     let cfg = Config::load_or_init()?;
     if cfg.peers.is_empty() {
         // A host can run before its first pairing (useful to verify
