@@ -83,11 +83,15 @@ pub struct Config {
     /// edge.
     #[serde(default)]
     pub edge_dwell_ms: u64,
-    /// macOS host only: while controlling a Windows peer, swap ⌘↔Ctrl so
-    /// Mac muscle memory works (⌘C arrives as Ctrl+C; ⌃ becomes the Win
-    /// key). Default on.
+    /// macOS host only: remap Mac modifiers while controlling a Windows peer
+    /// so Mac muscle memory works (defaults: ⌘→Ctrl, ⌥→Win, ⌃→Ctrl).
+    /// Master switch; the per-modifier targets live in `win_modifiers`.
     #[serde(default = "default_true")]
     pub mac_shortcuts: bool,
+    /// What each Mac modifier sends to a Windows peer ("ctrl" | "alt" |
+    /// "win"). Only consulted while `mac_shortcuts` is on.
+    #[serde(default)]
+    pub win_modifiers: WinModifiers,
     /// Which desktop edge leads to the Android tablet ("left"/"right"/"top"/
     /// "bottom"), set by dragging the tablet tile in the editor. When set and a
     /// device is available, crossing that edge hands control to the tablet.
@@ -142,6 +146,24 @@ pub struct SharedMonitor {
     /// e.g. a fullscreen game).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_owner: Option<String>,
+}
+
+/// Per-modifier targets for the Mac→Windows remap.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WinModifiers {
+    #[serde(default = "wm_ctrl")]
+    pub cmd: String,
+    #[serde(default = "wm_win")]
+    pub opt: String,
+    #[serde(default = "wm_ctrl")]
+    pub ctrl: String,
+}
+fn wm_ctrl() -> String { "ctrl".into() }
+fn wm_win() -> String { "win".into() }
+impl Default for WinModifiers {
+    fn default() -> Self {
+        WinModifiers { cmd: wm_ctrl(), opt: wm_win(), ctrl: wm_ctrl() }
+    }
 }
 
 impl Default for SharedMonitor {
@@ -203,6 +225,7 @@ impl Default for Config {
             remote: RemoteApi::default(),
             edge_dwell_ms: 0,
             mac_shortcuts: true,
+            win_modifiers: WinModifiers::default(),
             tablet_edge: None,
         }
     }
@@ -291,6 +314,7 @@ mod tests {
             remote: RemoteApi::default(),
             edge_dwell_ms: 0,
             mac_shortcuts: true,
+            win_modifiers: WinModifiers::default(),
             tablet_edge: None,
         };
         let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), addrs: vec![], last_good: None, screens: vec![], os: None };

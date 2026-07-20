@@ -257,11 +257,11 @@ fn diagonal_cross_lands_at_entry_height() {
         "host must be forwarding after the handover"
     );
 
-    // Mac-shortcut remap: the sim host build runs on macOS and the peer's
-    // config says os = "windows", so ⌘ (HID 0xE3) must arrive as Ctrl (0xE0)
-    // and ⌃ (0xE0) as the Win key (0xE3) — both directions, press+release.
+    // Mac-modifier remap: the sim host build runs on macOS and the peer's
+    // config says os = "windows". Defaults: ⌘ (0xE3) → Ctrl (224),
+    // ⌥ (0xE2) → Win (227), ⌃ (0xE0) → Ctrl (224). Press+release both.
     client.injected();
-    for (send, want) in [(0xE3u16, 224i64), (0xE0u16, 227i64)] {
+    for (send, want) in [(0xE3u16, 224i64), (0xE2u16, 227i64), (0xE0u16, 224i64)] {
         for pressed in [true, false] {
             let r = host.ctl(serde_json::json!({ "op": "input_key", "key": send, "pressed": pressed }));
             assert!(r["ok"].as_bool().unwrap(), "key inject failed: {r}");

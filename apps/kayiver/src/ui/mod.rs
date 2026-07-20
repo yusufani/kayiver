@@ -655,6 +655,9 @@ fn api_get_settings() -> Result<String> {
         "autostart": crate::autostart::is_enabled(),
         "edge_dwell_ms": cfg.edge_dwell_ms,
         "mac_shortcuts": cfg.mac_shortcuts,
+        "win_mod_cmd": cfg.win_modifiers.cmd,
+        "win_mod_opt": cfg.win_modifiers.opt,
+        "win_mod_ctrl": cfg.win_modifiers.ctrl,
         "config_path": Config::path().display().to_string(),
     })
     .to_string())
@@ -680,6 +683,16 @@ fn api_set_settings(body: &[u8]) -> Result<String> {
     }
     if let Some(b) = v.get("mac_shortcuts").and_then(|x| x.as_bool()) {
         cfg.mac_shortcuts = b;
+    }
+    let valid = |s: &str| matches!(s, "ctrl" | "alt" | "win");
+    if let Some(m) = v.get("win_mod_cmd").and_then(|x| x.as_str()).filter(|s| valid(s)) {
+        cfg.win_modifiers.cmd = m.to_string();
+    }
+    if let Some(m) = v.get("win_mod_opt").and_then(|x| x.as_str()).filter(|s| valid(s)) {
+        cfg.win_modifiers.opt = m.to_string();
+    }
+    if let Some(m) = v.get("win_mod_ctrl").and_then(|x| x.as_str()).filter(|s| valid(s)) {
+        cfg.win_modifiers.ctrl = m.to_string();
     }
     cfg.save()?;
 

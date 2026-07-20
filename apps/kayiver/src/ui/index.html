@@ -364,8 +364,13 @@
       <label class="switch"><input type="checkbox" id="setAutostart"><span class="slider"></span></label>
     </div>
     <div class="srow">
-      <div class="lbl"><b id="macShortLbl">Mac shortcuts on Windows</b><small id="macShortDescS">⌘ acts as Ctrl on Windows peers (⌘C → Ctrl+C); ⌃ becomes the Win key</small></div>
+      <div class="lbl"><b id="macShortLbl">Mac shortcuts on Windows</b><small id="macShortDescS">remap Mac modifiers while controlling a Windows machine</small></div>
       <label class="switch"><input type="checkbox" id="setMacShort"><span class="slider"></span></label>
+    </div>
+    <div class="srow" id="modMapRow" style="gap:14px;flex-wrap:wrap">
+      <span style="font-size:13px;color:var(--muted)">⌘ →</span><select id="setModCmd" style="background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;font-size:12.5px;cursor:pointer"><option value="ctrl">Ctrl</option><option value="alt">Alt</option><option value="win">Win</option></select>
+      <span style="font-size:13px;color:var(--muted)">⌥ →</span><select id="setModOpt" style="background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;font-size:12.5px;cursor:pointer"><option value="ctrl">Ctrl</option><option value="alt">Alt</option><option value="win">Win</option></select>
+      <span style="font-size:13px;color:var(--muted)">⌃ →</span><select id="setModCtrl" style="background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font:inherit;font-size:12.5px;cursor:pointer"><option value="ctrl">Ctrl</option><option value="alt">Alt</option><option value="win">Win</option></select>
     </div>
     <div class="srow" style="flex-wrap:wrap">
       <div class="lbl"><b id="remoteLbl">Telefon / LAN kumandası</b><small id="remoteDescS">Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)</small></div>
@@ -404,7 +409,7 @@ const I18N = {
     addDevicePh: "tablet IP (ör. 192.168.0.20)",
     connectBtn: "bağlan", disconnect: "bırak", wireless: "kablosuz", wirelessOn: "kablosuz açık: ",
     autostart: "Girişte başlat", autostartDesc: "oturum açılınca kayıver kendiliğinden çalışsın",
-    macShort: "Windows'ta Mac kısayolları", macShortDesc: "Windows'a geçince ⌘ Ctrl gibi davranır (⌘C → Ctrl+C); ⌃ ise Win tuşu olur",
+    macShort: "Windows'ta Mac kısayolları", macShortDesc: "Windows'taki makineyi yönetirken Mac değiştiricilerini yeniden eşle",
     remote: "Telefon / LAN kumandası", remoteDesc: "Android uygulaması için token korumalı yerel API (yeniden başlatınca aktifleşir)",
     cfgFile: "Config dosyası", close: "Kapat", language: "Dil",
     thisMachine: "(bu makine)", running: "kayıver çalışıyor", stopped: "çalışmıyor", unreachable: "ulaşılamıyor",
@@ -448,7 +453,7 @@ const I18N = {
     addDevicePh: "tablet IP (e.g. 192.168.0.20)",
     connectBtn: "connect", disconnect: "release", wireless: "wireless", wirelessOn: "wireless on: ",
     autostart: "Start at login", autostartDesc: "run kayiver automatically when you log in",
-    macShort: "Mac shortcuts on Windows", macShortDesc: "⌘ acts as Ctrl on Windows peers (⌘C → Ctrl+C); ⌃ becomes the Win key",
+    macShort: "Mac shortcuts on Windows", macShortDesc: "remap Mac modifiers while controlling a Windows machine",
     remote: "Phone / LAN control", remoteDesc: "token-protected local API for the Android app (takes effect after a restart)",
     cfgFile: "Config file", close: "Close", language: "Language",
     thisMachine: "(this machine)", running: "kayiver running", stopped: "not running", unreachable: "unreachable",
@@ -1344,6 +1349,10 @@ async function openSettings() {
   document.getElementById('setHotkey').checked = settings.hotkey !== false;
   document.getElementById('setAutostart').checked = !!settings.autostart;
   document.getElementById('setMacShort').checked = settings.mac_shortcuts !== false;
+  document.getElementById('setModCmd').value = settings.win_mod_cmd || 'ctrl';
+  document.getElementById('setModOpt').value = settings.win_mod_opt || 'win';
+  document.getElementById('setModCtrl').value = settings.win_mod_ctrl || 'ctrl';
+  document.getElementById('modMapRow').style.opacity = settings.mac_shortcuts !== false ? '1' : '.4';
   document.getElementById('setRemote').checked = !!settings.remote_enabled;
   document.getElementById('setLang').value = lang;
   document.getElementById('setDwell').value = String(settings.edge_dwell_ms || 0);
@@ -1366,7 +1375,10 @@ async function saveSetting(patch, note) {
 }
 document.getElementById('setLang').addEventListener('change', e => setLang(e.target.value));
 document.getElementById('setDwell').addEventListener('change', e => saveSetting({ edge_dwell_ms: +e.target.value }, t('savedOk')));
-document.getElementById('setMacShort').addEventListener('change', e => saveSetting({ mac_shortcuts: e.target.checked }, t('savedOk')));
+document.getElementById('setMacShort').addEventListener('change', e => { document.getElementById('modMapRow').style.opacity = e.target.checked ? '1' : '.4'; saveSetting({ mac_shortcuts: e.target.checked }, t('savedOk')); });
+document.getElementById('setModCmd').addEventListener('change', e => saveSetting({ win_mod_cmd: e.target.value }, t('savedOk')));
+document.getElementById('setModOpt').addEventListener('change', e => saveSetting({ win_mod_opt: e.target.value }, t('savedOk')));
+document.getElementById('setModCtrl').addEventListener('change', e => saveSetting({ win_mod_ctrl: e.target.value }, t('savedOk')));
 // theme (dark default; follows the design's dark/light system)
 function applyTheme(th) {
   document.documentElement.setAttribute('data-theme', th);

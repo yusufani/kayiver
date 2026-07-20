@@ -52,6 +52,16 @@ enum SessionEvent {
     LayoutChanged,
 }
 
+/// "ctrl"/"alt"/"win" → left-modifier HID; anything else falls back.
+fn mod_hid(name: &str, fallback: u16) -> u16 {
+    match name {
+        "ctrl" => 0xE0,
+        "alt" => 0xE2,
+        "win" => 0xE3,
+        _ => fallback,
+    }
+}
+
 pub fn run(cfg: Config) -> Result<()> {
     let bounds = platform::desktop_bounds();
     info!(name = %cfg.name, ?bounds, "starting kayiver host");
@@ -123,6 +133,11 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     }
     ctl.edge_dwell_ms.store(cfg.edge_dwell_ms, Ordering::Relaxed);
     ctl.mac_shortcuts.store(cfg.mac_shortcuts, Ordering::Relaxed);
+    *ctl.win_mods.write().unwrap() = (
+        mod_hid(&cfg.win_modifiers.ctrl, 0xE0),
+        mod_hid(&cfg.win_modifiers.opt, 0xE2),
+        mod_hid(&cfg.win_modifiers.cmd, 0xE3),
+    );
     *ctl.tablet_edge.write().unwrap() = cfg.tablet_edge.as_deref().and_then(parse_edge);
     crate::ui::set_shared_state(
         cfg.shared_monitor.configured(),
@@ -669,9 +684,9 @@ impl Router {
         }
     }
 
-    /// ⌘↔Ctrl swap for Windows peers (macOS host, `mac_shortcuts` on):
-    /// LGui↔LCtrl and RGui↔RCtrl, so ⌘C lands as Ctrl+C and ⌃ still reaches
-    /// the Win key. Identity everywhere else.
+    /// Mac-modifier remap for Windows peers (macOS host, `mac_shortcuts`
+    /// on): each of ⌃/⌥/⌘ sends whatever the user picked in Settings
+    /// (defaults ⌃→Ctrl, ⌥→Win, ⌘→Ctrl). Identity everywhere else.
     fn remap_key(&self, key: u16) -> u16 {
         if !cfg!(target_os = "macos") || !self.ctl.mac_shortcuts.load(Ordering::Relaxed) {
             return key;
@@ -684,11 +699,14 @@ impl Router {
         if !win_peer {
             return key;
         }
+        let (ctrl_to, opt_to, cmd_to) = *self.ctl.win_mods.read().unwrap();
         match key {
-            0xE0 => 0xE3, // LCtrl -> LWin
-            0xE3 => 0xE0, // LCmd  -> LCtrl
-            0xE4 => 0xE7, // RCtrl -> RWin
-            0xE7 => 0xE4, // RCmd  -> RCtrl
+            0xE0 => ctrl_to,     // LCtrl
+            0xE2 => opt_to,      // LAlt/⌥
+            0xE3 => cmd_to,      // LCmd
+            0xE4 => ctrl_to + 4, // right-hand variants
+            0xE6 => opt_to + 4,
+            0xE7 => cmd_to + 4,
             k => k,
         }
     }
@@ -1053,6 +1071,11 @@ async fn watch_layout(
             Ok(new_cfg) => {
                 ctl.edge_dwell_ms.store(new_cfg.edge_dwell_ms, Ordering::Relaxed);
                 ctl.mac_shortcuts.store(new_cfg.mac_shortcuts, Ordering::Relaxed);
+                *ctl.win_mods.write().unwrap() = (
+                    mod_hid(&new_cfg.win_modifiers.ctrl, 0xE0),
+                    mod_hid(&new_cfg.win_modifiers.opt, 0xE2),
+                    mod_hid(&new_cfg.win_modifiers.cmd, 0xE3),
+                );
                 *ctl.tablet_edge.write().unwrap() = new_cfg.tablet_edge.as_deref().and_then(parse_edge);
                 let _ = evt_tx.send(SessionEvent::LayoutChanged); // re-arm portals
                 let changed = {
