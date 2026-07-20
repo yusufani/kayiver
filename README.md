@@ -180,7 +180,7 @@ Every commit ships to a real desk and has to survive it before it lands on
   with an idle heartbeat that defeats Wi-Fi power saving).
 - **Network:** ordinary Wi-Fi LAN, ~5 ms median RTT.
 
-The marketing page with the same setup lives at [site/index.html](site/index.html).
+The same setup is on the project page: **[yusufani.github.io/kayiver](https://yusufani.github.io/kayiver/)**.
 
 ## Support
 
