@@ -13,6 +13,13 @@ edge of one machine's screen and it appears on the next, exactly like moving
 between two monitors of the same computer. Keyboard input follows the cursor.
 (The name is Turkish: *"kayıvermek"* — to just glide over.)
 
+<p align="center">
+  <img src="assets/screenshots/demo.gif" width="820" alt="A real crossing, captured live from the layout editor: the cursor glides from the Mac onto the shared panel and the Windows machine takes over — over a direct cable at 1.5 ms">
+  <br>
+  <sub>Real footage from the layout editor during a live crossing: the cursor leaves the Mac,
+  the shared panel hands over, and the Windows machine takes focus — direct cable, 1.5 ms RTT.</sub>
+</p>
+
 - **Native feel, no lag** — a single ~2.5 MB Rust binary per machine, raw OS
   input APIs (CGEventTap / low-level hooks), relative mouse deltas over
   TCP+`TCP_NODELAY` on your LAN. No Electron, no runtime, no daemon zoo.
@@ -49,9 +56,9 @@ between two monitors of the same computer. Keyboard input follows the cursor.
 <p align="center">
   <img src="assets/screenshots/editor.png" width="820" alt="Kayıver layout editor — drag monitors, touching edges become crossings; the shared panel and the live cursor are first-class">
   <br>
-  <sub>The layout editor: drag each monitor to match your desk. Touching edges become crossings,
-  the blue <em>shared</em> panel belongs to whichever machine the monitor is showing, and the
-  status bar shows the live connection path (Wi-Fi / direct cable) with its RTT.</sub>
+  <sub>The layout editor mid-crossing: both machines green, the live cursor sitting on the
+  peer's screen, and the status bar showing the actual connection path —
+  "USB LAN · direct cable · 1.5 ms" — with a picker to move the session to another path.</sub>
 </p>
 
 | Platform | Give input (host) | Receive input (client) |
