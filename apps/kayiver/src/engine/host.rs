@@ -32,7 +32,12 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(15);
 const RETURN_COOLDOWN: Duration = Duration::from_millis(300);
 const EDGE_INSET: i32 = 2;
 
-type Sessions = Arc<Mutex<HashMap<String, UnboundedSender<Msg>>>>;
+/// name -> (session id, sender). The id lets a session's cleanup remove
+/// ONLY its own entry: a reconnect inserts the successor first, and the old
+/// session's teardown used to wipe it — leaving a live session invisible to
+/// the router ("peer offline" while RTT kept updating).
+type Sessions = Arc<Mutex<HashMap<String, (u64, UnboundedSender<Msg>)>>>;
+static SESSION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Layout is shared (and hot-reloaded) so `kayiver ui` edits apply live.
 type SharedLayout = Arc<RwLock<Layout>>;
 /// Shared-monitor config, hot-reloaded together with the layout.
@@ -109,7 +114,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         let sessions_c = sessions.clone();
         crate::engine::clipsync::watch(clip.clone(), move |text| {
             let s = sessions_c.lock().unwrap();
-            for tx in s.values() {
+            for (_, tx) in s.values() {
                 let _ = tx.send(Msg::Clipboard { text: text.clone() });
             }
         });
@@ -203,7 +208,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
                         .lock()
                         .unwrap()
                         .get(&peer)
-                        .map(|tx| tx.send(Msg::UseAddr { addr }).is_ok())
+                        .map(|(_, tx)| tx.send(Msg::UseAddr { addr }).is_ok())
                         .unwrap_or(false);
                     if !sent {
                         warn!("use-addr: peer '{peer}' offline");
@@ -304,7 +309,7 @@ impl Router {
             let dead = {
                 let sessions = self.sessions.lock().unwrap();
                 match sessions.get(name) {
-                    Some(tx) => tx.send(msg).is_err(),
+                    Some((_, tx)) => tx.send(msg).is_err(),
                     None => true,
                 }
             };
@@ -594,7 +599,7 @@ impl Router {
         let msg = Msg::SharedBlock { rect: block };
         let sent = {
             let sessions = self.sessions.lock().unwrap();
-            sessions.get(&peer).map(|tx| tx.send(msg).is_ok()).unwrap_or(false)
+            sessions.get(&peer).map(|(_, tx)| tx.send(msg).is_ok()).unwrap_or(false)
         };
         if !sent {
             warn!("shared monitor: peer '{peer}' offline");
@@ -726,7 +731,7 @@ impl Router {
             owner: self.shared_owner.clone(),
         };
         let sessions = self.sessions.lock().unwrap();
-        for tx in sessions.values() {
+        for (_, tx) in sessions.values() {
             let _ = tx.send(msg.clone());
         }
     }
@@ -1194,7 +1199,8 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
         .await?;
 
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Msg>();
-    sessions.lock().unwrap().insert(name.clone(), out_tx.clone());
+    let session_id = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
+    sessions.lock().unwrap().insert(name.clone(), (session_id, out_tx.clone()));
     let _ = evt_tx.send(SessionEvent::Connected { name: name.clone() });
     crate::ui::set_connected(&name, true);
     crate::ui::set_link(&name, link_local, link_remote);
@@ -1277,7 +1283,12 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
     }
     .await;
 
-    sessions.lock().unwrap().remove(&name);
+    {
+        let mut s = sessions.lock().unwrap();
+        if s.get(&name).map_or(false, |(id, _)| *id == session_id) {
+            s.remove(&name);
+        }
+    }
     crate::ui::set_connected(&name, false);
     let _ = evt_tx.send(SessionEvent::Disconnected { name });
     ping_task.abort();
