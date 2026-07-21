@@ -704,12 +704,13 @@ impl Router {
         }
         let (ctrl_to, opt_to, cmd_to) = *self.ctl.win_mods.read().unwrap();
         match key {
-            0xE0 => ctrl_to,     // LCtrl
-            0xE2 => opt_to,      // LAlt/⌥
-            0xE3 => cmd_to,      // LCmd
-            0xE4 => ctrl_to + 4, // right-hand variants
-            0xE6 => opt_to + 4,
-            0xE7 => cmd_to + 4,
+            // LEFT modifiers carry the user's shortcut muscle memory.
+            0xE0 => ctrl_to, // LCtrl
+            0xE2 => opt_to,  // LAlt/⌥
+            0xE3 => cmd_to,  // LCmd
+            // RIGHT modifiers stay untouched: right Alt is AltGr on Windows
+            // layouts (Turkish-Q types @ € with it) — remapping it to the Win
+            // key silently broke those characters.
             k => k,
         }
     }

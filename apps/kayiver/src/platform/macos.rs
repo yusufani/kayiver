@@ -601,14 +601,24 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
             // Modifier press/release arrives as flagsChanged; track held set.
             let vk = CGEventGetIntegerValueField(event, F_KEYCODE) as u16;
             if let Some(key) = keymap::native_to_hid(vk) {
-                let pressed = if let Some(i) = state.mods_down.iter().position(|&m| m == vk) {
-                    state.mods_down.remove(i);
-                    false
+                if key == keymap::HID_CAPSLOCK {
+                    // Caps lock fires a SINGLE flagsChanged per press (state
+                    // toggle), not a press/release pair. The held-set model
+                    // then alternated press/release across separate presses,
+                    // and Windows (which toggles on key-down only) reacted to
+                    // every OTHER press. Send a full pair per event instead.
+                    let _ = state.tx.send(Captured::Input(InputEvent::Key { key, pressed: true }));
+                    Some(InputEvent::Key { key, pressed: false })
                 } else {
-                    state.mods_down.push(vk);
-                    true
-                };
-                Some(InputEvent::Key { key, pressed })
+                    let pressed = if let Some(i) = state.mods_down.iter().position(|&m| m == vk) {
+                        state.mods_down.remove(i);
+                        false
+                    } else {
+                        state.mods_down.push(vk);
+                        true
+                    };
+                    Some(InputEvent::Key { key, pressed })
+                }
             } else {
                 None
             }
