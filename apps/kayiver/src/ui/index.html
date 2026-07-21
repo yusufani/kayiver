@@ -1274,8 +1274,24 @@ async function androidWireless(serial) {
 let linkPeerName = null;
 function renderLink(st) {
   const stat = document.getElementById('linkStat');
-  const entries = Object.entries(st.peers || {}).filter(([, p]) => p.connected);
-  if (!entries.length) { stat.style.display = 'none'; linkPeerName = null; return; }
+  const all = Object.entries(st.peers || {});
+  const entries = all.filter(([, p]) => p.connected);
+  if (!entries.length) {
+    // Don't vanish — say WHY the picker is gone (peer machine offline).
+    linkPeerName = null;
+    if (all.length) {
+      stat.style.display = 'flex';
+      document.getElementById('linkTxt').textContent = all[0][0] + ' · ' + t('offline');
+      document.getElementById('linkTxt').title = '';
+      document.getElementById('linkSel').style.display = 'none';
+      document.getElementById('linkGo').style.display = 'none';
+    } else {
+      stat.style.display = 'none';
+    }
+    return;
+  }
+  document.getElementById('linkSel').style.display = '';
+  document.getElementById('linkGo').style.display = '';
   const [name, p] = entries[0];
   linkPeerName = name;
   stat.style.display = 'flex';
