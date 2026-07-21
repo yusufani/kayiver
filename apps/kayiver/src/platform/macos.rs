@@ -892,27 +892,38 @@ fn to_lines(v: i32) -> i32 {
 
 // ------------------------------------------------------ clipboard / urls ----
 
-/// Read the general clipboard as text (via `pbpaste`).
+/// Read the general clipboard as text — straight from NSPasteboard.
+/// (pbpaste/pbcopy decode their byte streams through the process LOCALE; in
+/// a launchd environment with no LANG that turned UTF-8 Turkish into
+/// MacRoman mojibake: "ö" arrived as "√∂". NSString has no such step.)
 pub fn get_clipboard() -> Option<String> {
-    let out = std::process::Command::new("pbpaste").output().ok()?;
-    if out.status.success() {
-        String::from_utf8(out.stdout).ok()
-    } else {
-        None
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::NSString;
+    unsafe {
+        let pb = NSPasteboard::generalPasteboard();
+        let ty = NSString::from_str("public.utf8-plain-text");
+        // Read the RAW bytes and decode UTF-8 ourselves: stringForType runs
+        // the data through a pasteboard flavor conversion that decoded the
+        // UTF-8 payload as MacRoman ("ö" became "√∂") for some writers
+        // (pbcopy's legacy flavor among them).
+        if let Some(data) = pb.dataForType(&ty) {
+            if let Ok(s) = String::from_utf8(data.to_vec()) {
+                return Some(s);
+            }
+        }
+        pb.stringForType(&ty).map(|s| s.to_string())
     }
 }
 
-/// Replace the general clipboard with `text` (via `pbcopy`).
+/// Replace the general clipboard with `text` — straight to NSPasteboard.
 pub fn set_clipboard(text: &str) {
-    use std::io::Write;
-    if let Ok(mut child) = std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(stdin) = child.stdin.as_mut() {
-            let _ = stdin.write_all(text.as_bytes());
-        }
-        let _ = child.wait();
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::NSString;
+    unsafe {
+        let pb = NSPasteboard::generalPasteboard();
+        pb.clearContents();
+        let ty = NSString::from_str("public.utf8-plain-text");
+        let _ = pb.setString_forType(&NSString::from_str(text), &ty);
     }
 }
 

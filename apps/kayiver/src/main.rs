@@ -83,6 +83,10 @@ enum Command {
     /// visible desktop (used to diagnose service/scheduled-task launches).
     #[command(hide = true)]
     InjectTest,
+    /// Hidden: print the clipboard exactly as platform::get_clipboard sees it
+    /// (byte-hex + lossy text), for encoding diagnostics.
+    #[command(hide = true)]
+    ClipDump,
     /// Hidden (Windows): relaunch `kayiver run` in the active console session on
     /// the visible desktop. Only works when invoked as SYSTEM.
     #[command(hide = true)]
@@ -144,6 +148,16 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::InjectTest => inject_test(),
+        Command::ClipDump => {
+            match platform::get_clipboard() {
+                Some(s) => {
+                    println!("text: {s}");
+                    println!("hex : {}", s.bytes().take(48).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "));
+                }
+                None => println!("none"),
+            }
+            Ok(())
+        }
         Command::LaunchSession => {
             #[cfg(target_os = "windows")]
             {
