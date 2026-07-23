@@ -44,6 +44,7 @@ features = [
     "Win32_System_LibraryLoader",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
+    "Win32_System_Console",
     "Win32_System_StationsAndDesktops",
     "Win32_System_RemoteDesktop",
     "Win32_System_Threading",

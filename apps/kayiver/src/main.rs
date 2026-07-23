@@ -1,3 +1,9 @@
+// GUI subsystem on Windows: launching kayiver (double-click, autostart,
+// launch-session relaunch) must not open a console window that kills the app
+// when closed. CLI subcommands still print — main() re-attaches to the
+// parent terminal's console when there is one.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod android;
 mod autostart;
 mod engine;
@@ -94,6 +100,18 @@ enum Command {
 }
 
 fn main() -> Result<()> {
+    // GUI-subsystem build has no console of its own; when run FROM a terminal
+    // (pair / doctor / display ...), attach to that terminal so output shows.
+    // Only when stdout isn't already usable: AttachConsole rebinds the std
+    // handles, which would hijack an explicit `> file` redirection.
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows::Win32::System::Console::{AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE};
+        if GetStdHandle(STD_OUTPUT_HANDLE).map_or(true, |h| h.0.is_null() || h.is_invalid()) {
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "info".into());
     // Optional unbuffered log file (`KAYIVER_LOGFILE=/path`): useful for
