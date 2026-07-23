@@ -24,6 +24,10 @@ pub const UI_PORT: u16 = 24818;
 pub struct PeerLive {
     pub connected: bool,
     pub rtt_ms: Option<f64>,
+    /// Worst RTT sample over the trailing 10s — makes latency spikes (e.g.
+    /// Wi-Fi radio wake-ups) visible even between status polls.
+    pub rtt_max_ms: Option<f64>,
+    rtt_max_at: Option<std::time::Instant>,
     /// This side's socket address for the live session ("ip:port").
     pub local_addr: Option<String>,
     /// The peer's socket address for the live session.
@@ -79,12 +83,21 @@ pub fn set_connected(peer: &str, connected: bool) {
     e.connected = connected;
     if !connected {
         e.rtt_ms = None;
+        e.rtt_max_ms = None;
+        e.rtt_max_at = None;
     }
 }
 
 pub fn set_rtt(peer: &str, rtt_ms: f64) {
     let mut s = live().lock().unwrap();
-    s.peers.entry(peer.to_string()).or_default().rtt_ms = Some(rtt_ms);
+    let p = s.peers.entry(peer.to_string()).or_default();
+    p.rtt_ms = Some(rtt_ms);
+    let now = std::time::Instant::now();
+    let stale = p.rtt_max_at.map_or(true, |t| now.duration_since(t) > std::time::Duration::from_secs(10));
+    if stale || p.rtt_max_ms.map_or(true, |m| rtt_ms > m) {
+        p.rtt_max_ms = Some(rtt_ms);
+        p.rtt_max_at = Some(now);
+    }
 }
 
 /// Record which socket pair a peer's live session rides, so the editor can
@@ -875,6 +888,7 @@ fn api_status() -> String {
             (name, serde_json::json!({
                 "connected": p.connected,
                 "rtt_ms": p.rtt_ms,
+                "rtt_max_ms": p.rtt_max_ms,
                 "local_addr": p.local_addr,
                 "remote_addr": p.remote_addr,
                 "link_label": p.link_label,

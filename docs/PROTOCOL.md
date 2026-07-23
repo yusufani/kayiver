@@ -28,7 +28,7 @@ so a mouse move is ~6 bytes).
 | `Leave` | H → C | Stop applying input; release everything held. |
 | `Input(InputEvent)` | H → C | See below. |
 | `CursorLeft { edge, ratio }` | C → H | Client cursor pushed through a portal edge; client stops applying input immediately. |
-| `Ping(u64)` / `Pong(u64)` | H → C / C → H | Liveness (5 s interval, 15–20 s timeouts). |
+| `Ping(u64)` / `Pong(u64)` | H → C / C → H | Liveness + RTT. Cadence is variable and NOT a compatibility surface: 1 s idle, up to 125 Hz while input flows (Wi-Fi radio keepalive). Timeouts 15–20 s. |
 | `Bye` | both | Graceful close. |
 
 ## InputEvent

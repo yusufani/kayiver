@@ -170,7 +170,7 @@ Only TCP port **24817** (configurable) between the machines is required.
 | Cursor stuck on remote machine | Triple-tap `Esc` — input snaps back to the host. |
 | "CGEventTapCreate failed" on macOS | Grant Accessibility + Input Monitoring to your terminal (or the kayiver binary), then restart kayiver. |
 | Not discovered over Wi-Fi | Multicast may be filtered; set `addr` on the client's peer entry (see above). |
-| Occasional lag spikes | Wi-Fi adapter power-saving. Use Ethernet, or disable "Allow the computer to turn off this device" on the adapter. |
+| Occasional lag spikes | kayiver keeps the Wi-Fi radio awake by itself while (and shortly after) input flows — set `heartbeat = "always"` if the first crossing after a long idle still lags, `"off"` to disable. Ethernet remains the zero-jitter option. |
 | Keys stuck after crossing | Shouldn't happen (both sides release held keys on every focus change) — file a bug with `RUST_LOG=debug` output. |
 | Need logs from a background instance | Set `KAYIVER_LOGFILE=/path/to/kayiver.log` before launching; every event is written and flushed there. |
 

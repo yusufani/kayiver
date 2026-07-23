@@ -31,6 +31,19 @@ const PING_INTERVAL: Duration = Duration::from_secs(1);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(15);
 const RETURN_COOLDOWN: Duration = Duration::from_millis(300);
 const EDGE_INSET: i32 = 2;
+/// Fast-ping cadence that keeps a Wi-Fi radio out of doze while input is (or
+/// is about to be) flowing. Same rationale as the tablet path's keepalive
+/// (android.rs): the wake penalty after a pause is 50-200ms vs ~8ms hot RTT.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(8);
+/// Keep the radio hot this long after forwarding ends, so hopping back and
+/// forth between machines never pays the wake penalty.
+const HEARTBEAT_TAIL: Duration = Duration::from_secs(60);
+/// Idle tick: how often the heartbeat task re-checks whether to go fast.
+/// One ping is sent every 10th idle tick, preserving the old 1s liveness rate.
+const HEARTBEAT_TICK: Duration = Duration::from_millis(100);
+/// Pre-warm distance: the cursor loitering this close to a portal edge (or the
+/// shared panel) starts fast pings, so the radio is awake before the crossing.
+const WARM_EDGE_PX: i32 = 100;
 
 /// name -> (session id, sender). The id lets a session's cleanup remove
 /// ONLY its own entry: a reconnect inserts the successor first, and the old
@@ -120,7 +133,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         });
     }
 
-    tokio::spawn(accept_loop(listener, cfg.clone(), layout.clone(), sessions.clone(), peer_screens.clone(), clip.clone(), evt_tx.clone()));
+    tokio::spawn(accept_loop(listener, cfg.clone(), layout.clone(), sessions.clone(), peer_screens.clone(), clip.clone(), evt_tx.clone(), ctl.clone()));
     tokio::spawn(watch_layout(layout.clone(), shared.clone(), ctl.clone(), evt_tx));
 
     // Shared-monitor state: arm the hotkey. Ownership survives restarts —
@@ -1141,7 +1154,7 @@ async fn watch_layout(
     }
 }
 
-async fn accept_loop(listener: TcpListener, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, clip: crate::engine::clipsync::ClipState, evt_tx: UnboundedSender<SessionEvent>) {
+async fn accept_loop(listener: TcpListener, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, clip: crate::engine::clipsync::ClipState, evt_tx: UnboundedSender<SessionEvent>, ctl: Arc<CaptureCtl>) {
     loop {
         let Ok((stream, addr)) = listener.accept().await else { return };
         let cfg = cfg.clone();
@@ -1150,15 +1163,16 @@ async fn accept_loop(listener: TcpListener, cfg: Arc<Config>, layout: SharedLayo
         let peer_screens = peer_screens.clone();
         let clip = clip.clone();
         let evt_tx = evt_tx.clone();
+        let ctl = ctl.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, cfg, layout, sessions, peer_screens, clip, evt_tx).await {
+            if let Err(e) = handle_conn(stream, cfg, layout, sessions, peer_screens, clip, evt_tx, ctl).await {
                 debug!("connection from {addr}: {e}");
             }
         });
     }
 }
 
-async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, clip: crate::engine::clipsync::ClipState, evt_tx: UnboundedSender<SessionEvent>) -> Result<()> {
+async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, clip: crate::engine::clipsync::ClipState, evt_tx: UnboundedSender<SessionEvent>, ctl: Arc<CaptureCtl>) -> Result<()> {
     stream.set_nodelay(true)?;
     let (link_local, link_remote) = (stream.local_addr().ok(), stream.peer_addr().ok());
     let intro = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stream)).await??;
@@ -1212,20 +1226,56 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
     // uses, so the writer has ONE source. Never let a timer share the writer's
     // `select!` with an in-flight `send` — cancelling a half-written frame
     // desyncs the Noise nonce and the peer drops with `decrypt error`.
+    //
+    // The cadence is adaptive: 1s while idle (liveness, as before), but 125Hz
+    // while forwarding / near a portal edge / for HEARTBEAT_TAIL after, to
+    // keep a Wi-Fi radio out of doze — the same trick the tablet path uses.
+    // Fast pings are version-neutral: any client just answers Pong, and the
+    // pongs keep both NICs hot and feed the RTT badge at input rate.
     let ping_pending = pending.clone();
     let ping_tx = out_tx.clone();
+    let ping_ctl = ctl.clone();
+    let heartbeat = cfg.heartbeat.clone();
     let ping_task = tokio::spawn(async move {
-        let mut ping = tokio::time::interval(PING_INTERVAL);
         let mut seq = 0u64;
+        // Not `now - TAIL`: Instant can't represent times before boot.
+        let mut warm_until = Instant::now();
+        let mut idle_ticks = 0u32;
         loop {
-            ping.tick().await;
+            let forwarding = ping_ctl.forwarding.load(Ordering::SeqCst);
+            if forwarding {
+                warm_until = Instant::now() + HEARTBEAT_TAIL;
+            }
+            let fast = match heartbeat.as_str() {
+                "always" => true,
+                "off" => false,
+                _ => forwarding || Instant::now() < warm_until,
+            };
+            let send = if fast {
+                tokio::time::sleep(HEARTBEAT_INTERVAL).await;
+                true
+            } else {
+                tokio::time::sleep(HEARTBEAT_TICK).await;
+                if heartbeat.as_str() != "off" && cursor_near_portal(&ping_ctl) {
+                    // Pre-warm: the radio wakes while the cursor is still
+                    // approaching the edge, so the crossing itself is hot.
+                    warm_until = Instant::now() + HEARTBEAT_TAIL;
+                }
+                idle_ticks += 1;
+                idle_ticks >= 10
+            };
+            if !send {
+                continue;
+            }
+            idle_ticks = 0;
             seq += 1;
             {
                 let mut p = ping_pending.lock().unwrap();
                 p.insert(seq, Instant::now());
-                // Bound the map if pongs stop coming.
-                if p.len() > 32 {
-                    let cutoff = Instant::now() - Duration::from_secs(30);
+                // Bound the map if pongs stop coming; at 125Hz anything older
+                // than a few seconds is a dead measurement anyway.
+                if p.len() > 64 {
+                    let cutoff = Instant::now() - Duration::from_secs(5);
                     p.retain(|_, t| *t > cutoff);
                 }
             }
@@ -1294,6 +1344,30 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
     ping_task.abort();
     writer_task.abort();
     result
+}
+
+/// True while the local cursor loiters within WARM_EDGE_PX of an armed portal
+/// edge or the shared panel's blocked rect — i.e. a crossing may be imminent.
+fn cursor_near_portal(ctl: &CaptureCtl) -> bool {
+    let (x, y) = platform::cursor_pos();
+    let b = ctl.bounds;
+    let near_edge = ctl.portals.read().unwrap().iter().any(|e| match e {
+        Edge::Left => x - b.x < WARM_EDGE_PX,
+        Edge::Right => b.x + b.w - x < WARM_EDGE_PX,
+        Edge::Top => y - b.y < WARM_EDGE_PX,
+        Edge::Bottom => b.y + b.h - y < WARM_EDGE_PX,
+    });
+    if near_edge {
+        return true;
+    }
+    // The shared panel is a portal too: while the peer owns it, entering the
+    // blocked rect hands control over, so loitering near it warms the radio.
+    ctl.blocked.read().unwrap().map_or(false, |r| {
+        x >= r.x - WARM_EDGE_PX
+            && x < r.x + r.w + WARM_EDGE_PX
+            && y >= r.y - WARM_EDGE_PX
+            && y < r.y + r.h + WARM_EDGE_PX
+    })
 }
 
 /// Persist a peer's monitor shapes (and optionally its OS) so the layout

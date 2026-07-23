@@ -97,6 +97,14 @@ pub struct Config {
     /// device is available, crossing that edge hands control to the tablet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tablet_edge: Option<String>,
+    /// Wi-Fi radio keepalive for peer sessions. Over Wi-Fi the radio dozes
+    /// between packets and the first input after a pause pays a 50-200ms wake
+    /// penalty; fast pings keep it hot. "auto" (default) = fast while
+    /// forwarding or near a portal edge, with a 60s tail; "always" = fast
+    /// whenever a peer is connected; "off" = plain 1s liveness pings only.
+    /// Read at session start — a change needs a restart.
+    #[serde(default = "default_heartbeat")]
+    pub heartbeat: String,
 }
 
 /// Opt-in LAN exposure of the status/control API (used by the mobile
@@ -205,6 +213,10 @@ fn default_port() -> u16 {
     DEFAULT_PORT
 }
 
+fn default_heartbeat() -> String {
+    "auto".into()
+}
+
 pub fn machine_name() -> String {
     gethostname::gethostname()
         .to_string_lossy()
@@ -227,6 +239,7 @@ impl Default for Config {
             mac_shortcuts: true,
             win_modifiers: WinModifiers::default(),
             tablet_edge: None,
+            heartbeat: default_heartbeat(),
         }
     }
 }
@@ -316,6 +329,7 @@ mod tests {
             mac_shortcuts: true,
             win_modifiers: WinModifiers::default(),
             tablet_edge: None,
+            heartbeat: default_heartbeat(),
         };
         let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), addrs: vec![], last_good: None, screens: vec![], os: None };
         peer.set_psk(&[9u8; 32]);

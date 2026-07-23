@@ -1295,7 +1295,9 @@ function renderLink(st) {
   const [name, p] = entries[0];
   linkPeerName = name;
   stat.style.display = 'flex';
-  const rtt = p.rtt_ms != null ? ` · ${p.rtt_ms.toFixed(1)} ms` : '';
+  const max = p.rtt_max_ms != null && p.rtt_ms != null && p.rtt_max_ms > p.rtt_ms * 2
+    ? ` · max ${p.rtt_max_ms.toFixed(0)}` : '';
+  const rtt = p.rtt_ms != null ? ` · ${p.rtt_ms.toFixed(1)} ms${max}` : '';
   const label = p.link_label || 'link';
   document.getElementById('linkTxt').textContent = `${label}${rtt}`;
   document.getElementById('linkTxt').title =
