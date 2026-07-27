@@ -105,6 +105,13 @@ pub struct Config {
     /// Read at session start — a change needs a restart.
     #[serde(default = "default_heartbeat")]
     pub heartbeat: String,
+    /// Local input capture: "auto" (default) installs the OS-level keyboard and
+    /// mouse hooks, which is what makes kayiver's hotkeys work on THIS machine
+    /// rather than only on the one running the router. "off" makes the machine
+    /// receive-only, with no hooks at all. Insurance for a box where low-level
+    /// hooks are unwelcome — anticheat in a fullscreen game, notably.
+    #[serde(default = "default_capture")]
+    pub capture: String,
 }
 
 /// Opt-in LAN exposure of the status/control API (used by the mobile
@@ -217,6 +224,10 @@ fn default_heartbeat() -> String {
     "auto".into()
 }
 
+fn default_capture() -> String {
+    "auto".into()
+}
+
 pub fn machine_name() -> String {
     gethostname::gethostname()
         .to_string_lossy()
@@ -240,6 +251,7 @@ impl Default for Config {
             win_modifiers: WinModifiers::default(),
             tablet_edge: None,
             heartbeat: default_heartbeat(),
+            capture: default_capture(),
         }
     }
 }
@@ -330,6 +342,7 @@ mod tests {
             win_modifiers: WinModifiers::default(),
             tablet_edge: None,
             heartbeat: default_heartbeat(),
+            capture: default_capture(),
         };
         let mut peer = Peer { name: "win".into(), psk: String::new(), addr: Some("10.0.0.5:24817".into()), addrs: vec![], last_good: None, screens: vec![], os: None };
         peer.set_psk(&[9u8; 32]);

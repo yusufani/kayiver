@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 9;
+pub const PROTOCOL_VERSION: u16 = 10;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -123,6 +123,11 @@ pub enum Msg {
     /// Either direction: open this URL in the default browser. Sent when a link
     /// is dragged across the boundary onto this machine.
     OpenUrl { url: String },
+    /// Either direction: please make `owner` the machine the shared panel is
+    /// showing ("toggle" flips it). Sent by the side that did NOT arbitrate the
+    /// flip — the hotkey, the tray, the editor button and `kayiver monitor` all
+    /// work on either machine, not just the one running the router.
+    SharedRequest { owner: String },
 }
 
 impl Msg {

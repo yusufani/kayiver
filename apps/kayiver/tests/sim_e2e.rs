@@ -354,6 +354,29 @@ fn owner_survives_host_restart() {
     assert!(host.config_text().contains(r#"last_owner = "simwin""#));
 }
 
+/// Bug class #6: every route for switching the shared panel — hotkey, tray,
+/// editor button, `kayiver monitor` — used to work only on the machine running
+/// the router. On the other machine the hotkey reached no hook at all and the
+/// editor button 400'd into an empty `catch`, so the panel silently refused to
+/// switch. The client now captures locally (portals stay empty, so it can
+/// never grab the cursor) and asks the router over the wire.
+#[test]
+fn client_can_switch_the_shared_panel() {
+    let (mut host, mut client) = desk("clientflip", 27250);
+    // Panel starts with the host; press the hotkey on the CLIENT.
+    assert!(client.ctl(serde_json::json!({ "op": "hotkey" }))["ok"].as_bool().unwrap());
+    wait_until("host hands the panel over and blocks its own copy", Duration::from_secs(10), || {
+        !host.state()["blocked"].is_null()
+    });
+    assert!(host.config_text().contains(r#"last_owner = "simwin""#));
+
+    // And back again, so this isn't a one-way latch.
+    assert!(client.ctl(serde_json::json!({ "op": "hotkey" }))["ok"].as_bool().unwrap());
+    wait_until("host takes the panel back", Duration::from_secs(10), || {
+        host.state()["blocked"].is_null()
+    });
+}
+
 /// Bug class #5: heavy input traffic while the client's geometry watcher ticks
 /// used to cancel a frame read mid-bytes and desync the Noise nonce ("decrypt
 /// error" disconnect loop). Hammer the session and churn geometry; the session

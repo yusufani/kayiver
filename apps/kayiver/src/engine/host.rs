@@ -67,6 +67,9 @@ enum SessionEvent {
     /// The peer's cursor moved onto the shared panel (showing this host), at
     /// relative position (fx, fy) — take control back onto our copy of it.
     SharedCross { name: String, fx: f32, fy: f32 },
+    /// The peer asked for a shared-panel ownership change (its hotkey, tray,
+    /// editor button or `kayiver monitor`). We arbitrate; it just asks.
+    SharedRequest { name: String, owner: String },
     LayoutChanged,
 }
 
@@ -646,6 +649,10 @@ impl Router {
                     self.exit_forwarding();
                 }
                 self.refresh_portals();
+            }
+            SessionEvent::SharedRequest { name, owner } => {
+                info!("{name} asked for shared panel -> {owner}");
+                self.set_shared_owner(&owner);
             }
             SessionEvent::LayoutChanged => {
                 self.refresh_shared_rects();
@@ -1320,6 +1327,9 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
                     info!("{name}: geometry update, {} monitors: {monitors:?}", monitors.len());
                     cache_peer_screens(&name, &monitors, None, &peer_screens);
                     let _ = evt_tx.send(SessionEvent::LayoutChanged);
+                }
+                Msg::SharedRequest { owner } => {
+                    let _ = evt_tx.send(SessionEvent::SharedRequest { name: name.clone(), owner });
                 }
                 Msg::Clipboard { text } => crate::engine::clipsync::apply_remote(&clip, &text),
                 Msg::OpenUrl { url } => {

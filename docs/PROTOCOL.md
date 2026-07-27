@@ -1,4 +1,4 @@
-# Wire protocol (version 2)
+# Wire protocol (version 10)
 
 Transport: TCP, `TCP_NODELAY`, default port **24817**. All frames are
 `u16 big-endian length` + payload, max 65535 bytes. Payloads are
@@ -20,16 +20,26 @@ so a mouse move is ~6 bytes).
 
 | Msg | Direction | Purpose |
 |---|---|---|
-| `Hello { version, name, os, screen: Rect }` | C → H | First encrypted message. Version mismatch = disconnect. |
+| `Hello { version, name, os, screen: Rect, monitors: [Rect] }` | C → H | First encrypted message. Version mismatch = disconnect. |
 | `Welcome { version, name, portal_edges: [Edge] }` | H → C | Which of the client's own desktop edges must report `CursorLeft`. |
-| `DisplayPower { index, on }` | H → C | Shared-monitor flow: attach (`on=true`) or detach one of the client's displays from its desktop. |
-| `DisplayPowerResult { index, on, error }` | C → H | Outcome of a `DisplayPower` request (`error=None` on success). |
 | `Enter { edge, ratio }` | H → C | Cursor enters client's screen through `edge` at `ratio` (0..1 along that edge). Client warps its cursor there and starts applying input. |
+| `EnterAt { x, y }` | H → C | Warp to an absolute point and take input (crossing onto the shared panel). |
 | `Leave` | H → C | Stop applying input; release everything held. |
 | `Input(InputEvent)` | H → C | See below. |
 | `CursorLeft { edge, ratio }` | C → H | Client cursor pushed through a portal edge; client stops applying input immediately. |
+| `Monitors { screen, monitors }` | C → H | The client's desktop geometry changed (display attached/detached, primary switched). |
+| `SharedBlock { rect }` | H → C | Treat `rect` as the shared panel showing the OTHER machine: don't rest the cursor on it. `None` clears it. No display is ever detached. |
+| `SharedCross { fx, fy }` | C → H | The client's cursor moved onto the shared panel, at relative position in 0..1. |
+| `SharedRequest { owner }` | both | Please make `owner` the machine the panel shows (`"toggle"` flips). Lets the hotkey, tray, editor button and `kayiver monitor` work on EITHER machine — the sender asks, the router arbitrates. |
+| `StateSync { state, shared_configured, owner }` | H → C | The host's whole editor view as JSON, so both machines draw the same map. |
+| `UseAddr { addr }` | H → C | Reconnect to me here (the user picked Wi-Fi vs cable in the editor). |
+| `Clipboard { text }` | both | The sender's clipboard changed; mirror it. Echo-guarded on both ends. |
+| `OpenUrl { url }` | both | Open this URL — a link was dragged across the boundary. |
 | `Ping(u64)` / `Pong(u64)` | H → C / C → H | Liveness + RTT. Cadence is variable and NOT a compatibility surface: 1 s idle, up to 125 Hz while input flows (Wi-Fi radio keepalive). Timeouts 15–20 s. |
 | `Bye` | both | Graceful close. |
+
+Directions above describe today's roles, not a protocol constraint: the session
+is full duplex and the roles are set at pairing time, not negotiated.
 
 ## InputEvent
 

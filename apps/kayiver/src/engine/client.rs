@@ -4,8 +4,17 @@
 //! The client owns its cursor position (integer accumulation of relative
 //! deltas, clamped to its own desktop bounds), which is what lets machines
 //! with different resolutions and scaling factors interoperate.
+//!
+//! It also runs its own input capture — with an EMPTY portal list, so no edge
+//! can ever trigger a crossing from here. The hook exists so actions the user
+//! takes on THIS machine (the shared-panel hotkey, the tray, the editor
+//! button, `kayiver monitor`) reach the router as a `SharedRequest` instead of
+//! silently doing nothing, which is what happened when only the router's
+//! machine had hooks.
 
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -18,7 +27,20 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use crate::platform::{self, Injector};
+use crate::engine::Captured;
+use crate::platform::{self, CaptureCtl, Injector};
+
+/// Outbound channel of the CURRENT session, if any. The capture hook and the
+/// editor's command channel both outlive any single session, so they reach the
+/// wire through this slot rather than owning a sender.
+type Outbound = Arc<Mutex<Option<mpsc::UnboundedSender<Msg>>>>;
+
+/// Send on the live session's channel. False when there is none — the request
+/// is dropped rather than queued, because a panel flip that arrives minutes
+/// later, after a reconnect, would be worse than one that never happened.
+fn send_out(out: &Outbound, m: Msg) -> bool {
+    out.lock().unwrap().as_ref().is_some_and(|tx| tx.send(m).is_ok())
+}
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 /// Per-candidate probe: short, so a stale link-local address doesn't stall
@@ -40,6 +62,20 @@ pub fn run(cfg: Config) -> Result<()> {
     // Status indicator (Windows tray / no-op elsewhere).
     platform::indicator::start(&host_peer.name);
 
+    // Local capture, hotkeys only: `portals` stays empty for the whole life of
+    // the process, so `maybe_enter_portal` can never set `forwarding` and this
+    // machine never swallows its own input. Losing capture is not fatal — the
+    // session still works, only the local hotkey goes quiet.
+    let ctl = Arc::new(CaptureCtl::new(platform::desktop_bounds()));
+    ctl.shared_hotkey.store(cfg.shared_monitor.configured(), Ordering::SeqCst);
+    let (cap_tx, mut cap_rx) = mpsc::unbounded_channel();
+    if cfg.capture == "off" {
+        info!("capture = \"off\": receive-only, no input hooks on this machine");
+    } else if let Err(e) = platform::start_capture(ctl.clone(), cap_tx) {
+        warn!("input capture unavailable — the shared-monitor hotkey won't work here: {e:#}");
+    }
+    let outbound: Outbound = Arc::new(Mutex::new(None));
+
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     rt.block_on(async {
         // Serve the editor locally too, so opening it on the client shows the
@@ -53,6 +89,36 @@ pub fn run(cfg: Config) -> Result<()> {
         });
         info!("layout editor: {}", crate::ui::url());
 
+        // The editor's panel buttons and `kayiver monitor` used to 400 with
+        // "host not running" on this side; now they go out as a request.
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
+        crate::ui::set_cmd_sender(cmd_tx);
+        let cmd_out = outbound.clone();
+        tokio::spawn(async move {
+            while let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    crate::ui::UiCmd::SetSharedOwner(owner) => {
+                        if !send_out(&cmd_out, Msg::SharedRequest { owner }) {
+                            warn!("shared-panel request dropped: not connected");
+                        }
+                    }
+                    _ => warn!("that control only works on the machine running the router"),
+                }
+            }
+        });
+
+        // Shared-panel hotkey pressed on THIS machine.
+        let hot_out = outbound.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = cap_rx.recv().await {
+                if matches!(ev, Captured::SharedHotkey)
+                    && !send_out(&hot_out, Msg::SharedRequest { owner: "toggle".into() })
+                {
+                    warn!("shared hotkey pressed but there is no live session");
+                }
+            }
+        });
+
         let mut backoff = Duration::from_secs(1);
         // host_peer is re-read each round so learned addresses apply live.
         let host_name = host_peer.name.clone();
@@ -61,7 +127,7 @@ pub fn run(cfg: Config) -> Result<()> {
                 .ok()
                 .and_then(|c| c.peer(&host_name).cloned())
                 .unwrap_or_else(|| host_peer.clone());
-            match connect_once(&cfg, &peer).await {
+            match connect_once(&cfg, &peer, &outbound, &ctl).await {
                 Ok(()) => {
                     info!("session ended, reconnecting");
                     crate::ui::set_link_error(Some("session ended — reconnecting".into()));
@@ -156,7 +222,7 @@ fn remember_good_addr(peer_name: &str, addr: SocketAddr) {
     }
 }
 
-async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
+async fn connect_once(cfg: &Config, peer: &Peer, outbound: &Outbound, ctl: &CaptureCtl) -> Result<()> {
     let addr = find_host(peer).await.map_err(|e| anyhow::anyhow!(e))?;
     let mut stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
         .await
@@ -203,6 +269,8 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
     // All outbound frames go through one writer task, so the read loop and the
     // clipboard watcher can both send without sharing the writer half.
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Msg>();
+    // Publish the channel so the hotkey hook and the editor can reach the wire.
+    *outbound.lock().unwrap() = Some(out_tx.clone());
     let writer_task = tokio::spawn(async move {
         while let Some(m) = out_rx.recv().await {
             if writer.send(&m).await.is_err() {
@@ -292,6 +360,10 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
             }
             Msg::StateSync { state, shared_configured, owner } => {
                 debug!("state synced from host ({} bytes)", state.len());
+                // The router's view is authoritative about whether a panel
+                // exists at all, so arm/disarm the local hotkey from it: never
+                // swallow Ctrl+Alt+M on a machine with nothing to switch.
+                ctl.shared_hotkey.store(shared_configured, Ordering::SeqCst);
                 crate::ui::set_synced_state(state);
                 crate::ui::set_shared_state(shared_configured, Some(peer.name.clone()), Some(owner));
             }
@@ -347,6 +419,7 @@ async fn connect_once(cfg: &Config, peer: &Peer) -> Result<()> {
     }
     }
     .await;
+    *outbound.lock().unwrap() = None;
     writer_task.abort();
     result
 }

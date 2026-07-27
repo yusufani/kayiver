@@ -788,8 +788,18 @@ function updatePanelOwner() {
   renderDock();
 }
 async function setOwner(name) {
+  const prev = sharedLive.owner;
   sharedLive.owner = name; updatePanelOwner(); // optimistic
-  try { await fetch('/api/shared', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: name }) }); } catch (_) {}
+  // Never swallow the failure: the button used to highlight, the request 400,
+  // and the next poll would silently snap it back — indistinguishable from
+  // "kayiver ignored me".
+  try {
+    const r = await fetch('/api/shared', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: name }) });
+    if (!r.ok) throw new Error((await r.text()).trim() || ('HTTP ' + r.status));
+  } catch (e) {
+    sharedLive.owner = prev; updatePanelOwner();
+    msgEl.textContent = 'could not switch the panel: ' + e.message;
+  }
 }
 async function unshare() {
   await fetch('/api/shared-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clear: true }) });
