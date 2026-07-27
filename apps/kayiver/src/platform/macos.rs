@@ -156,6 +156,14 @@ const F_MOUSE_BUTTON: u32 = 3;
 const F_MOUSE_DELTA_X: u32 = 4;
 const F_MOUSE_DELTA_Y: u32 = 5;
 const F_KEYCODE: u32 = 9;
+/// kCGEventSourceUserData — a free i64 that rides along with a posted event.
+/// We stamp `TAG_OURS` on everything we inject so our own tap can tell our
+/// synthetic events apart from real hardware (Windows gets this for free from
+/// LLMHF_INJECTED). Without it, a machine that both captures AND injects
+/// re-captures its own injection and feeds it back to the peer — an infinite
+/// echo the moment either side can drive the other.
+const F_SOURCE_USER_DATA: u32 = 42;
+const TAG_OURS: i64 = 0x4B41_5949; // "KAYI"
 const F_SCROLL_AXIS1: u32 = 11; // vertical, line units
 const F_SCROLL_AXIS2: u32 = 12; // horizontal, line units
 
@@ -521,6 +529,13 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         return event;
     }
 
+    // Our own injected events: pass straight through, untouched. Must come
+    // before the hotkey checks and the forwarding translate, or a machine
+    // being driven by its peer would echo every event back.
+    if CGEventGetIntegerValueField(event, F_SOURCE_USER_DATA) == TAG_OURS {
+        return event;
+    }
+
     // Shared-monitor hotkey (Cmd+Alt+M) works in both modes: the tap sees
     // every physical key regardless of where the cursor currently lives.
     if etype == ET_KEY_DOWN && state.ctl.shared_hotkey.load(Ordering::Relaxed) {
@@ -741,6 +756,10 @@ impl Injector {
         unsafe {
             if !e.is_null() {
                 CGEventSetFlags(e, self.flags);
+                // Stamp it as ours so our own capture tap skips it (see
+                // F_SOURCE_USER_DATA): this machine may be capturing at the
+                // same time it is being driven by a peer.
+                CGEventSetIntegerValueField(e, F_SOURCE_USER_DATA, TAG_OURS);
                 CGEventPost(TAP_HID, e);
                 CFRelease(e);
             }
