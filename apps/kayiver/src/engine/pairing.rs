@@ -59,7 +59,19 @@ pub fn pair_as_display() -> Result<()> {
             let my_info = PairInfo { name: cfg.name.clone(), port: cfg.port };
             match pairing::exchange(&mut stream, &code, Role::Display, &my_info).await {
                 Ok((psk, theirs)) => {
-                    let mut peer = Peer { name: theirs.name.clone(), psk: String::new(), addr: None, addrs: vec![], last_good: None, screens: vec![], os: None };
+                    // Record how to reach them, mirroring `join`. Leaving this
+                    // None made the pairing one-way: this side could only ever
+                    // be dialed, never dial — so it could never take the
+                    // initiative once both machines can drive each other.
+                    let mut peer = Peer {
+                        name: theirs.name.clone(),
+                        psk: String::new(),
+                        addr: Some(SocketAddr::new(addr.ip(), theirs.port).to_string()),
+                        addrs: vec![],
+                        last_good: None,
+                        screens: vec![],
+                        os: None,
+                    };
                     peer.set_psk(&psk);
                     cfg.upsert_peer(peer);
                     ensure_layout_link(&mut cfg, &theirs.name);
@@ -113,6 +125,11 @@ pub fn join(address: &str) -> Result<()> {
         };
         peer.set_psk(&psk);
         cfg.upsert_peer(peer);
+        // The joiner needs the link too: a machine with no links has no portal
+        // edges of its own, so it could never start a crossing. Both sides
+        // writing the SAME link is correct — `Layout::target` resolves it in
+        // both directions.
+        ensure_layout_link(&mut cfg, &theirs.name);
         cfg.save()?;
         println!("Paired with host '{}'.", theirs.name);
         println!("Start with `kayiver run` (or `kayiver autostart enable`).");
