@@ -28,7 +28,9 @@
       source automatically when focus crosses to the machine on its other
       cable (`[monitor]` config mapping machines → VCP 0x60 values)
 - [ ] Android client (AccessibilityService + UniFFI; see PLATFORMS.md)
-- [ ] Any-machine-as-host (role negotiation instead of static roles)
+- [x] Any-machine-as-host — one engine on both sides; either can take control.
+      Still to do: symmetric transport (both listen and dial, with dedup) and
+      seq-based shared-panel ownership so neither side has to arbitrate.
 
 ## v0.4+
 - [ ] iPad controller mode (touchscreen as trackpad for the mesh)

@@ -10,26 +10,49 @@
 //! swallows everything and the router relays it to that peer's session.
 
 use std::collections::{HashMap, HashSet};
+use std::net::ToSocketAddrs;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use kayiver_core::config::{Config, SharedMonitor};
-use kayiver_core::layout::{Edge, Layout};
+use kayiver_core::config::{Config, Mode, Peer, SharedMonitor};
+use kayiver_core::layout::{point_in, point_on_edge, ratio_on_edge, Edge, Layout, Link};
 use kayiver_core::proto::{InputEvent, Intro, Msg, MouseButton, PROTOCOL_VERSION};
 use kayiver_core::secure;
-use kayiver_core::wire::read_frame;
+use kayiver_core::wire::{read_frame, write_frame};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::{debug, info, warn};
 
 use crate::engine::Captured;
-use crate::platform::{self, CaptureCtl};
+use crate::platform::{self, CaptureCtl, Injector};
+
+/// A peer is driving this machine: which one, and where we believe the cursor
+/// is. The position is dead-reckoned from the relative deltas it sends — this
+/// side owns the absolute coordinate, which is what lets two machines with
+/// different resolutions and scaling interoperate.
+struct Driven {
+    peer: String,
+    pos: (i32, i32),
+}
+
+/// What an input event from the driving peer triggered on this desk.
+enum DrivenCross {
+    /// The cursor pushed out through one of our own edges — hand it back.
+    Portal(Edge, f32),
+    /// The cursor moved onto our copy of the shared panel, which is showing
+    /// the other machine.
+    Shared(f32, f32),
+}
 
 const PING_INTERVAL: Duration = Duration::from_secs(1);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(15);
 const RETURN_COOLDOWN: Duration = Duration::from_millis(300);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
+/// Per-candidate probe: short, so a stale address doesn't stall a whole
+/// reconnect round.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const EDGE_INSET: i32 = 2;
 /// Fast-ping cadence that keeps a Wi-Fi radio out of doze while input is (or
 /// is about to be) flowing. Same rationale as the tablet path's keepalive
@@ -70,6 +93,9 @@ enum SessionEvent {
     /// The peer asked for a shared-panel ownership change (its hotkey, tray,
     /// editor button or `kayiver monitor`). We arbitrate; it just asks.
     SharedRequest { name: String, owner: String },
+    /// Anything the session reader didn't consume itself, handed to the router
+    /// — this is where being DRIVEN by a peer is handled (Enter/Input/Leave).
+    Inbound { name: String, msg: Msg },
     LayoutChanged,
 }
 
@@ -85,14 +111,26 @@ fn mod_hid(name: &str, fallback: u16) -> u16 {
 
 pub fn run(cfg: Config) -> Result<()> {
     let bounds = platform::desktop_bounds();
-    info!(name = %cfg.name, ?bounds, "starting kayiver host");
+    info!(name = %cfg.name, ?bounds, "starting kayiver");
+
+    // Status indicator (Windows tray / no-op elsewhere).
+    if let Some(p) = cfg.peers.first() {
+        platform::indicator::start(&p.name);
+    }
 
     let ctl = Arc::new(CaptureCtl::new(bounds));
     let (cap_tx, cap_rx) = mpsc::unbounded_channel();
-    platform::start_capture(ctl.clone(), cap_tx.clone()).context("input capture failed to start")?;
-    // Hands control to the peer when the cursor moves onto a shared monitor
-    // that's showing it (via Captured::SharedEnter through the same channel).
-    platform::start_cursor_guard(ctl.clone(), cap_tx);
+    if cfg.capture == "off" {
+        info!("capture = \"off\": this machine can be driven but never drives");
+    } else if let Err(e) = platform::start_capture(ctl.clone(), cap_tx.clone()) {
+        // Not fatal: a machine that cannot capture is still a perfectly good
+        // screen for its peer to drive.
+        warn!("input capture failed to start ({e:#}) — this machine can be driven but cannot drive");
+    } else {
+        // Hands control to the peer when the cursor moves onto a shared monitor
+        // that's showing it (via Captured::SharedEnter through the same channel).
+        platform::start_cursor_guard(ctl.clone(), cap_tx);
+    }
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(host_main(cfg, ctl, cap_rx))
@@ -100,19 +138,32 @@ pub fn run(cfg: Config) -> Result<()> {
 
 async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedReceiver<Captured>) -> Result<()> {
     let cfg = Arc::new(cfg);
-    let listener = TcpListener::bind(("0.0.0.0", cfg.port))
-        .await
-        .with_context(|| {
-            format!(
-                "port {} is busy — kayiver is probably already running (check with: pgrep -fl kayiver)",
-                cfg.port
-            )
-        })?;
-    // Keep the daemon alive for the lifetime of the host: dropping it would
+    // Transport role is now the ONLY thing the mode decides: the machine that
+    // ran `kayiver pair` listens, the one that ran `join` dials. Both run this
+    // same engine and either can take control of the other — a session is full
+    // duplex, so which end opened it is invisible above the handshake.
+    let listening = cfg.mode == Mode::Host;
+    let listener = if listening {
+        Some(
+            TcpListener::bind(("0.0.0.0", cfg.port))
+                .await
+                .with_context(|| {
+                    format!(
+                        "port {} is busy — kayiver is probably already running (check with: pgrep -fl kayiver)",
+                        cfg.port
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
+    // Keep the daemon alive for the lifetime of the process: dropping it would
     // withdraw the mDNS advertisement.
-    let _mdns = kayiver_core::discovery::advertise(&cfg.name, cfg.port)
-        .map_err(|e| warn!("mDNS advertisement failed (static addrs still work): {e}"))
-        .ok();
+    let _mdns = listening.then(|| {
+        kayiver_core::discovery::advertise(&cfg.name, cfg.port)
+            .map_err(|e| warn!("mDNS advertisement failed (static addrs still work): {e}"))
+            .ok()
+    });
 
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
     let layout: SharedLayout = Arc::new(RwLock::new(cfg.layout.clone()));
@@ -136,7 +187,18 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         });
     }
 
-    tokio::spawn(accept_loop(listener, cfg.clone(), layout.clone(), sessions.clone(), peer_screens.clone(), clip.clone(), evt_tx.clone(), ctl.clone()));
+    match listener {
+        Some(l) => {
+            tokio::spawn(accept_loop(l, cfg.clone(), layout.clone(), sessions.clone(), peer_screens.clone(), clip.clone(), evt_tx.clone(), ctl.clone()));
+        }
+        None => {
+            if let Some(p) = cfg.peers.first() {
+                tokio::spawn(dial_loop(p.name.clone(), cfg.clone(), layout.clone(), sessions.clone(), peer_screens.clone(), clip.clone(), evt_tx.clone(), ctl.clone()));
+            } else {
+                warn!("no peer paired — run `kayiver join <host-ip>`");
+            }
+        }
+    }
     tokio::spawn(watch_layout(layout.clone(), shared.clone(), ctl.clone(), evt_tx));
 
     // Shared-monitor state: arm the hotkey. Ownership survives restarts —
@@ -175,6 +237,10 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         ctl,
         sessions,
         focus: None,
+        driven: None,
+        injector: None,
+        arbiter: cfg.mode == Mode::Host,
+        my_edges: Vec::new(),
         down_keys: HashSet::new(),
         down_buttons: HashSet::new(),
         pending_drop_url: None,
@@ -215,7 +281,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
                 None => break,
             },
             cmd = cmd_rx.recv() => match cmd {
-                Some(crate::ui::UiCmd::SetSharedOwner(owner)) => router.set_shared_owner(&owner),
+                Some(crate::ui::UiCmd::SetSharedOwner(owner)) => router.request_shared_owner(&owner),
                 Some(crate::ui::UiCmd::TabletControl(on)) => router.set_tablet_control(on),
                 Some(crate::ui::UiCmd::UseAddr { peer, addr }) => {
                     info!("asking {peer} to reconnect via {addr}");
@@ -289,7 +355,23 @@ struct Router {
     shared_owner: String,
     ctl: Arc<CaptureCtl>,
     sessions: Sessions,
+    /// Set while WE are driving that peer. Mutually exclusive with `driven`:
+    /// this desk cannot both send input and receive it.
     focus: Option<String>,
+    /// Set while a peer is driving US.
+    driven: Option<Driven>,
+    /// Built on first use — a machine that is never driven never needs it.
+    injector: Option<Injector>,
+    /// Whether THIS machine arbitrates shared-panel ownership. Control is fully
+    /// symmetric, but ownership stays single-writer: the other side asks with
+    /// `SharedRequest` rather than deciding for itself, so two flips can never
+    /// disagree about which machine the panel is showing.
+    arbiter: bool,
+    /// Our own edges that lead somewhere, independent of who is driving. This
+    /// is what the injected cursor is tested against while we are driven;
+    /// `ctl.portals` is the set the OS hook triggers on and goes EMPTY while
+    /// driven, so a physical nudge can't start a control fight.
+    my_edges: Vec<Edge>,
     down_keys: HashSet<u16>,
     down_buttons: HashSet<MouseButton>,
     /// A URL grabbed from the drag pasteboard when a link was dragged across to
@@ -332,6 +414,188 @@ impl Router {
             if dead {
                 debug!("focused session {name} gone");
             }
+        }
+    }
+
+    /// Switch the shared panel, or ask the machine that arbitrates to. This is
+    /// what makes the hotkey, the tray, the editor button and `kayiver monitor`
+    /// work identically on both desks.
+    fn request_shared_owner(&mut self, owner: &str) {
+        if self.arbiter {
+            self.set_shared_owner(owner);
+            return;
+        }
+        let Some(peer) = self.cfg.peers.first().map(|p| p.name.clone()) else {
+            warn!("shared panel: no peer to ask");
+            return;
+        };
+        self.send_to(&peer, Msg::SharedRequest { owner: owner.to_string() });
+    }
+
+    /// Send to a named peer regardless of focus — used while we are the one
+    /// being driven, when `focus` is deliberately None.
+    fn send_to(&self, peer: &str, msg: Msg) {
+        let sessions = self.sessions.lock().unwrap();
+        if let Some((_, tx)) = sessions.get(peer) {
+            let _ = tx.send(msg);
+        }
+    }
+
+    /// A peer took control of this desk: start injecting what it sends.
+    fn enter_driven(&mut self, peer: &str, pos: (i32, i32)) {
+        if self.injector.is_none() {
+            match Injector::new() {
+                Ok(i) => self.injector = Some(i),
+                Err(e) => {
+                    // Bounce it straight back rather than swallowing the
+                    // cursor into a machine that cannot move it.
+                    warn!("cannot inject input ({e:#}) — refusing control from {peer}");
+                    self.send_to(peer, Msg::CursorLeft { edge: Edge::Left, ratio: 0.5 });
+                    return;
+                }
+            }
+        }
+        // We cannot drive and be driven at once; give up our own crossing.
+        if self.focus.is_some() {
+            self.release_all();
+            self.send_to_focus(Msg::Leave);
+            self.focus = None;
+            self.exit_forwarding();
+        }
+        self.driven = Some(Driven { peer: peer.to_string(), pos });
+        self.ctl.driven.store(true, Ordering::SeqCst);
+        self.refresh_portals();
+        if let Some(inj) = self.injector.as_mut() {
+            inj.mouse_to(pos.0, pos.1, 0, 0);
+        }
+        platform::indicator::set_state(true, true);
+        crate::ui::set_focus(Some(self.cfg.name.clone()));
+        info!("{peer} is driving this desk — injecting at {pos:?}");
+    }
+
+    /// Control left this desk again (handed back, or the session died).
+    fn leave_driven(&mut self) {
+        if self.driven.take().is_none() {
+            return;
+        }
+        self.ctl.driven.store(false, Ordering::SeqCst);
+        if let Some(inj) = self.injector.as_mut() {
+            inj.release_all();
+        }
+        self.refresh_portals();
+        platform::indicator::set_state(true, false);
+        crate::ui::set_focus(None);
+        debug!("no longer driven; input released");
+    }
+
+    /// Apply one input event from the driving peer, dead-reckoning our own
+    /// absolute cursor. Returns the crossing it caused, if any.
+    fn apply_driven_input(&mut self, ev: InputEvent) -> Option<DrivenCross> {
+        let mut pos = self.driven.as_ref()?.pos;
+        let bounds = self.ctl.bounds;
+        let mut cross = None;
+        match ev {
+            InputEvent::MouseMove { dx, dy } => {
+                let (nx, ny) = (pos.0 + dx, pos.1 + dy);
+                // Our copy of the shared panel is showing the other machine:
+                // moving onto it hands control back at the same relative spot.
+                if let Some(b) = *self.ctl.blocked.read().unwrap() {
+                    if point_in(b, nx, ny) {
+                        let fx = (nx - b.x) as f32 / b.w.max(1) as f32;
+                        let fy = (ny - b.y) as f32 / b.h.max(1) as f32;
+                        cross = Some(DrivenCross::Shared(fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0)));
+                    }
+                }
+                if cross.is_none() {
+                    for &edge in &self.my_edges {
+                        let out = match edge {
+                            Edge::Left => nx < bounds.x,
+                            Edge::Right => nx >= bounds.right(),
+                            Edge::Top => ny < bounds.y,
+                            Edge::Bottom => ny >= bounds.bottom(),
+                        };
+                        if out {
+                            let cx = nx.clamp(bounds.x, bounds.right() - 1);
+                            let cy = ny.clamp(bounds.y, bounds.bottom() - 1);
+                            cross = Some(DrivenCross::Portal(edge, ratio_on_edge(bounds, edge, cx, cy)));
+                            break;
+                        }
+                    }
+                }
+                if cross.is_none() {
+                    pos.0 = nx.clamp(bounds.x, bounds.right() - 1);
+                    pos.1 = ny.clamp(bounds.y, bounds.bottom() - 1);
+                    if let Some(inj) = self.injector.as_mut() {
+                        inj.mouse_to(pos.0, pos.1, dx, dy);
+                    }
+                }
+            }
+            InputEvent::MouseButton { button, pressed } => {
+                if let Some(inj) = self.injector.as_mut() {
+                    inj.button(button, pressed);
+                }
+            }
+            InputEvent::Wheel { dx, dy } => {
+                if let Some(inj) = self.injector.as_mut() {
+                    inj.wheel(dx, dy);
+                }
+            }
+            InputEvent::Key { key, pressed } => {
+                if let Some(inj) = self.injector.as_mut() {
+                    inj.key(key, pressed);
+                }
+            }
+        }
+        if let Some(d) = self.driven.as_mut() {
+            d.pos = pos;
+        }
+        cross
+    }
+
+    /// Route one message that arrived from `name`. These are the arms that
+    /// used to live in the client engine — every machine handles them now.
+    fn on_inbound(&mut self, name: String, msg: Msg) {
+        match msg {
+            Msg::Enter { edge, ratio } => {
+                let pos = point_on_edge(self.ctl.bounds, edge, ratio, EDGE_INSET);
+                self.enter_driven(&name, pos);
+            }
+            Msg::EnterAt { x, y } => self.enter_driven(&name, (x, y)),
+            Msg::Leave => {
+                if self.driven.as_ref().is_some_and(|d| d.peer == name) {
+                    self.leave_driven();
+                }
+            }
+            Msg::Input(ev) => {
+                // Events still in flight after we handed control back: drop
+                // them so the cursor doesn't twitch after the handoff.
+                if !self.driven.as_ref().is_some_and(|d| d.peer == name) {
+                    return;
+                }
+                match self.apply_driven_input(ev) {
+                    Some(DrivenCross::Portal(edge, ratio)) => {
+                        info!("pushed out through our {edge} edge -> handing control back to {name}");
+                        self.leave_driven();
+                        self.send_to(&name, Msg::CursorLeft { edge, ratio });
+                    }
+                    Some(DrivenCross::Shared(fx, fy)) => {
+                        info!("moved onto the shared panel -> handing control back to {name}");
+                        self.leave_driven();
+                        self.send_to(&name, Msg::SharedCross { fx, fy });
+                    }
+                    None => {}
+                }
+            }
+            Msg::SharedBlock { rect } => {
+                info!("shared block -> {rect:?}");
+                *self.ctl.blocked.write().unwrap() = rect;
+                platform::passive::show(rect.map(|r| {
+                    (r, "This panel is showing the other machine. Switch the monitor's \
+                         input here and press Ctrl+Alt+M to bring the cursor over."
+                        .to_string())
+                }));
+            }
+            other => debug!("unhandled from {name}: {other:?}"),
         }
     }
 
@@ -522,7 +786,7 @@ impl Router {
                 let b = self.ctl.bounds;
                 platform::warp_cursor_settled(b.x + b.w / 2, b.y + b.h / 2);
             }
-            Captured::SharedHotkey => self.set_shared_owner("toggle"),
+            Captured::SharedHotkey => self.request_shared_owner("toggle"),
             Captured::TabletHotkey => {
                 if self.tablet_active {
                     self.set_tablet_control(false);
@@ -641,6 +905,11 @@ impl Router {
             }
             SessionEvent::Disconnected { name } => {
                 info!("client disconnected: {name}");
+                // If it was driving us, take our own desk back: portals re-arm
+                // and any key it left held is released.
+                if self.driven.as_ref().is_some_and(|d| d.peer == name) {
+                    self.leave_driven();
+                }
                 if self.focus.as_deref() == Some(name.as_str()) {
                     // Never leave the user with no cursor: pull input home.
                     self.focus = None;
@@ -654,6 +923,7 @@ impl Router {
                 info!("{name} asked for shared panel -> {owner}");
                 self.set_shared_owner(&owner);
             }
+            SessionEvent::Inbound { name, msg } => self.on_inbound(name, msg),
             SessionEvent::LayoutChanged => {
                 self.refresh_shared_rects();
                 self.refresh_portals();
@@ -1027,7 +1297,7 @@ impl Router {
     /// capture thread grab the cursor only for the router to bounce it back:
     /// the brief stutter felt at B's far edge. Leaving it unarmed makes it a
     /// plain desktop edge the cursor rests against.
-    fn refresh_portals(&self) {
+    fn refresh_portals(&mut self) {
         let sm = self.shared.read().unwrap().clone();
         let mut active = Vec::new();
         {
@@ -1050,7 +1320,13 @@ impl Router {
                 active.push(te);
             }
         }
-        *self.ctl.portals.write().unwrap() = active;
+        // Two lists, deliberately: `my_edges` is where this desk leads and is
+        // what the INJECTED cursor is tested against while a peer drives us.
+        // `ctl.portals` is what the OS hook triggers on, and goes empty while
+        // driven — otherwise a physical nudge against an edge would start a
+        // crossing of our own on top of the one already in progress.
+        self.my_edges = active.clone();
+        *self.ctl.portals.write().unwrap() = if self.driven.is_some() { Vec::new() } else { active };
     }
 
     /// True when `edge` is a dead side of the shared panel: the panel spans the
@@ -1179,6 +1455,173 @@ async fn accept_loop(listener: TcpListener, cfg: Arc<Config>, layout: SharedLayo
     }
 }
 
+/// Candidate addresses in preference order. The CONFIGURED primary is a
+/// deliberate user choice (the editor's path picker), so it gets the full
+/// timeout: on a bad Wi-Fi day one lost SYN would otherwise silently demote it.
+/// Learned fallbacks get a short probe, then mDNS as the zero-config path.
+async fn find_peer(peer: &Peer) -> std::result::Result<std::net::SocketAddr, String> {
+    let mut candidates: Vec<(String, Duration)> = Vec::new();
+    let push = |a: &str, t: Duration, v: &mut Vec<(String, Duration)>| {
+        if !a.is_empty() && !v.iter().any(|(x, _)| x == a) {
+            v.push((a.to_string(), t));
+        }
+    };
+    if let Some(a) = &peer.addr {
+        push(a, CONNECT_TIMEOUT, &mut candidates);
+    }
+    if let Some(a) = &peer.last_good {
+        push(a, PROBE_TIMEOUT, &mut candidates);
+    }
+    for a in &peer.addrs {
+        push(a, PROBE_TIMEOUT, &mut candidates);
+    }
+
+    let mut failures: Vec<String> = Vec::new();
+    for (cand, timeout) in &candidates {
+        match cand.to_socket_addrs().ok().and_then(|mut it| it.next()) {
+            Some(a) => match tokio::time::timeout(*timeout, TcpStream::connect(a)).await {
+                Ok(Ok(_)) => return Ok(a),
+                Ok(Err(e)) => failures.push(format!("{cand}: {e}")),
+                Err(_) => failures.push(format!("{cand}: timed out")),
+            },
+            None => failures.push(format!("{cand}: could not resolve")),
+        }
+    }
+    if let Some(a) = kayiver_core::discovery::resolve(&peer.name, Duration::from_secs(3)).await {
+        return Ok(a);
+    }
+    failures.push("mDNS: no answer".into());
+    Err(format!("'{}' unreachable — tried: {}", peer.name, failures.join(" · ")))
+}
+
+/// Remember the address a session actually succeeded over, so the next
+/// reconnect tries it first (and it survives restarts).
+fn remember_good_addr(peer_name: &str, addr: std::net::SocketAddr) {
+    let addr = addr.to_string();
+    if let Ok(mut cfg) = Config::load_or_init() {
+        if let Some(p) = cfg.peers.iter_mut().find(|p| p.name == peer_name) {
+            let known = p.addr.as_deref() == Some(addr.as_str()) || p.addrs.iter().any(|a| a == &addr);
+            let mut dirty = false;
+            if p.last_good.as_deref() != Some(addr.as_str()) {
+                p.last_good = Some(addr.clone());
+                dirty = true;
+            }
+            if !known {
+                p.addrs.push(addr);
+                if p.addrs.len() > 4 {
+                    p.addrs.remove(0);
+                }
+                dirty = true;
+            }
+            if dirty {
+                let _ = cfg.save();
+            }
+        }
+    }
+}
+
+/// A desk paired before both sides wrote layout links has none of its own, so
+/// `portals(me)` is empty and this machine could never START a crossing — it
+/// could only ever be driven. The peer's `Welcome` names exactly which of OUR
+/// edges lead to it, so adopt them once and persist. New pairings get this
+/// from `join` directly; this is the no-re-pairing path for existing desks.
+fn bootstrap_links(me: &str, peer: &str, edges: &[Edge], layout: &SharedLayout) {
+    if edges.is_empty() || !layout.read().unwrap().portals(me).is_empty() {
+        return;
+    }
+    let Ok(mut cfg) = Config::load_or_init() else { return };
+    if !cfg.layout.portals(me).is_empty() {
+        return;
+    }
+    for &edge in edges {
+        cfg.layout.links.push(Link { from: me.to_string(), edge, to: peer.to_string() });
+    }
+    info!("layout: adopted {edges:?} from {peer} — this machine had no links of its own");
+    if let Err(e) = cfg.save() {
+        warn!("could not persist adopted links: {e:#}");
+    }
+    *layout.write().unwrap() = cfg.layout;
+}
+
+/// Dialer side: keep exactly one session to `peer_name` alive, reconnecting
+/// with backoff. The peer entry is re-read each round so an address learned at
+/// runtime (or pushed with `UseAddr`) applies without a restart.
+#[allow(clippy::too_many_arguments)]
+async fn dial_loop(peer_name: String, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, clip: crate::engine::clipsync::ClipState, evt_tx: UnboundedSender<SessionEvent>, ctl: Arc<CaptureCtl>) {
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        if sessions.lock().unwrap().contains_key(&peer_name) {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
+        }
+        let peer = Config::load_or_init()
+            .ok()
+            .and_then(|c| c.peer(&peer_name).cloned())
+            .or_else(|| cfg.peer(&peer_name).cloned());
+        let Some(peer) = peer else {
+            warn!("no peer '{peer_name}' in config");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            continue;
+        };
+        match dial_once(&peer, cfg.clone(), layout.clone(), sessions.clone(), peer_screens.clone(), clip.clone(), evt_tx.clone(), ctl.clone()).await {
+            Ok(()) => {
+                info!("session ended, reconnecting");
+                crate::ui::set_link_error(Some("session ended — reconnecting".into()));
+                backoff = Duration::from_secs(1);
+            }
+            Err(e) => {
+                warn!("connection failed: {e:#}");
+                crate::ui::set_link_error(Some(format!("{e:#}")));
+                backoff = (backoff * 2).min(Duration::from_secs(5));
+            }
+        }
+        platform::indicator::set_state(false, false);
+        platform::passive::show(None);
+        tokio::time::sleep(backoff).await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dial_once(peer: &Peer, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, clip: crate::engine::clipsync::ClipState, evt_tx: UnboundedSender<SessionEvent>, ctl: Arc<CaptureCtl>) -> Result<()> {
+    let addr = find_peer(peer).await.map_err(|e| anyhow::anyhow!(e))?;
+    let mut stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
+        .await
+        .context("connect timeout")??;
+    stream.set_nodelay(true)?;
+    let (link_local, link_remote) = (stream.local_addr().ok(), stream.peer_addr().ok());
+
+    write_frame(&mut stream, &Intro::Session { name: cfg.name.clone() }.encode()?).await?;
+    let psk = peer.psk_bytes()?;
+    let (mut reader, mut writer) = secure::handshake_initiator(stream, &psk).await?;
+
+    writer
+        .send(&Msg::Hello {
+            version: PROTOCOL_VERSION,
+            name: cfg.name.clone(),
+            os: std::env::consts::OS.to_string(),
+            screen: platform::desktop_bounds(),
+            monitors: platform::monitors(),
+        })
+        .await?;
+
+    let portal_edges = match tokio::time::timeout(Duration::from_secs(5), reader.recv()).await?? {
+        Msg::Welcome { version, portal_edges, .. } => {
+            anyhow::ensure!(version == PROTOCOL_VERSION, "protocol version mismatch: {version} != {PROTOCOL_VERSION}");
+            portal_edges
+        }
+        other => anyhow::bail!("expected Welcome, got {other:?}"),
+    };
+
+    info!("connected to '{}' at {addr}", peer.name);
+    crate::ui::set_link_error(None);
+    remember_good_addr(&peer.name, addr);
+    bootstrap_links(&cfg.name, &peer.name, &portal_edges, &layout);
+
+    run_session(peer.name.clone(), reader, writer, link_local, link_remote, cfg, sessions, peer_screens, clip, evt_tx, ctl).await
+}
+
+/// Listener side of a session: identify the caller, complete the handshake,
+/// then hand over to the shared `run_session`.
 async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayout, sessions: Sessions, peer_screens: PeerScreens, clip: crate::engine::clipsync::ClipState, evt_tx: UnboundedSender<SessionEvent>, ctl: Arc<CaptureCtl>) -> Result<()> {
     stream.set_nodelay(true)?;
     let (link_local, link_remote) = (stream.local_addr().ok(), stream.peer_addr().ok());
@@ -1204,7 +1647,7 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
         }
         other => anyhow::bail!("expected Hello, got {other:?}"),
     };
-    debug!(?client_screen, %os, "client hello");
+    debug!(?client_screen, %os, "peer hello");
 
     // Cache the peer's monitor shapes + OS so the layout editor can draw them
     // and map its display indices.
@@ -1219,6 +1662,29 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
         })
         .await?;
 
+    run_session(name, reader, writer, link_local, link_remote, cfg, sessions, peer_screens, clip, evt_tx, ctl).await
+}
+
+/// Everything above the handshake is symmetric, so both the machine that
+/// accepted the connection and the one that dialed it run this: the writer
+/// task, the ping/heartbeat task, and the reader loop. Which side dialed is
+/// invisible from here — the session is full duplex and either end may take
+/// control of the other.
+#[allow(clippy::too_many_arguments)]
+async fn run_session(
+    name: String,
+    mut reader: secure::SecureReader,
+    writer: secure::SecureWriter,
+    link_local: Option<std::net::SocketAddr>,
+    link_remote: Option<std::net::SocketAddr>,
+    cfg: Arc<Config>,
+    sessions: Sessions,
+    peer_screens: PeerScreens,
+    clip: crate::engine::clipsync::ClipState,
+    evt_tx: UnboundedSender<SessionEvent>,
+    ctl: Arc<CaptureCtl>,
+) -> Result<()> {
+    let mut writer = writer;
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Msg>();
     let session_id = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
     sessions.lock().unwrap().insert(name.clone(), (session_id, out_tx.clone()));
@@ -1292,6 +1758,33 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
         }
     });
 
+    // Geometry watcher: a display attached/detached, or the PRIMARY switched
+    // (which re-anchors every rect on Windows), so the peer's crossing math
+    // uses current monitors instead of the ones from the initial Hello. It
+    // pushes through the SAME channel as everything else — never a timer in a
+    // `select!` with `reader.recv()`, which reads with `read_exact` and is not
+    // cancel-safe: a timer firing mid-read desyncs the Noise nonce.
+    let geo_tx = out_tx.clone();
+    let geo_task = tokio::spawn(async move {
+        let mut last = platform::monitors();
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            // Compare the monitor LIST, not the bounding box: a monitor can
+            // move without changing the union, and the crossing math cares
+            // about each rect.
+            let mons = platform::monitors();
+            if mons == last {
+                continue;
+            }
+            info!("desktop geometry changed: {last:?} -> {mons:?}");
+            last = mons.clone();
+            let screen = platform::desktop_bounds();
+            if geo_tx.send(Msg::Monitors { screen, monitors: mons }).is_err() {
+                return;
+            }
+        }
+    });
+
     // Writer task: a single serial writer, no competing branch — every frame
     // reaches the socket whole, so the nonce stays in lockstep with the peer.
     let writer_task = tokio::spawn(async move {
@@ -1337,7 +1830,11 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
                     platform::open_url(&url);
                 }
                 Msg::Bye => return Ok(()),
-                other => debug!("unexpected from {name}: {other:?}"),
+                // Everything else is router business — notably Enter/Input/
+                // Leave, i.e. this peer driving US.
+                other => {
+                    let _ = evt_tx.send(SessionEvent::Inbound { name: name.clone(), msg: other });
+                }
             }
         }
     }
@@ -1352,6 +1849,7 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
     crate::ui::set_connected(&name, false);
     let _ = evt_tx.send(SessionEvent::Disconnected { name });
     ping_task.abort();
+    geo_task.abort();
     writer_task.abort();
     result
 }

@@ -25,6 +25,11 @@ use crate::engine::Captured;
 pub struct CaptureCtl {
     /// True while input is being forwarded to a remote machine.
     pub forwarding: AtomicBool,
+    /// True while a PEER is driving this machine. Local hooks deliberately keep
+    /// passing input through (a dying session must never leave this desk with a
+    /// frozen mouse), so this is what stops the cursor guard and the portal
+    /// edges from also reacting and starting a control fight.
+    pub driven: AtomicBool,
     /// Edges that currently lead to a *connected* peer. The capture thread
     /// only triggers on these, so the cursor never disappears into a dead
     /// screen whose machine is offline.
@@ -57,6 +62,7 @@ impl CaptureCtl {
     pub fn new(bounds: Rect) -> Self {
         CaptureCtl {
             forwarding: AtomicBool::new(false),
+            driven: AtomicBool::new(false),
             portals: RwLock::new(Vec::new()),
             cooldown_until: Mutex::new(Instant::now()),
             shared_hotkey: AtomicBool::new(false),
@@ -84,7 +90,7 @@ pub fn start_cursor_guard(ctl: Arc<CaptureCtl>, tx: tokio::sync::mpsc::Unbounded
             let mut inside = false;
             loop {
                 std::thread::sleep(Duration::from_millis(8));
-                if ctl.forwarding.load(Ordering::SeqCst) {
+                if ctl.forwarding.load(Ordering::SeqCst) || ctl.driven.load(Ordering::SeqCst) {
                     prev = cursor_pos();
                     inside = false;
                     continue;

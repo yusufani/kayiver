@@ -21,12 +21,21 @@ kayiver/
     └── autostart         LaunchAgent / registry Run key
 ```
 
-Roles are static (set during pairing): the **host** owns the physical
-keyboard/mouse; **clients** receive input. One host, N clients; clients can
-be chained in the layout (`mac ⇄ win ⇄ tablet`) — routing always goes
-through the host.
+Every machine runs the same engine: it captures its own keyboard/mouse, can
+inject, and owns a router. Whichever desk you are sitting at can take control
+of the other by pushing the cursor through one of its own portal edges — the
+session is full duplex, so which end dialed is invisible above the handshake.
 
-## Threads (host)
+What pairing still decides is the **transport role**: the machine that ran
+`kayiver pair` listens, the one that ran `join` dials and reconnects. Two other
+things stay single-writer on the listening side, because they need one
+arbiter rather than agreement: shared-panel ownership (the other side asks with
+`SharedRequest`) and multi-peer chaining (`mac ⇄ win ⇄ tablet`).
+
+A machine that must never grab input — a box where low-level hooks are
+unwelcome — can set `capture = "off"` and stay receive-only.
+
+## Threads
 
 ```
 ┌────────────────────┐  UnboundedSender   ┌─────────────────────────────┐

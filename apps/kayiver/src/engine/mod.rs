@@ -1,4 +1,4 @@
-pub mod client;
+
 pub mod clipsync;
 pub mod host;
 pub mod pairing;

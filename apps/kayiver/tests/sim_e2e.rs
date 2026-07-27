@@ -354,6 +354,38 @@ fn owner_survives_host_restart() {
     assert!(host.config_text().contains(r#"last_owner = "simwin""#));
 }
 
+/// The headline of the symmetric engine: the machine that used to be a
+/// pure "client" can now take control of the other one. It arms a portal edge
+/// of its own (adopting the link from the peer's Welcome, since pairing never
+/// wrote one on that side), grabs the cursor on an edge hit, and the peer
+/// becomes the one being driven.
+#[test]
+fn client_can_take_control_of_the_host() {
+    let (mut host, mut client) = desk("clientdrive", 27260);
+    wait_until("client arms a portal edge of its own", Duration::from_secs(15), || {
+        client.state()["portals"].as_array().is_some_and(|a| !a.is_empty())
+    });
+    host.injected(); // drain anything stale
+
+    assert!(client.ctl(serde_json::json!({ "op": "edge", "edge": "left", "ratio": 0.5 }))["ok"]
+        .as_bool()
+        .unwrap());
+    wait_until("client takes control", Duration::from_secs(5), || {
+        client.state()["forwarding"].as_bool().unwrap_or(false)
+    });
+    // The host is now the driven side: it injects what the client sends.
+    wait_until("host injects the client's input", Duration::from_secs(10), || {
+        client.ctl(serde_json::json!({ "op": "input_move", "dx": 12, "dy": 0 }));
+        !host.injected().is_empty()
+    });
+    // While driven, the host's own edges are disarmed — a physical nudge there
+    // must not start a second, competing crossing.
+    assert!(
+        host.state()["portals"].as_array().unwrap().is_empty(),
+        "driven side must disarm its portal edges"
+    );
+}
+
 /// Bug class #6: every route for switching the shared panel — hotkey, tray,
 /// editor button, `kayiver monitor` — used to work only on the machine running
 /// the router. On the other machine the hotkey reached no hook at all and the

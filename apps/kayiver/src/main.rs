@@ -15,7 +15,7 @@ mod ui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use kayiver_core::config::{Config, Mode};
+use kayiver_core::config::Config;
 
 #[derive(Parser)]
 #[command(name = "kayiver", version, about = "Share one keyboard & mouse across your machines, seamlessly.")]
@@ -228,33 +228,21 @@ fn run(no_gui: bool) -> Result<()> {
     platform::start_prelogon_handover();
     let cfg = Config::load_or_init()?;
     if cfg.peers.is_empty() {
-        // A host can run before its first pairing (useful to verify
-        // permissions and capture stability); a client has nothing to do.
+        // Running before the first pairing is useful either way: it verifies
+        // permissions and capture stability. Input just stays local.
         eprintln!("No paired devices yet.");
         eprintln!("  On the machine with the keyboard/mouse:  kayiver pair");
         eprintln!("  On the other machine:                    kayiver join <that-machine-ip>");
-        if cfg.mode == Mode::Client {
-            std::process::exit(2);
-        }
-        eprintln!("Running as host anyway — input stays local until a device pairs.");
+        eprintln!("Running anyway — input stays local until a device pairs.");
     }
-    match cfg.mode {
-        Mode::Host => {
-            // macOS GUI host: start the menu-bar/window shell immediately and
-            // let the engine thread wait for permissions, so the app is
-            // visible right away instead of blocking on the permission prompt.
-            #[cfg(target_os = "macos")]
-            if !no_gui {
-                return gui::run_host(cfg);
-            }
-            platform::ensure_permissions()?;
-            engine::host::run(cfg)
-        }
-        Mode::Client => {
-            platform::ensure_permissions()?;
-            engine::client::run(cfg)
-        }
+    // One engine on both machines. `mode` survives only as the transport role
+    // (who listens, who dials); it no longer decides what a machine can do.
+    #[cfg(target_os = "macos")]
+    if !no_gui {
+        return gui::run_host(cfg);
     }
+    platform::ensure_permissions()?;
+    engine::host::run(cfg)
 }
 
 fn display_cmd(action: Option<DisplayAction>) -> Result<()> {
