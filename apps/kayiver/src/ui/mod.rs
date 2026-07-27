@@ -174,10 +174,17 @@ fn iface_for_ip(ip: std::net::IpAddr) -> Option<String> {
         }
         None
     }
+    // Everywhere else (Windows): ask the OS for its adapters. This used to
+    // return None unconditionally, which was invisible while only the
+    // listening machine drew a link widget — now both do, and an unnamed link
+    // reads as "no link at all".
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = ip;
-        None
+        if_addrs::get_if_addrs()
+            .ok()?
+            .into_iter()
+            .find(|i| i.ip() == ip)
+            .map(|i| i.name)
     }
 }
 

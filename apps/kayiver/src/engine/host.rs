@@ -595,7 +595,34 @@ impl Router {
                         .to_string())
                 }));
             }
-            other => debug!("unhandled from {name}: {other:?}"),
+            Msg::StateSync { state, shared_configured, owner } => {
+                // Only the arbiter authors the editor view; it must never adopt
+                // the other side's copy of it (both machines broadcast on
+                // connect, so without this they would overwrite each other).
+                if self.arbiter {
+                    return;
+                }
+                debug!("state synced from {name} ({} bytes)", state.len());
+                crate::ui::set_synced_state(state);
+                crate::ui::set_shared_state(shared_configured, Some(name), Some(owner));
+            }
+            // Exhaustive on purpose — no catch-all. These are consumed by the
+            // session reader itself, or are not router business. Adding a
+            // variant must be a compile error here rather than a silent drop:
+            // StateSync, Ping and UseAddr were lost exactly that way when the
+            // host and client engines merged.
+            Msg::Hello { .. }
+            | Msg::Welcome { .. }
+            | Msg::Ping(_)
+            | Msg::Pong(_)
+            | Msg::Bye
+            | Msg::CursorLeft { .. }
+            | Msg::SharedCross { .. }
+            | Msg::Monitors { .. }
+            | Msg::Clipboard { .. }
+            | Msg::OpenUrl { .. }
+            | Msg::SharedRequest { .. }
+            | Msg::UseAddr { .. } => debug!("not router business, from {name}"),
         }
     }
 
@@ -1013,6 +1040,11 @@ impl Router {
     /// Push the host's editor view to every client so their editors mirror
     /// this one (machines with real shapes, links, shared panel, owner).
     fn broadcast_state(&self) {
+        // The editor view has one author: the machine that arbitrates. The
+        // other side renders what it is told, so it never pushes back.
+        if !self.arbiter {
+            return;
+        }
         let Ok(state) = crate::ui::state_json() else { return };
         let configured = self.shared.read().unwrap().configured();
         let msg = Msg::StateSync {
@@ -1828,6 +1860,35 @@ async fn run_session(
                 Msg::OpenUrl { url } => {
                     info!("{name}: open url {url}");
                     platform::open_url(&url);
+                }
+                Msg::Ping(n) => {
+                    // BOTH sides run a ping task now, so both must answer one.
+                    let _ = out_tx.send(Msg::Pong(n));
+                }
+                Msg::UseAddr { addr } => {
+                    // The user picked a different path (Wi-Fi / cable) in the
+                    // peer's editor. Persist it as the primary AND the last-good
+                    // so the dial loop tries it first, then drop the session.
+                    info!("{name} asked us to reconnect via {addr}");
+                    if let Ok(mut c) = Config::load_or_init() {
+                        if let Some(p) = c.peers.iter_mut().find(|p| p.name == name) {
+                            // Keep the old primary as a fallback; never list the
+                            // new primary twice.
+                            if let Some(old) = p.addr.clone() {
+                                if old != addr && !p.addrs.contains(&old) {
+                                    p.addrs.push(old);
+                                }
+                            }
+                            p.addrs.retain(|a| a != &addr);
+                            p.addr = Some(addr.clone());
+                            p.last_good = Some(addr.clone());
+                        }
+                        if let Err(e) = c.save() {
+                            warn!("could not persist new address: {e:#}");
+                        }
+                    }
+                    crate::ui::set_link_error(Some(format!("address changed — reconnecting via {addr}")));
+                    return Ok(());
                 }
                 Msg::Bye => return Ok(()),
                 // Everything else is router business — notably Enter/Input/
