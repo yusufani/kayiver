@@ -97,6 +97,17 @@ pub fn monitors() -> Vec<Rect> {
     world().lock().unwrap().monitors.clone()
 }
 
+pub fn apply_arrangement(desired: &[Rect]) -> Result<bool> {
+    let mut w = world().lock().unwrap();
+    match kayiver_core::layout::arranged(&w.monitors, desired) {
+        Some(m) => {
+            w.monitors = m;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
 pub fn displays() -> Vec<(u32, String, Option<u16>)> {
     monitors()
         .iter()
@@ -254,6 +265,30 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             world().lock().unwrap().cursor = (x, y);
             ok
         }
+        "arrange" => {
+            // The editor's Save for one machine: {"machine": "...", "monitors": [[x,y,w,h], ...]}
+            let mons: Vec<Rect> = cmd["monitors"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|m| {
+                            let v: Vec<i32> =
+                                m.as_array()?.iter().filter_map(|n| n.as_i64().map(|n| n as i32)).collect();
+                            (v.len() == 4).then(|| Rect { x: v[0], y: v[1], w: v[2], h: v[3] })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let machine = cmd["machine"].as_str().unwrap_or_default().to_string();
+            if mons.is_empty() || machine.is_empty() {
+                return serde_json::json!({ "ok": false, "error": "need machine + monitors" });
+            }
+            if crate::ui::send_cmd(crate::ui::UiCmd::Arrange { machine, monitors: mons }) {
+                ok
+            } else {
+                serde_json::json!({ "ok": false, "error": "router not running" })
+            }
+        }
         "set_monitors" => {
             let mons: Vec<Rect> = cmd["monitors"]
                 .as_array()
@@ -329,19 +364,21 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
         }
         "state" => {
             let w = world().lock().unwrap();
-            let (forwarding, portals, blocked) = match &w.capture {
+            let (forwarding, driven, portals, blocked) = match &w.capture {
                 Some((ctl, _)) => (
                     ctl.forwarding.load(Ordering::SeqCst),
+                    ctl.driven.load(Ordering::SeqCst),
                     ctl.portals.read().unwrap().iter().map(|e| format!("{e:?}")).collect::<Vec<_>>(),
                     ctl.blocked.read().unwrap().map(|r| [r.x, r.y, r.w, r.h]),
                 ),
-                None => (false, Vec::new(), None),
+                None => (false, false, Vec::new(), None),
             };
             serde_json::json!({
                 "ok": true,
                 "cursor": [w.cursor.0, w.cursor.1],
                 "monitors": w.monitors.iter().map(|m| [m.x, m.y, m.w, m.h]).collect::<Vec<_>>(),
                 "forwarding": forwarding,
+                "driven": driven,
                 "portals": portals,
                 "blocked": blocked,
                 "injected_len": w.injected.len(),

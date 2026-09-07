@@ -209,3 +209,50 @@ mod tests {
         assert_eq!(x, 1918);
     }
 }
+
+/// The position each `current` monitor should take to realise `desired`:
+/// desired rects are matched to current monitors by size (an ambiguous size
+/// falls back to order), then translated so the current PRIMARY (the monitor
+/// at 0,0 — Windows pins it there) stays at 0,0. `None` when the sets don't
+/// match or nothing would move.
+pub fn arranged(current: &[Rect], desired: &[Rect]) -> Option<Vec<Rect>> {
+    if current.is_empty() || current.len() != desired.len() {
+        return None;
+    }
+    let mut used = vec![false; desired.len()];
+    let mut out = Vec::with_capacity(current.len());
+    for c in current {
+        let i = (0..desired.len()).find(|&i| !used[i] && desired[i].w == c.w && desired[i].h == c.h)?;
+        used[i] = true;
+        out.push(Rect { x: desired[i].x, y: desired[i].y, w: c.w, h: c.h });
+    }
+    let prim = current.iter().position(|c| c.x == 0 && c.y == 0).unwrap_or(0);
+    let (dx, dy) = (out[prim].x, out[prim].y);
+    for r in &mut out {
+        r.x -= dx;
+        r.y -= dy;
+    }
+    if out == current {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+#[cfg(test)]
+mod arranged_tests {
+    use super::*;
+    #[test]
+    fn matches_by_size_and_pins_primary() {
+        let cur = [Rect { x: 0, y: 0, w: 1920, h: 1080 }, Rect { x: 1920, y: 0, w: 1920, h: 1080 }];
+        let want = [Rect { x: 0, y: 0, w: 1920, h: 1080 }, Rect { x: 200, y: -1080, w: 1920, h: 1080 }];
+        assert_eq!(arranged(&cur, &want).unwrap()[1], want[1]);
+        // desired given with the primary off-origin: re-pinned
+        let want2 = [Rect { x: 100, y: 100, w: 1920, h: 1080 }, Rect { x: 300, y: -980, w: 1920, h: 1080 }];
+        assert_eq!(arranged(&cur, &want2).unwrap()[1], want[1]);
+        assert!(arranged(&cur, &cur).is_none());
+        assert!(arranged(&cur, &want[..1]).is_none());
+        let other = [Rect { x: 0, y: 0, w: 2560, h: 1440 }, Rect { x: 0, y: -1080, w: 1920, h: 1080 }];
+        assert!(arranged(&cur, &other).is_none(), "a size that is not on this desk matches nothing");
+    }
+}

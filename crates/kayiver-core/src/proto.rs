@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 10;
+pub const PROTOCOL_VERSION: u16 = 11;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -100,6 +100,12 @@ pub enum Msg {
     /// persists it as the peer's primary and drops the session; its reconnect
     /// loop dials the new address.
     UseAddr { addr: String },
+    /// arbiter -> peer: put YOUR monitors at these positions (your own
+    /// coordinates, matched by size). The editor's desk arrangement, pushed
+    /// so the peer's OS layout matches the physical desk — and remembered by
+    /// the peer, which re-applies it whenever its OS forgets (Windows drops
+    /// the arrangement every time the shared panel's input is switched away).
+    Arrange { monitors: Vec<Rect> },
     /// host -> client: the host's full editor view (machines with real
     /// monitor shapes, links, shared-monitor config) as JSON, plus live
     /// shared-panel state. The client's editor serves this instead of its

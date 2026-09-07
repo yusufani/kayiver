@@ -88,19 +88,43 @@ pub fn start_cursor_guard(ctl: Arc<CaptureCtl>, tx: tokio::sync::mpsc::Unbounded
         .spawn(move || {
             let mut prev = cursor_pos();
             let mut inside = false;
+            let mut last_block: Option<Rect> = None;
             loop {
                 std::thread::sleep(Duration::from_millis(8));
                 if ctl.forwarding.load(Ordering::SeqCst) || ctl.driven.load(Ordering::SeqCst) {
                     prev = cursor_pos();
-                    inside = false;
+                    // Treat wherever the cursor is when we resume as "already
+                    // inside": only a real outside->inside move hands over.
+                    // While driven, the cursor is the PEER's proxy, and the
+                    // peer routinely reclaims the panel (hotkey / physical
+                    // switch) with that proxy still resting on it — the
+                    // SharedBlock lands, then the Leave clears `driven`, and
+                    // reading that as a fresh entry bounced control straight
+                    // back to a peer nobody is sitting at, leaving the peer
+                    // "driven" with its own guard disabled (stuck desk).
+                    inside = true;
                     continue;
                 }
                 let Some(b) = *ctl.blocked.read().unwrap() else {
                     prev = cursor_pos();
                     inside = false;
+                    last_block = None;
                     continue;
                 };
                 let (x, y) = cursor_pos();
+                if last_block != Some(b) {
+                    // The block just appeared (or moved). Wherever the cursor
+                    // is right now, it did not MOVE there: only a genuine
+                    // outside->inside motion is a request to cross. A cursor
+                    // that happened to rest on the panel when the peer took
+                    // it must stay put (parking is attempted elsewhere, and
+                    // is best-effort — a failed warp used to end here as a
+                    // handover to a desk nobody was sitting at).
+                    last_block = Some(b);
+                    inside = point_in(b, x, y);
+                    prev = (x, y);
+                    continue;
+                }
                 if point_in(b, x, y) {
                     if !inside {
                         inside = true;

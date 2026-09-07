@@ -97,6 +97,13 @@ pub struct Config {
     /// device is available, crossing that edge hands control to the tablet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tablet_edge: Option<String>,
+    /// Where THIS desk's monitors belong (own coordinates), as arranged in
+    /// the editor on the arbiter and pushed here with `Msg::Arrange`. Applied
+    /// on start and whenever the OS reports a different arrangement, so a
+    /// monitor that the OS keeps dropping back "beside" the panel returns to
+    /// where it physically is. Empty = leave the OS alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arrangement: Vec<crate::proto::Rect>,
     /// Wi-Fi radio keepalive for peer sessions. Over Wi-Fi the radio dozes
     /// between packets and the first input after a pause pays a 50-200ms wake
     /// penalty; fast pings keep it hot. "auto" (default) = fast while
@@ -250,6 +257,7 @@ impl Default for Config {
             mac_shortcuts: true,
             win_modifiers: WinModifiers::default(),
             tablet_edge: None,
+            arrangement: Vec::new(),
             heartbeat: default_heartbeat(),
             capture: default_capture(),
         }
@@ -341,6 +349,7 @@ mod tests {
             mac_shortcuts: true,
             win_modifiers: WinModifiers::default(),
             tablet_edge: None,
+            arrangement: Vec::new(),
             heartbeat: default_heartbeat(),
             capture: default_capture(),
         };

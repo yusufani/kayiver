@@ -45,6 +45,14 @@ pub enum UiCmd {
     TabletControl(bool),
     /// Tell `peer` to reconnect to us at `addr` (path picked in the editor).
     UseAddr { peer: String, addr: String },
+    /// The editor's desk arrangement for `machine`'s monitors (its own
+    /// coordinates): pushed to that peer, or applied here if it is us.
+    Arrange { machine: String, monitors: Vec<kayiver_core::proto::Rect> },
+}
+
+/// Hand a command to the running router (false if none is running).
+pub fn send_cmd(cmd: UiCmd) -> bool {
+    live().lock().unwrap().cmd.as_ref().map(|tx| tx.send(cmd).is_ok()).unwrap_or(false)
 }
 
 #[derive(Default)]
@@ -617,12 +625,6 @@ fn api_android_list() -> String {
     .to_string()
 }
 
-fn send_cmd(cmd: UiCmd) {
-    if let Some(tx) = live().lock().unwrap().cmd.as_ref() {
-        let _ = tx.send(cmd);
-    }
-}
-
 /// POST /api/android/connect {"serial": "..."} — open the control session (get
 /// it ready). Taking control is a separate step: the hotkey or an edge cross,
 /// so a click doesn't yank the cursor away.
@@ -932,7 +934,18 @@ fn api_cursor() -> String {
 }
 
 fn api_save_layout(body: &[u8]) -> Result<()> {
-    let links: Vec<Link> = serde_json::from_slice(body).context("invalid layout JSON")?;
+    // Body is either the bare link list (older editor) or
+    // `{ links, arrangements: { machine: [rect, ...] } }`.
+    let v: serde_json::Value = serde_json::from_slice(body).context("invalid layout JSON")?;
+    let (links_v, arrangements) = match v {
+        serde_json::Value::Array(_) => (v, serde_json::Map::new()),
+        serde_json::Value::Object(mut o) => (
+            o.remove("links").unwrap_or(serde_json::Value::Array(vec![])),
+            o.remove("arrangements").and_then(|a| a.as_object().cloned()).unwrap_or_default(),
+        ),
+        _ => anyhow::bail!("layout must be a list of links or an object"),
+    };
+    let links: Vec<Link> = serde_json::from_value(links_v).context("invalid links")?;
     let mut cfg = Config::load_or_init()?;
     let known = |n: &str| n == cfg.name || cfg.peers.iter().any(|p| p.name == n);
     for l in &links {
@@ -941,6 +954,14 @@ fn api_save_layout(body: &[u8]) -> Result<()> {
     }
     cfg.layout.links = links;
     cfg.save()?;
+    for (machine, rects) in arrangements {
+        anyhow::ensure!(known(&machine), "unknown machine in arrangement: {machine}");
+        let monitors: Vec<kayiver_core::proto::Rect> =
+            serde_json::from_value(rects).with_context(|| format!("invalid arrangement for {machine}"))?;
+        if !send_cmd(UiCmd::Arrange { machine: machine.clone(), monitors }) {
+            anyhow::bail!("host not running — arrangement for {machine} not sent");
+        }
+    }
     Ok(())
 }
 

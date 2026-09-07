@@ -54,6 +54,14 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 /// reconnect round.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const EDGE_INSET: i32 = 2;
+/// How far INTO a peer monitor beyond the panel the cursor lands when it
+/// crosses onto it (along the crossing axis only; the position ALONG the edge
+/// is preserved). EDGE_INSET (2px) is enough to clear the boundary but leaves
+/// the cursor glued to the seam — invisible at the very edge of that monitor,
+/// and one micro-move from bouncing back. A real landing depth puts the cursor
+/// clearly on the new screen and gives the seam hysteresis. Clamped to a third
+/// of the monitor so a small screen isn't overshot.
+const LAND_DEPTH: i32 = 48;
 /// Fast-ping cadence that keeps a Wi-Fi radio out of doze while input is (or
 /// is about to be) flowing. Same rationale as the tablet path's keepalive
 /// (android.rs): the wake penalty after a pause is 50-200ms vs ~8ms hot RTT.
@@ -109,7 +117,30 @@ fn mod_hid(name: &str, fallback: u16) -> u16 {
     }
 }
 
+/// Put this desk's monitors where the editor said they go, if the OS has
+/// forgotten. Windows drops the arrangement whenever the shared panel's
+/// input is switched away and back — this desk's daily routine — and the
+/// crossing math is geometry-first, so a monitor the OS parked "beside" the
+/// panel turns the physical top edge into a wall.
+fn reapply_arrangement(desired: &[kayiver_core::proto::Rect]) -> bool {
+    if desired.is_empty() {
+        return false;
+    }
+    match platform::apply_arrangement(desired) {
+        Ok(true) => {
+            info!("desk arrangement applied: {desired:?}");
+            true
+        }
+        Ok(false) => false,
+        Err(e) => {
+            warn!("could not apply desk arrangement: {e:#}");
+            false
+        }
+    }
+}
+
 pub fn run(cfg: Config) -> Result<()> {
+    reapply_arrangement(&cfg.arrangement);
     let bounds = platform::desktop_bounds();
     info!(name = %cfg.name, ?bounds, "starting kayiver");
 
@@ -283,6 +314,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
             cmd = cmd_rx.recv() => match cmd {
                 Some(crate::ui::UiCmd::SetSharedOwner(owner)) => router.request_shared_owner(&owner),
                 Some(crate::ui::UiCmd::TabletControl(on)) => router.set_tablet_control(on),
+                Some(crate::ui::UiCmd::Arrange { machine, monitors }) => router.arrange(&machine, monitors),
                 Some(crate::ui::UiCmd::UseAddr { peer, addr }) => {
                     info!("asking {peer} to reconnect via {addr}");
                     let sent = router
@@ -432,6 +464,42 @@ impl Router {
         self.send_to(&peer, Msg::SharedRequest { owner: owner.to_string() });
     }
 
+    /// The editor's arrangement for `machine`: ours is persisted and applied
+    /// here; a peer's is pushed to it (it persists and applies its own).
+    fn arrange(&mut self, machine: &str, monitors: Vec<kayiver_core::proto::Rect>) {
+        if machine == self.cfg.name {
+            self.adopt_arrangement(monitors);
+            return;
+        }
+        info!("arrangement for {machine}: {monitors:?}");
+        let sent = {
+            let sessions = self.sessions.lock().unwrap();
+            sessions.get(machine).map(|(_, tx)| tx.send(Msg::Arrange { monitors }).is_ok()).unwrap_or(false)
+        };
+        if !sent {
+            warn!("arrangement: peer '{machine}' offline — not sent");
+            crate::ui::set_link_error(Some(format!("{machine} offline — arrangement not sent")));
+        }
+    }
+
+    /// Remember the arrangement the arbiter's editor gave us and make the OS
+    /// match it now (and again every time it forgets, see `reapply_arrangement`).
+    fn adopt_arrangement(&mut self, monitors: Vec<kayiver_core::proto::Rect>) {
+        info!("desk arrangement received: {monitors:?}");
+        match Config::load_or_init() {
+            Ok(mut c) => {
+                if c.arrangement != monitors {
+                    c.arrangement = monitors.clone();
+                    if let Err(e) = c.save() {
+                        warn!("could not persist desk arrangement: {e:#}");
+                    }
+                }
+            }
+            Err(e) => warn!("could not load config to persist arrangement: {e:#}"),
+        }
+        reapply_arrangement(&monitors);
+    }
+
     /// Send to a named peer regardless of focus — used while we are the one
     /// being driven, when `focus` is deliberately None.
     fn send_to(&self, peer: &str, msg: Msg) {
@@ -478,6 +546,13 @@ impl Router {
         if self.driven.take().is_none() {
             return;
         }
+        // The driver may have left our cursor on our copy of the shared panel
+        // just as the panel was flipped away from us (it is blocked by now):
+        // an invisible cursor, and one the guard would otherwise treat as a
+        // fresh entry. Park it BEFORE the guard resumes.
+        if let Some(b) = *self.ctl.blocked.read().unwrap() {
+            self.park_off_hidden_panel(b);
+        }
         self.ctl.driven.store(false, Ordering::SeqCst);
         if let Some(inj) = self.injector.as_mut() {
             inj.release_all();
@@ -486,6 +561,56 @@ impl Router {
         platform::indicator::set_state(true, false);
         crate::ui::set_focus(None);
         debug!("no longer driven; input released");
+    }
+
+    /// If our cursor is resting on `b` — our copy of the shared panel, which
+    /// is (about to be) blocked because the panel shows the peer — move it to
+    /// a monitor that is actually showing us. A cursor left on a hidden panel
+    /// is invisible, and the guard would read it as a fresh "moved onto the
+    /// panel" the moment it looks, handing control to a peer nobody is
+    /// sitting at. Park on a monitor CENTRE rather than skipping out to the
+    /// rect's edge: on a two-monitor desk that edge is usually a portal edge
+    /// (and off-desktop on the panel's outer side), which is its own handover.
+    fn park_off_hidden_panel(&self, b: kayiver_core::proto::Rect) {
+        let (x, y) = platform::cursor_pos();
+        if !point_in(b, x, y) {
+            return;
+        }
+        if let Some(m) = platform::monitors().into_iter().find(|m| *m != b) {
+            platform::warp_cursor_settled(m.x + m.w / 2, m.y + m.h / 2);
+            info!("cursor was resting on the hidden panel — parked on {m:?}");
+        }
+    }
+
+    /// Apply a block on our copy of the panel that the PEER decided (over the
+    /// wire, or adopted from its state) — as opposed to one this desk's own
+    /// hotkey asked for, where a cursor already resting on the panel is
+    /// deliberately carried over. Nobody here pressed anything, so a cursor
+    /// sitting on the panel must be parked, never handed over. This is what
+    /// every (re)connect used to trip: the arbiter re-sends its block on
+    /// connect, the peer's cursor was still on its panel copy, and the peer
+    /// promptly took control of the arbiter with no one at its desk.
+    fn apply_peer_block(&mut self, rect: Option<kayiver_core::proto::Rect>) {
+        if let Some(b) = rect {
+            let busy = self.ctl.forwarding.load(Ordering::SeqCst) || self.driven.is_some();
+            if !busy {
+                self.park_off_hidden_panel(b);
+            }
+        }
+        *self.ctl.blocked.write().unwrap() = rect;
+    }
+
+    /// Remember which machine the panel shows across restarts. Only a real
+    /// change touches the disk (the editor also writes the config).
+    fn persist_shared_owner(&self, owner: &str) {
+        if let Ok(mut c) = Config::load_or_init() {
+            if c.shared_monitor.last_owner.as_deref() != Some(owner) {
+                c.shared_monitor.last_owner = Some(owner.to_string());
+                if let Err(e) = c.save() {
+                    warn!("could not persist shared owner: {e:#}");
+                }
+            }
+        }
     }
 
     /// Apply one input event from the driving peer, dead-reckoning our own
@@ -588,13 +713,14 @@ impl Router {
             }
             Msg::SharedBlock { rect } => {
                 info!("shared block -> {rect:?}");
-                *self.ctl.blocked.write().unwrap() = rect;
+                self.apply_peer_block(rect);
                 platform::passive::show(rect.map(|r| {
                     (r, "This panel is showing the other machine. Switch the monitor's \
                          input here and press Ctrl+Alt+M to bring the cursor over."
                         .to_string())
                 }));
             }
+            Msg::Arrange { monitors } => self.adopt_arrangement(monitors),
             Msg::StateSync { state, shared_configured, owner } => {
                 // Only the arbiter authors the editor view; it must never adopt
                 // the other side's copy of it (both machines broadcast on
@@ -604,7 +730,23 @@ impl Router {
                 }
                 debug!("state synced from {name} ({} bytes)", state.len());
                 crate::ui::set_synced_state(state);
-                crate::ui::set_shared_state(shared_configured, Some(name), Some(owner));
+                crate::ui::set_shared_state(shared_configured, Some(name.clone()), Some(owner.clone()));
+                // The arbiter's word on who the panel shows is THE state; ours
+                // was only ever a restart-restored guess. Adopt it, or the two
+                // desks disagree forever (each side's copy of the owner only
+                // moved on its own hotkey) and re-assert opposite blocks at
+                // every reconnect — both panels blocked, each cursor skipping.
+                let sm = self.shared.read().unwrap().clone();
+                let known = owner == self.cfg.name
+                    || shared_peer_name(&self.cfg, &sm).as_deref() == Some(owner.as_str());
+                if sm.configured() && known && self.shared_owner != owner {
+                    info!("shared owner adopted from {name}: {owner}");
+                    self.shared_owner = owner.clone();
+                    self.persist_shared_owner(&owner);
+                    crate::ui::set_shared_owner(Some(owner.clone()));
+                    let to_me = owner == self.cfg.name;
+                    self.apply_peer_block(if to_me { None } else { sm.local_rect });
+                }
             }
             // Exhaustive on purpose — no catch-all. These are consumed by the
             // session reader itself, or are not router business. Adding a
@@ -880,18 +1022,10 @@ impl Router {
         let to_me = owner == self.cfg.name;
         info!("shared monitor -> {owner}");
         self.shared_owner = owner.clone();
+
         // Persist so a restart resumes with the panel's real state instead of
-        // silently claiming it back for this machine. (Re-loaded fresh: the
-        // editor also writes the config, and reconnects re-call this with an
-        // unchanged owner — only a real switch touches the disk.)
-        if let Ok(mut c) = Config::load_or_init() {
-            if c.shared_monitor.last_owner.as_deref() != Some(owner.as_str()) {
-                c.shared_monitor.last_owner = Some(owner.clone());
-                if let Err(e) = c.save() {
-                    warn!("could not persist shared owner: {e:#}");
-                }
-            }
-        }
+        // silently claiming it back for this machine.
+        self.persist_shared_owner(&owner);
         crate::ui::set_shared_owner(Some(owner));
         crate::ui::set_shared_error(None);
         self.broadcast_state();
@@ -912,6 +1046,27 @@ impl Router {
             warn!("shared monitor: peer '{peer}' offline");
             crate::ui::set_shared_error(Some(format!("{peer} offline")));
         }
+
+        // The panel just stopped showing the peer we are currently forwarding
+        // ALL our input to (crossed onto the panel, then the panel was flipped
+        // back to us — hotkey, editor button, or the physical KVM switch).
+        // Forwarding is global once crossed, not scoped to the panel rect, so
+        // without this pull-back input keeps going to the peer while the
+        // panel visibly shows us again: the desk looks "stuck" on the peer's
+        // side with no way back short of a hard panic escape. Runs LAST, after
+        // `blocked` above is already cleared for `to_me` — otherwise warping
+        // the cursor onto the (still blocked) panel makes the cursor guard
+        // immediately re-trigger the very handover this is undoing.
+        if to_me && self.focus.as_deref() == Some(peer.as_str()) {
+            info!("shared monitor reclaimed while forwarding to {peer} — pulling input home");
+            self.release_all();
+            self.send_to_focus(Msg::Leave);
+            self.focus = None;
+            self.exit_forwarding();
+            if let Some(lr) = sm.local_rect {
+                platform::warp_cursor_settled(lr.x + lr.w / 2, lr.y + lr.h / 2);
+            }
+        }
     }
 
     fn on_session_event(&mut self, ev: SessionEvent) {
@@ -923,8 +1078,10 @@ impl Router {
                 self.refresh_shared_rects();
                 self.refresh_portals();
                 // Re-establish the shared-monitor block on the (re)connected
-                // peer to match the current owner.
-                if self.shared.read().unwrap().configured() {
+                // peer to match the current owner — the ARBITER's owner. The
+                // other side waits to be told (SharedBlock + StateSync) rather
+                // than pushing a stale, restart-restored guess of its own.
+                if self.arbiter && self.shared.read().unwrap().configured() {
                     let owner = self.shared_owner.clone();
                     self.set_shared_owner(&owner);
                 }
@@ -1177,27 +1334,50 @@ impl Router {
         let beyond = screens
             .iter()
             .filter(|m| !is_panel(m))
-            .map(|m| to_global(m))
-            .find(|g| match edge {
+            .map(|m| (*m, to_global(m)))
+            .find(|(_, g)| match edge {
                 Edge::Top => (g.bottom() - b.y).abs() <= 8 && g.x <= ex && ex < g.right(),
                 Edge::Bottom => (g.y - b.bottom()).abs() <= 8 && g.x <= ex && ex < g.right(),
                 Edge::Left => (g.right() - b.x).abs() <= 8 && g.y <= ey && ey < g.bottom(),
                 Edge::Right => (g.x - b.right()).abs() <= 8 && g.y <= ey && ey < g.bottom(),
             });
 
-        if let Some(g) = beyond {
-            // Land just inside that peer monitor, preserving the crossing point,
-            // then map back to peer coordinates for injection on the peer.
-            let (gx, gy) = match edge {
-                Edge::Top => (ex, g.bottom() - 1 - EDGE_INSET),
-                Edge::Bottom => (ex, g.y + EDGE_INSET),
-                Edge::Left => (g.right() - 1 - EDGE_INSET, ey),
-                Edge::Right => (g.x + EDGE_INSET, ey),
+        if let Some((m, g)) = beyond {
+            // Land just inside that peer monitor, preserving the crossing point
+            // along it — but compute the landing point in the PEER's OWN
+            // coordinates (`m`), with EDGE_INSET applied natively there,
+            // instead of adding the inset on this side and dividing the whole
+            // point by the panel/peer scale afterwards. That scale is rarely
+            // 1 (e.g. this desk's 2560-wide panel over a 1920-wide peer
+            // monitor divides EDGE_INSET down to ~1px), which can shrink the
+            // margin enough that the peer's own cursor guard reads the
+            // landing spot as still inside its blocked panel rect and bounces
+            // it straight back — the handover "crosses" but never sticks.
+            let (x, y) = match edge {
+                Edge::Top | Edge::Bottom => {
+                    let depth = LAND_DEPTH.min((m.h / 3).max(EDGE_INSET));
+                    let px = (m.x as f32 + (ex - g.x) as f32 / sx) as i32;
+                    let py = if edge == Edge::Top { m.bottom() - 1 - depth } else { m.y + depth };
+                    (px.clamp(m.x, m.right() - 1), py)
+                }
+                Edge::Left | Edge::Right => {
+                    let depth = LAND_DEPTH.min((m.w / 3).max(EDGE_INSET));
+                    let py = (m.y as f32 + (ey - g.y) as f32 / sy) as i32;
+                    let px = if edge == Edge::Left { m.right() - 1 - depth } else { m.x + depth };
+                    (px, py.clamp(m.y, m.bottom() - 1))
+                }
             };
-            let x = prect.x + ((gx - local.x) as f32 / sx) as i32;
-            let y = prect.y + ((gy - local.y) as f32 / sy) as i32;
             info!("cursor -> {peer} (shared geometry: {edge} edge -> peer monitor)");
             crate::ui::set_cross_flash(edge);
+            // NOTE: the panel deliberately does NOT change hands here. The
+            // cursor went past the panel onto another of the peer's monitors;
+            // the physical panel still shows whoever it showed. Flipping the
+            // owner "so the peer's block clears" was tried and it desynced
+            // kayiver from the monitor's real input: the panel kept showing
+            // this desk while kayiver believed the peer had it, so every
+            // later move onto the panel vanished into the peer. A dip from
+            // that monitor back onto the panel is an ordinary seam crossing
+            // and comes home through SharedCross, as it should.
             self.focus = Some(peer);
             self.send_to_focus(Msg::EnterAt { x, y });
             return true;
@@ -1346,6 +1526,19 @@ impl Router {
                 }
             }
         }
+        // Arm any shared-panel edge that leads to a peer monitor BEYOND the
+        // panel, even when no machine-level LINK sits on that edge. The
+        // crossing there is derived from real geometry (`try_shared_edge_cross`),
+        // not from a link — e.g. a Windows-only screen physically above the
+        // panel. Without this the edge is never armed, so the hook never fires
+        // and the cursor cannot leave the panel toward that monitor at all
+        // (the "can't cross from the shared panel up to C" bug): the reverse
+        // link only arms the OTHER desk's edge.
+        for edge in self.shared_beyond_edges(&sm) {
+            if !active.contains(&edge) {
+                active.push(edge);
+            }
+        }
         // Arm the tablet's edge too, so crossing it hands control to the device.
         if let Some(te) = *self.ctl.tablet_edge.read().unwrap() {
             if crate::android::first_serial().is_some() && !active.contains(&te) {
@@ -1398,6 +1591,45 @@ impl Router {
             })
             .unwrap_or(false);
         !has_beyond
+    }
+
+    /// Edges of THIS desk where the shared panel has a peer monitor just
+    /// beyond it — the edges `try_shared_edge_cross` can hand across. Used to
+    /// arm those edges independently of the layout links (the link that makes
+    /// C sit above the panel is drawn on the PEER's side, so it never arms our
+    /// edge). Only while the shared peer's session is live.
+    fn shared_beyond_edges(&self, sm: &SharedMonitor) -> Vec<Edge> {
+        let Some(peer) = shared_peer_name(&self.cfg, sm) else { return Vec::new() };
+        if !self.session_exists(&peer) {
+            return Vec::new();
+        }
+        let (Some(local), Some(prect)) = (sm.local_rect, sm.peer_rect) else { return Vec::new() };
+        let screens = self.peer_screens.read().unwrap().get(&peer).cloned().unwrap_or_default();
+        let mut out = Vec::new();
+        for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+            let beyond = screens.iter().any(|m| {
+                let is_panel = m.x == prect.x && m.y == prect.y && m.w == prect.w && m.h == prect.h;
+                !is_panel
+                    && match edge {
+                        Edge::Top => (m.bottom() - prect.y).abs() <= 8 && m.x < prect.right() && m.right() > prect.x,
+                        Edge::Bottom => (m.y - prect.bottom()).abs() <= 8 && m.x < prect.right() && m.right() > prect.x,
+                        Edge::Left => (m.right() - prect.x).abs() <= 8 && m.y < prect.bottom() && m.bottom() > prect.y,
+                        Edge::Right => (m.x - prect.right()).abs() <= 8 && m.y < prect.bottom() && m.bottom() > prect.y,
+                    }
+            });
+            // Only arm where the panel actually reaches this desk edge, so we
+            // don't arm an interior seam the OS already handles as one desktop.
+            let at_desk_edge = match edge {
+                Edge::Top => local.y <= self.ctl.bounds.y + 4,
+                Edge::Bottom => local.bottom() >= self.ctl.bounds.bottom() - 4,
+                Edge::Left => local.x <= self.ctl.bounds.x + 4,
+                Edge::Right => local.right() >= self.ctl.bounds.right() - 4,
+            };
+            if beyond && at_desk_edge {
+                out.push(edge);
+            }
+        }
+        out
     }
 }
 
@@ -1799,12 +2031,26 @@ async fn run_session(
     let geo_tx = out_tx.clone();
     let geo_task = tokio::spawn(async move {
         let mut last = platform::monitors();
+        // (current shape, desired arrangement) we already tried to apply —
+        // once per pair, so an OS that refuses cannot keep us retrying, but
+        // a NEW arrangement (or the OS forgetting again) is always tried.
+        let mut tried: Option<(Vec<kayiver_core::proto::Rect>, Vec<kayiver_core::proto::Rect>)> = None;
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             // Compare the monitor LIST, not the bounding box: a monitor can
             // move without changing the union, and the crossing math cares
             // about each rect.
             let mons = platform::monitors();
+            // The OS forgot the desk arrangement (Windows does, every time
+            // the panel's input is switched away): put it back first and
+            // report only the settled geometry.
+            let desired = Config::load_or_init().map(|c| c.arrangement).unwrap_or_default();
+            if !desired.is_empty() && tried.as_ref() != Some(&(mons.clone(), desired.clone())) {
+                tried = Some((mons.clone(), desired.clone()));
+                if reapply_arrangement(&desired) {
+                    continue;
+                }
+            }
             if mons == last {
                 continue;
             }

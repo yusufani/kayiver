@@ -183,6 +183,11 @@ const SOURCE_HID_STATE: i32 = 1; // kCGEventSourceStateHIDSystemState
 // ------------------------------------------------------------- helpers ----
 
 /// Every physical display, in global top-left-origin coordinates.
+/// macOS keeps its arrangement itself (System Settings); nothing to re-apply.
+pub fn apply_arrangement(_desired: &[Rect]) -> Result<bool> {
+    Ok(false)
+}
+
 pub fn monitors() -> Vec<Rect> {
     unsafe {
         let mut ids = [0u32; 16];
