@@ -605,6 +605,139 @@ fn shared_panel_arms_the_edge_to_a_beyond_monitor_without_a_link() {
     assert!(host.state()["forwarding"].as_bool().unwrap(), "host must be forwarding to the client");
 }
 
+/// Bug class #13: the peer's copy of the shared panel MOVES on its own —
+/// Windows re-lands it at a slightly different origin after every KVM /
+/// display event (seen drifting -638 → -335 → -300 on the real desk). Every
+/// downstream number is anchored on that rect, so if kayiver keeps the stale
+/// one: crossings land at the wrong spot ("I cross from the middle and come
+/// out somewhere unrelated"), and the peer keeps BLOCKING the old rectangle,
+/// so the notice it draws and the region the cursor skips are both in the
+/// wrong place.
+///
+/// Deliberately a different desk shape from any real one here: an ultrawide
+/// panel and an off-origin peer, so nothing can pass by matching one desk's
+/// numbers.
+#[test]
+fn a_peer_panel_that_drifts_keeps_the_crossing_aligned() {
+    let port = 27350;
+    let host_toml = format!(
+        r#"name = "simhost"
+mode = "host"
+port = {port}
+edge_dwell_ms = 0
+
+[[peers]]
+name = "simwin"
+psk = "{PSK}"
+os = "windows"
+
+[[peers.screens]]
+x = 500
+y = 300
+w = 3440
+h = 1440
+
+[[layout.links]]
+from = "simhost"
+edge = "right"
+to = "simwin"
+
+[shared_monitor]
+local_index = 2
+peer = "simwin"
+peer_index = 0
+hotkey = true
+
+[shared_monitor.local_rect]
+x = 1600
+y = 0
+w = 3440
+h = 1440
+
+[shared_monitor.peer_rect]
+x = 500
+y = 300
+w = 3440
+h = 1440
+"#
+    );
+    let client_toml = format!(
+        r#"name = "simwin"
+mode = "client"
+port = {port}
+
+[[peers]]
+name = "simhost"
+psk = "{PSK}"
+addr = "127.0.0.1:{port}"
+"#
+    );
+    // host: A (1600x1200) + the ultrawide panel to its right.
+    let mut host = Machine::spawn("host", &host_toml, "0,0,1600,1200;1600,0,3440,1440", port + 1, "drift");
+    // client: its copy of the panel, parked at an off-origin spot.
+    let mut client = Machine::spawn("client", &client_toml, "500,300,3440,1440", port + 2, "drift");
+    wait_until("host sees the client", Duration::from_secs(15), || {
+        host.log_text().contains("client connected: simwin")
+    });
+    give_panel_to_client(&mut host);
+
+    // Cross onto the panel at a known height and note where it lands.
+    let cross_at = |host: &mut Machine, client: &mut Machine, y: i64| -> (i64, i64) {
+        client.injected();
+        for (x, yy) in [(1200, y), (1560, y), (1610, y), (1650, y)] {
+            host.ctl(serde_json::json!({ "op": "warp", "x": x, "y": yy }));
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        let mut landing = None;
+        wait_until("client receives the EnterAt warp", Duration::from_secs(10), || {
+            landing = client
+                .injected()
+                .iter()
+                .find(|e| e["kind"] == "mouse_to" && e["dx"] == 0 && e["dy"] == 0)
+                .map(|e| (e["x"].as_i64().unwrap(), e["y"].as_i64().unwrap()));
+            landing.is_some()
+        });
+        landing.unwrap()
+    };
+    let before = cross_at(&mut host, &mut client, 600);
+    // Entered halfway down a 1440-tall panel that starts at y=300 on the peer.
+    assert!(
+        (before.1 - (300 + 600)).abs() <= 8,
+        "baseline landing should track the entry height, got {before:?}"
+    );
+
+    // The peer's panel DRIFTS to a new origin (same size), as a display event
+    // would leave it.
+    host.ctl(serde_json::json!({ "op": "warp", "x": 800, "y": 600 }));
+    assert!(client.ctl(serde_json::json!({ "op": "set_monitors", "monitors": [[-260, 900, 3440, 1440]] }))["ok"]
+        .as_bool()
+        .unwrap());
+    wait_until("host notices the peer panel moved", Duration::from_secs(10), || {
+        host.log_text().contains("shared panel moved on simwin")
+    });
+
+    // Hand the panel to the HOST, so the CLIENT is the side that blocks its
+    // copy — and it must block the NEW rectangle, not the old one. A stale
+    // block is what puts the skipped region (and the "showing the other
+    // machine" notice drawn on it) in the wrong place.
+    assert!(host.ctl(serde_json::json!({ "op": "hotkey" }))["ok"].as_bool().unwrap());
+    wait_until("client blocks the panel at its new origin", Duration::from_secs(10), || {
+        client.state()["blocked"]
+            .as_array()
+            .map(|b| b[0].as_i64() == Some(-260) && b[1].as_i64() == Some(900))
+            .unwrap_or(false)
+    });
+
+    // And the same crossing must land at the same RELATIVE spot on the panel,
+    // now expressed in the panel's new coordinates.
+    give_panel_to_client(&mut host);
+    let after = cross_at(&mut host, &mut client, 600);
+    assert!(
+        (after.1 - (900 + 600)).abs() <= 8,
+        "after the drift the landing must follow the panel, got {after:?} (stale rect would give {before:?})"
+    );
+}
+
 /// Bug class #11: the editor's desk arrangement must reach the peer and
 /// stick. The real desk: Windows keeps parking C BESIDE its copy of the panel
 /// after every KVM switch, while C physically sits ABOVE it — so the panel's
