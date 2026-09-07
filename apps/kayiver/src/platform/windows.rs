@@ -366,6 +366,41 @@ pub fn display_disabled(_index: u32) -> Option<bool> {
 /// the SAME order `disable_display` indexes into. `monitors()` is built from
 /// this so an index means the exact same physical display in the editor and in
 /// detach/attach (otherwise the wrong monitor gets turned off).
+/// Move attached displays to `desired` (see `layout::arranged`). Returns
+/// Ok(true) when the topology was changed. Positions are set per device with
+/// CDS_NORESET and committed in one apply, the same dance as detach/enable.
+pub fn apply_arrangement(desired: &[Rect]) -> Result<bool> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::POINTL;
+    use windows::Win32::Graphics::Gdi::{
+        ChangeDisplaySettingsExW, EnumDisplaySettingsW, CDS_NORESET, CDS_TYPE, CDS_UPDATEREGISTRY,
+        DEVMODEW, DISP_CHANGE_SUCCESSFUL, DM_POSITION, ENUM_CURRENT_SETTINGS,
+    };
+    let attached = attached_displays();
+    let current: Vec<Rect> = attached.iter().map(|(_, r)| *r).collect();
+    let Some(target) = kayiver_core::layout::arranged(&current, desired) else {
+        return Ok(false);
+    };
+    for ((name, cur), want) in attached.iter().zip(&target) {
+        if cur.x == want.x && cur.y == want.y {
+            continue;
+        }
+        let wname = to_wide(name);
+        let mut dm = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
+        let ok = unsafe { EnumDisplaySettingsW(PCWSTR(wname.as_ptr()), ENUM_CURRENT_SETTINGS, &mut dm) };
+        anyhow::ensure!(ok.as_bool(), "EnumDisplaySettings failed for {name}");
+        dm.Anonymous1.Anonymous2.dmPosition = POINTL { x: want.x, y: want.y };
+        dm.dmFields = dm.dmFields | DM_POSITION;
+        let r = unsafe {
+            ChangeDisplaySettingsExW(PCWSTR(wname.as_ptr()), Some(&dm), None, CDS_UPDATEREGISTRY | CDS_NORESET, None)
+        };
+        anyhow::ensure!(r == DISP_CHANGE_SUCCESSFUL, "moving {name} to ({},{}) failed: {r:?}", want.x, want.y);
+    }
+    let r = unsafe { ChangeDisplaySettingsExW(PCWSTR::null(), None, None, CDS_TYPE(0), None) };
+    anyhow::ensure!(r == DISP_CHANGE_SUCCESSFUL, "applying arrangement failed: {r:?}");
+    Ok(true)
+}
+
 fn attached_displays() -> Vec<(String, Rect)> {
     use windows::core::PCWSTR;
     use windows::Win32::Graphics::Gdi::{EnumDisplaySettingsW, DEVMODEW, ENUM_CURRENT_SETTINGS};
@@ -507,6 +542,36 @@ pub fn launch_in_active_session() -> Result<()> {
             let logdir = std::path::Path::new(r"C:\ProgramData\kayiver");
             let _ = std::fs::create_dir_all(logdir);
             std::env::set_var("KAYIVER_LOGFILE", logdir.join("prelogon.log"));
+        }
+
+        // The token WTSQueryUserToken hands back for a UAC admin is the
+        // FILTERED (medium-integrity) token. At medium integrity our injected
+        // input (SetCursorPos / SendInput) is silently blocked by UIPI
+        // whenever an ELEVATED window holds the foreground — the cursor
+        // freezes and every warp fails (warp_ok=false). Swap in the user's
+        // LINKED (full, high-integrity) token when one exists so kayiver
+        // injects regardless of what is focused. Non-admin users have no
+        // linked token; keep the original for them.
+        if !prelogon {
+            use windows::Win32::Security::{GetTokenInformation, TokenLinkedToken, TOKEN_LINKED_TOKEN};
+            let mut linked = TOKEN_LINKED_TOKEN::default();
+            let mut ret = 0u32;
+            if GetTokenInformation(
+                token,
+                TokenLinkedToken,
+                Some(&mut linked as *mut _ as *mut std::ffi::c_void),
+                std::mem::size_of::<TOKEN_LINKED_TOKEN>() as u32,
+                &mut ret,
+            )
+            .is_ok()
+                && !linked.LinkedToken.is_invalid()
+            {
+                tracing::info!("using the user's elevated (linked) token — high-integrity injection (UIPI)");
+                let _ = CloseHandle(token);
+                token = linked.LinkedToken;
+            } else {
+                tracing::info!("no linked (elevated) token available — running at the token's own integrity");
+            }
         }
 
         let mut env: *mut std::ffi::c_void = std::ptr::null_mut();
