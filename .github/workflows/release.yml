@@ -91,14 +91,24 @@ jobs:
             KCPW=$(uuidgen)
             security create-keychain -p "$KCPW" "$KC"
             security set-keychain-settings -lut 21600 "$KC"
+            # Put it in the search list BEFORE importing: set-key-partition-list
+            # looks the key up through the search list and fails with "the
+            # specified item could not be found" otherwise.
+            security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
             security unlock-keychain -p "$KCPW" "$KC"
             echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
             security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$CERT_PASSWORD" \
-              -T /usr/bin/codesign
+              -A -T /usr/bin/codesign
+            # Stops codesign blocking on a UI prompt that no one can answer.
+            # Advisory: -A above already opens the key to every tool.
             security set-key-partition-list -S apple-tool:,apple:,codesign: \
-              -s -k "$KCPW" "$KC" >/dev/null
-            security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
-            HASH=$(security find-identity -v "$KC" | awk 'NR==1{print $2}')
+              -s -k "$KCPW" "$KC" >/dev/null 2>&1 || true
+            # NOT `find-identity -v`: our certificate is self-signed, so macOS
+            # reports it as CSSMERR_TP_NOT_TRUSTED and the "valid identities"
+            # list comes back EMPTY — while codesign signs with it happily.
+            HASH=$(security find-identity "$KC" | awk '/\)/ {print $2; exit}')
+            test -n "$HASH" || { echo "no signing identity in the keychain"; exit 1; }
+            echo "signing with $HASH"
             codesign --force --deep --sign "$HASH" --keychain "$KC" \
               --identifier app.kayiver dist/Kayiver.app
             rm -f "$RUNNER_TEMP/cert.p12"
