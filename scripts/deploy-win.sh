@@ -39,7 +39,13 @@ echo "==> deploying to $HOST"
 
 echo "==> stopping kayiver.exe"
 "${SSH[@]}" 'taskkill /IM kayiver.exe /F' >/dev/null 2>&1 || true
-sleep 1
+# Wait for it to actually go: the successor's single-instance guard only
+# retries for ~6s, so a predecessor still holding the port makes the new one
+# exit with "another kayiver instance is already running" and nothing runs.
+for _ in $(seq 1 20); do
+  if ! "${SSH[@]}" 'tasklist /FI "IMAGENAME eq kayiver.exe" /NH' 2>/dev/null | grep -qi kayiver; then break; fi
+  sleep 1
+done
 
 echo "==> copying $EXE"
 scp -i "$KEY" -o ConnectTimeout=5 "$EXE" "$USER_@$HOST:$REMOTE_EXE"
