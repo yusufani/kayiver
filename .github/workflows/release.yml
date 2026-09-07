@@ -1,0 +1,129 @@
+name: release
+
+# Cut a release by pushing a tag:
+#   git tag -a v0.3.0 -m "Kayıver 0.3.0" && git push origin v0.3.0
+# This builds both binaries and attaches them to the GitHub Release for that
+# tag. Write the release notes in the GitHub UI (the release is created as a
+# draft so nothing goes public until you publish it).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    # Cross-compiled from Linux with mingw, exactly like the local
+    # `cargo build --target x86_64-pc-windows-gnu` we deploy from.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y mingw-w64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - run: cargo build --release -p kayiver --target x86_64-pc-windows-gnu
+      - run: cp target/x86_64-pc-windows-gnu/release/kayiver.exe kayiver-windows-x64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: kayiver-windows-x64.exe
+
+  macos:
+    runs-on: macos-14 # Apple silicon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p kayiver
+
+      # Assemble the .app the same way packaging/macos/build-app.sh does, but
+      # without touching /Applications or the local keychain.
+      - name: Assemble Kayiver.app
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          APP=dist/Kayiver.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp target/release/kayiver "$APP/Contents/MacOS/kayiver"
+          cp assets/icons/Kayiver.icns "$APP/Contents/Resources/Kayiver.icns"
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleName</key><string>Kayiver</string>
+              <key>CFBundleDisplayName</key><string>Kayıver</string>
+              <key>CFBundleIdentifier</key><string>app.kayiver</string>
+              <key>CFBundleExecutable</key><string>kayiver</string>
+              <key>CFBundleIconFile</key><string>Kayiver</string>
+              <key>CFBundlePackageType</key><string>APPL</string>
+              <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+              <key>CFBundleVersion</key><string>${VERSION}</string>
+              <key>LSMinimumSystemVersion</key><string>11.0</string>
+              <key>NSHighResolutionCapable</key><true/>
+              <key>NSHumanReadableCopyright</key><string>MIT</string>
+          </dict>
+          </plist>
+          PLIST
+
+      # macOS hands Accessibility / Input-Monitoring permission to a SIGNATURE,
+      # not to a path. Signing every release with the SAME certificate is what
+      # lets an update keep the permissions the user already granted; an
+      # ad-hoc signature changes every build, so each update would ask again.
+      # Set these two repo secrets to get that (export the "Kayiver Self-Signed"
+      # cert as a .p12, then `base64 -i cert.p12 | pbcopy`):
+      #   MACOS_CERT_P12       base64 of the .p12
+      #   MACOS_CERT_PASSWORD  its password
+      - name: Sign Kayiver.app
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CERT_P12:-}" ]; then
+            echo "::warning::No MACOS_CERT_P12 secret — ad-hoc signing. Users will"
+            echo "::warning::have to re-grant Accessibility/Input Monitoring on this update."
+            codesign --force --deep --sign - --identifier app.kayiver dist/Kayiver.app
+          else
+            KC="$RUNNER_TEMP/build.keychain"
+            KCPW=$(uuidgen)
+            security create-keychain -p "$KCPW" "$KC"
+            security set-keychain-settings -lut 21600 "$KC"
+            security unlock-keychain -p "$KCPW" "$KC"
+            echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$CERT_PASSWORD" \
+              -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple:,codesign: \
+              -s -k "$KCPW" "$KC" >/dev/null
+            security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+            HASH=$(security find-identity -v "$KC" | awk 'NR==1{print $2}')
+            codesign --force --deep --sign "$HASH" --keychain "$KC" \
+              --identifier app.kayiver dist/Kayiver.app
+            rm -f "$RUNNER_TEMP/cert.p12"
+          fi
+          codesign -dv dist/Kayiver.app 2>&1 | grep -i identifier
+
+      - name: Zip the bundle
+        run: ditto -c -k --keepParent dist/Kayiver.app Kayiver-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: Kayiver-macos-arm64.zip
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      # Draft, so the notes can be written (or edited) before anyone sees it.
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: Kayıver ${{ github.ref_name }}
+          files: |
+            kayiver-windows-x64.exe
+            Kayiver-macos-arm64.zip
