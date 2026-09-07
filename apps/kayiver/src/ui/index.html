@@ -738,13 +738,38 @@ function mergeShared() {
   b.el.style.width = a.w + 'px'; b.el.style.height = a.h + 'px';
   b.el.style.display = 'none'; pos(b);
   const anchor = { [a.machine]: a, [b.machine]: b };
+  // `b`'s on-screen size was just forced to match `a` above, even though its
+  // REAL resolution is usually different (the shared panel is one physical
+  // concept drawn at one size, not two). A sibling monitor on b's side —
+  // e.g. Windows' second screen sitting beside its copy of the panel — must
+  // therefore have its offset from b rescaled by how much b itself was
+  // stretched (a.w / b's true width), not by the flat global scale used
+  // everywhere else. Using gScale there understates the offset whenever the
+  // panel and its peer copy differ in resolution (a common desk: a
+  // 2560-wide panel with a 1920-wide Windows copy), which visibly drags that
+  // sibling back on top of the panel — or even past it onto `a`'s neighbour.
+  const scaleOf = {
+    [a.machine]: { x: gScale, y: gScale },
+    [b.machine]: { x: a.w / (b.realW || 1), y: a.h / (b.realH || 1) },
+  };
   for (const o of mons) {
     if (o === a || o === b) continue;
     if (!(o.machine === a.machine || o.machine === b.machine)) continue;
     if (savedHas(o)) { clamp(o); pos(o); continue; }
     const an = anchor[o.machine];
-    o.x = a.x + (o.realX - an.realX) * gScale;
-    o.y = a.y + (o.realY - an.realY) * gScale;
+    const sc = scaleOf[o.machine];
+    o.x = a.x + (o.realX - an.realX) * sc.x;
+    o.y = a.y + (o.realY - an.realY) * sc.y;
+    // Draw the sibling at the SAME scale it was positioned with. On the peer
+    // side the panel copy was stretched to fill `a` (a.w×a.h over its real
+    // 1920×1080), so a peer sibling placed in that stretched space must be
+    // drawn stretched too — otherwise it renders at the flat global scale and
+    // ends up smaller than the seam it should sit flush against, leaving a
+    // visible gap above the panel (C floating detached). Same scale on both
+    // axes keeps it touching the panel edge, exactly as it does physically.
+    o.w = Math.max(46, o.realW * sc.x);
+    o.h = Math.max(32, o.realH * sc.y);
+    o.el.style.width = o.w + 'px'; o.el.style.height = o.h + 'px';
     clamp(o); pos(o);
   }
   renderSplit(a, [a.machine, b.machine]);
@@ -1373,10 +1398,40 @@ async function poll() {
   setTimeout(poll, 1000);
 }
 
+// Where the user put each PEER monitor relative to that peer's copy of the
+// shared panel, in the peer's OWN pixels. Saved with the layout so the peer
+// can make its OS arrangement match the desk — Windows forgets the
+// arrangement whenever the panel's input is switched away, and the crossing
+// math is geometry-first, so "C beside the panel" turns the physical top edge
+// into a wall. Only when something was actually moved off its real spot.
+function peerArrangements() {
+  const out = {};
+  const sp = sharedPair(); if (!sp) return out;
+  const { a, b } = sp;
+  const sx = a.w / (b.realW || 1), sy = a.h / (b.realH || 1);
+  const tol = Math.ceil(SNAP * 2 / Math.min(sx, sy)); // tile drops snap on canvas px, not real px
+  const rects = []; let moved = false;
+  for (const o of mons) {
+    if (o.machine !== b.machine) continue;
+    if (o === b) { rects.push({ x: b.realX, y: b.realY, w: b.realW, h: b.realH }); continue; }
+    let x = Math.round(b.realX + (o.x - b.x) / sx), y = Math.round(b.realY + (o.y - b.y) / sy);
+    // flush against the panel copy's edges where the tile touches it
+    if (Math.abs(x + o.realW - b.realX) <= tol) x = b.realX - o.realW;
+    if (Math.abs(x - (b.realX + b.realW)) <= tol) x = b.realX + b.realW;
+    if (Math.abs(y + o.realH - b.realY) <= tol) y = b.realY - o.realH;
+    if (Math.abs(y - (b.realY + b.realH)) <= tol) y = b.realY + b.realH;
+    if (x !== o.realX || y !== o.realY) moved = true;
+    rects.push({ x, y, w: o.realW, h: o.realH });
+  }
+  if (moved) out[b.machine] = rects;
+  return out;
+}
+
 document.getElementById('save').addEventListener('click', async () => {
   const links = currentLinks();
   if (machines.length > 1 && links.length === 0) { setMsg(t('noTouch'), 'err'); return; }
-  const r = await fetch('/api/layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(links) });
+  const body = { links, arrangements: peerArrangements() };
+  const r = await fetch('/api/layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   savePositions();
   setMsg(r.ok ? t('saved') : t('saveFail') + await r.text(), r.ok ? 'ok' : 'err');
 });
