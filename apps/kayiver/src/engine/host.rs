@@ -163,6 +163,26 @@ pub fn run(cfg: Config) -> Result<()> {
         platform::start_cursor_guard(ctl.clone(), cap_tx);
     }
 
+    // A window that opens on OUR copy of the shared panel while the panel is
+    // showing the PEER is stranded: nothing is drawn there for us, and the
+    // cursor deliberately skips that rect, so it cannot even be fetched. Sweep
+    // such windows onto a monitor that is actually showing us. Poll rather
+    // than hook: windows appear, move and un-maximize on their own, and one
+    // cheap enumeration a second is far simpler than shell hooks.
+    {
+        let ctl = ctl.clone();
+        std::thread::Builder::new()
+            .name("kayiver-window-rescue".into())
+            .spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let blocked = *ctl.blocked.read().unwrap();
+                if let Some(b) = blocked {
+                    platform::rescue_windows_off(b);
+                }
+            })
+            .ok();
+    }
+
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(host_main(cfg, ctl, cap_rx))
 }
@@ -598,6 +618,11 @@ impl Router {
             }
         }
         *self.ctl.blocked.write().unwrap() = rect;
+        // Don't wait a poll tick: anything already sitting on the panel we
+        // just lost is stranded right now.
+        if let Some(b) = rect {
+            platform::rescue_windows_off(b);
+        }
     }
 
     /// Remember which machine the panel shows across restarts. Only a real

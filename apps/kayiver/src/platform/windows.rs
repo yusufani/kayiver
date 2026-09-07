@@ -476,6 +476,90 @@ fn attach_input_desktop() -> bool {
     }
 }
 
+/// Move every app window that is stranded on `blocked` — this machine's copy
+/// of the shared panel while the panel is showing the OTHER machine — onto a
+/// monitor that is actually visible here. Without this a window that opens
+/// (or was left) there is invisible and unreachable: the cursor cannot even
+/// go get it, because the whole point of the block is that the cursor skips
+/// that rect. Returns how many windows were rescued.
+pub fn rescue_windows_off(blocked: Rect) -> usize {
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, IsIconic,
+        IsWindowVisible, IsZoomed, SetWindowPos, ShowWindow, GWL_EXSTYLE, SWP_NOACTIVATE,
+        SWP_NOSIZE, SWP_NOZORDER, SW_MAXIMIZE, SW_RESTORE, WS_EX_TOOLWINDOW,
+    };
+
+    // Somewhere to put them: any attached monitor that is not the hidden one.
+    let Some(target) = monitors().into_iter().find(|m| !rects_overlap_mostly(*m, blocked)) else {
+        return 0;
+    };
+
+    struct Ctx {
+        blocked: Rect,
+        target: Rect,
+        moved: usize,
+    }
+    let mut ctx = Ctx { blocked, target, moved: 0 };
+
+    unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = &mut *(lparam.0 as *mut Ctx);
+        unsafe {
+            if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+                return true.into();
+            }
+            // Tool windows (palettes, tooltips) and title-less windows are not
+            // things the user "opened"; moving them causes more churn than it
+            // solves. Our own click-through notice lives on the hidden panel
+            // BY DESIGN and must never be dragged off it.
+            if GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0 {
+                return true.into();
+            }
+            if GetWindowTextLengthW(hwnd) == 0 {
+                return true.into();
+            }
+            let mut r = RECT::default();
+            if GetWindowRect(hwnd, &mut r).is_err() {
+                return true.into();
+            }
+            let win = Rect { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top };
+            if win.w <= 0 || win.h <= 0 {
+                return true.into();
+            }
+            let Some(to) = kayiver_core::layout::relocate_off(win, ctx.blocked, ctx.target) else {
+                return true.into();
+            };
+            // A maximized window ignores a plain move: restore it, move it,
+            // then maximize again so it fills the monitor it landed on.
+            let was_max = IsZoomed(hwnd).as_bool();
+            if was_max {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+            let _ = SetWindowPos(hwnd, None, to.x, to.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            if was_max {
+                let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+            }
+            ctx.moved += 1;
+        }
+        true.into()
+    }
+
+    unsafe {
+        let _ = EnumWindows(Some(each), LPARAM(&mut ctx as *mut Ctx as isize));
+    }
+    if ctx.moved > 0 {
+        tracing::info!("rescued {} window(s) off the hidden shared panel", ctx.moved);
+    }
+    ctx.moved
+}
+
+/// Two rects describing the same monitor (allowing for the small rounding the
+/// shared-panel config can carry).
+fn rects_overlap_mostly(a: Rect, b: Rect) -> bool {
+    kayiver_core::proto::rects_match(a, b)
+}
+
 pub fn ensure_permissions() -> Result<()> {
     Ok(()) // no special permissions needed on Windows
 }
@@ -522,10 +606,24 @@ pub fn launch_in_active_session() -> Result<()> {
         // A user logged in → start on the normal desktop and keep running.
         // Nobody logged in → the pre-logon instance on the secure desktop that
         // bows out once someone signs in.
-        let mut probe = HANDLE::default();
-        let user_logged_in = WTSQueryUserToken(session, &mut probe).is_ok();
-        if !probe.is_invalid() {
-            let _ = CloseHandle(probe);
+        // Retry the probe: right after a sign-in, a deploy restart or a
+        // session transition WTSQueryUserToken can fail for a moment even
+        // though someone IS logged in. Believing that single failure parks the
+        // whole engine on the SECURE desktop for the rest of the session —
+        // input still works (attach_input_desktop follows the input desktop)
+        // but every window we create, notably the "this panel is showing the
+        // other machine" notice, is drawn on a desktop the user never sees.
+        let mut user_logged_in = false;
+        for _ in 0..10 {
+            let mut probe = HANDLE::default();
+            if WTSQueryUserToken(session, &mut probe).is_ok() {
+                if !probe.is_invalid() {
+                    let _ = CloseHandle(probe);
+                }
+                user_logged_in = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
         }
 
         let mut own = HANDLE::default();

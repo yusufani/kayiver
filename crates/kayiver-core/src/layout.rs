@@ -256,3 +256,65 @@ mod arranged_tests {
         assert!(arranged(&cur, &other).is_none(), "a size that is not on this desk matches nothing");
     }
 }
+
+/// Where a window that is sitting on a monitor this machine is NOT showing
+/// (the shared panel handed to the peer) should be moved to, so it is not
+/// stranded on an invisible screen. `win` is the window rect, `blocked` the
+/// hidden monitor, `target` a monitor that IS showing us. `None` when the
+/// window is not on the hidden monitor, or is already fine.
+///
+/// The window keeps its size and its relative spot on the monitor, then is
+/// clamped so it lands fully inside `target` — a window pushed half off the
+/// screen (title bar out of reach) would be no better than a hidden one.
+pub fn relocate_off(win: Rect, blocked: Rect, target: Rect) -> Option<Rect> {
+    // Judge by the window's CENTRE: a window merely overlapping the seam is
+    // still usable, and dragging every straddling window would fight the user.
+    let (cx, cy) = (win.x + win.w / 2, win.y + win.h / 2);
+    if !point_in(blocked, cx, cy) {
+        return None;
+    }
+    let fx = (win.x - blocked.x) as f32 / blocked.w.max(1) as f32;
+    let fy = (win.y - blocked.y) as f32 / blocked.h.max(1) as f32;
+    let w = win.w.min(target.w);
+    let h = win.h.min(target.h);
+    let x = (target.x + (fx * target.w as f32) as i32).clamp(target.x, target.right() - w);
+    let y = (target.y + (fy * target.h as f32) as i32).clamp(target.y, target.bottom() - h);
+    Some(Rect { x, y, w: win.w, h: win.h })
+}
+
+#[cfg(test)]
+mod relocate_tests {
+    use super::*;
+    const BLOCKED: Rect = Rect { x: -320, y: 1080, w: 2560, h: 1440 };
+    const TARGET: Rect = Rect { x: 0, y: 0, w: 1920, h: 1080 };
+
+    #[test]
+    fn moves_a_window_centred_on_the_hidden_monitor() {
+        let win = Rect { x: 700, y: 1700, w: 800, h: 600 };
+        let r = relocate_off(win, BLOCKED, TARGET).expect("centre is on the hidden monitor");
+        assert_eq!((r.w, r.h), (800, 600), "size is preserved");
+        assert!(r.x >= TARGET.x && r.x + r.w <= TARGET.right(), "lands fully on the target: {r:?}");
+        assert!(r.y >= TARGET.y && r.y + r.h <= TARGET.bottom(), "lands fully on the target: {r:?}");
+    }
+
+    #[test]
+    fn leaves_windows_that_are_not_on_the_hidden_monitor() {
+        let on_target = Rect { x: 100, y: 100, w: 400, h: 300 };
+        assert!(relocate_off(on_target, BLOCKED, TARGET).is_none());
+    }
+
+    #[test]
+    fn a_window_bigger_than_the_target_still_lands_at_its_origin() {
+        let huge = Rect { x: 0, y: 1200, w: 2400, h: 1300 };
+        let r = relocate_off(huge, BLOCKED, TARGET).unwrap();
+        assert_eq!((r.x, r.y), (TARGET.x, TARGET.y), "clamped to the target origin, not pushed off");
+    }
+
+    #[test]
+    fn keeps_the_relative_spot_so_a_corner_window_stays_a_corner_window() {
+        let bottom_right = Rect { x: 1900, y: 2300, w: 300, h: 200 };
+        let r = relocate_off(bottom_right, BLOCKED, TARGET).unwrap();
+        assert!(r.x > TARGET.x + TARGET.w / 2, "stays on the right half: {r:?}");
+        assert!(r.y > TARGET.y + TARGET.h / 2, "stays on the lower half: {r:?}");
+    }
+}

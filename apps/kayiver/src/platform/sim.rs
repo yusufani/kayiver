@@ -93,6 +93,12 @@ pub fn desktop_bounds() -> Rect {
     Rect { x: min_x, y: min_y, w: max_x - min_x, h: max_y - min_y }
 }
 
+/// Windows-only: rescuing windows off a hidden monitor is a Win32 window
+/// manager job. Elsewhere the OS keeps its own arrangement, so nothing to do.
+pub fn rescue_windows_off(_blocked: Rect) -> usize {
+    0
+}
+
 pub fn monitors() -> Vec<Rect> {
     world().lock().unwrap().monitors.clone()
 }

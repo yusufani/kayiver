@@ -188,6 +188,12 @@ pub fn apply_arrangement(_desired: &[Rect]) -> Result<bool> {
     Ok(false)
 }
 
+/// Windows-only: rescuing windows off a hidden monitor is a Win32 window
+/// manager job. Elsewhere the OS keeps its own arrangement, so nothing to do.
+pub fn rescue_windows_off(_blocked: Rect) -> usize {
+    0
+}
+
 pub fn monitors() -> Vec<Rect> {
     unsafe {
         let mut ids = [0u32; 16];
