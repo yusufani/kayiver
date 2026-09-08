@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use kayiver_core::layout::{point_in, skip_out, Edge};
+use kayiver_core::layout::{entry_on_rect, point_in, skip_out, Edge};
 use kayiver_core::proto::Rect;
 
 use crate::engine::Captured;
@@ -150,65 +150,6 @@ pub fn start_cursor_guard(ctl: Arc<CaptureCtl>, tx: tokio::sync::mpsc::Unbounded
             }
         })
         .ok();
-}
-
-/// Where the segment `from`→`to` (ending inside `b`) enters the rect, as
-/// fractions across it — the entered edge pinned to exactly 0.0 / 1.0 and the
-/// crossing point preserved along it. Every side the segment could have
-/// crossed is intersected and the first hit along the travel (smallest t)
-/// wins, so a diagonal entry near a corner still resolves to the side that was
-/// physically hit first. When there is no crossing to measure (`from` already
-/// inside, or no motion — e.g. the block appeared under a resting cursor),
-/// falls back to pinning the nearest side of the caught position.
-fn entry_on_rect(b: Rect, from: (i32, i32), to: (i32, i32)) -> (f32, f32) {
-    let (px, py) = (from.0 as f32, from.1 as f32);
-    let (dx, dy) = (to.0 as f32 - px, to.1 as f32 - py);
-    let w = b.w.max(1) as f32;
-    let h = b.h.max(1) as f32;
-    let (x0, y0) = (b.x as f32, b.y as f32);
-    let (x1, y1) = ((b.x + b.w) as f32, (b.y + b.h) as f32);
-
-    let mut best: Option<(f32, (f32, f32))> = None;
-    let mut consider = |t: f32, fx: f32, fy: f32| {
-        // A candidate is a real entry only if the crossing point sits on the
-        // rect's side (small tolerance for float rounding at corners).
-        let on_side = (-0.01..=1.01).contains(&fx) && (-0.01..=1.01).contains(&fy);
-        if (0.0..=1.0).contains(&t) && on_side && best.map_or(true, |(bt, _)| t < bt) {
-            best = Some((t, (fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0))));
-        }
-    };
-    if dx > 0.0 && px < x0 {
-        let t = (x0 - px) / dx;
-        consider(t, 0.0, (py + t * dy - y0) / h);
-    }
-    if dx < 0.0 && px >= x1 {
-        let t = (x1 - px) / dx;
-        consider(t, 1.0, (py + t * dy - y0) / h);
-    }
-    if dy > 0.0 && py < y0 {
-        let t = (y0 - py) / dy;
-        consider(t, (px + t * dx - x0) / w, 0.0);
-    }
-    if dy < 0.0 && py >= y1 {
-        let t = (y1 - py) / dy;
-        consider(t, (px + t * dx - x0) / w, 1.0);
-    }
-    if let Some((_, f)) = best {
-        return f;
-    }
-    let fx = ((to.0 - b.x) as f32 / w).clamp(0.0, 1.0);
-    let fy = ((to.1 - b.y) as f32 / h).clamp(0.0, 1.0);
-    let (dl, dr, dt, db) = (fx, 1.0 - fx, fy, 1.0 - fy);
-    let m = dl.min(dr).min(dt).min(db);
-    if m == dl {
-        (0.0, fy)
-    } else if m == dr {
-        (1.0, fy)
-    } else if m == dt {
-        (fx, 0.0)
-    } else {
-        (fx, 1.0)
-    }
 }
 
 // The `sim` feature swaps the whole OS backend for a scriptable virtual

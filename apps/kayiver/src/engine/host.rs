@@ -651,9 +651,18 @@ impl Router {
                 // moving onto it hands control back at the same relative spot.
                 if let Some(b) = *self.ctl.blocked.read().unwrap() {
                     if point_in(b, nx, ny) {
-                        let fx = (nx - b.x) as f32 / b.w.max(1) as f32;
-                        let fy = (ny - b.y) as f32 / b.h.max(1) as f32;
-                        cross = Some(DrivenCross::Shared(fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0)));
+                        // Hand back at the point the move ENTERED the panel,
+                        // not where it ended. A single mouse report routinely
+                        // carries tens of pixels, so measuring the final
+                        // position returns control at that DEPTH: cross down
+                        // from the screen above and the cursor reappears far
+                        // down the other machine's copy of the panel instead
+                        // of at the seam — the "it teleports to the bottom"
+                        // jump. The cursor guard has always measured the
+                        // entry; this is the same call.
+                        let (fx, fy) =
+                            kayiver_core::layout::entry_on_rect(b, pos, (nx, ny));
+                        cross = Some(DrivenCross::Shared(fx, fy));
                     }
                 }
                 if cross.is_none() {

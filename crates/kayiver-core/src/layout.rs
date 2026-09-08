@@ -318,3 +318,102 @@ mod relocate_tests {
         assert!(r.y > TARGET.y + TARGET.h / 2, "stays on the lower half: {r:?}");
     }
 }
+
+/// Where the segment `from`→`to` (ending inside `b`) enters the rect, as
+/// fractions across it — the entered edge pinned to exactly 0.0 / 1.0 and the
+/// crossing point preserved along it. Every side the segment could have
+/// crossed is intersected and the first hit along the travel (smallest t)
+/// wins, so a diagonal entry near a corner still resolves to the side that was
+/// physically hit first. When there is no crossing to measure (`from` already
+/// inside, or no motion — e.g. the block appeared under a resting cursor),
+/// falls back to pinning the nearest side of the caught position.
+pub fn entry_on_rect(b: Rect, from: (i32, i32), to: (i32, i32)) -> (f32, f32) {
+    let (px, py) = (from.0 as f32, from.1 as f32);
+    let (dx, dy) = (to.0 as f32 - px, to.1 as f32 - py);
+    let w = b.w.max(1) as f32;
+    let h = b.h.max(1) as f32;
+    let (x0, y0) = (b.x as f32, b.y as f32);
+    let (x1, y1) = ((b.x + b.w) as f32, (b.y + b.h) as f32);
+
+    let mut best: Option<(f32, (f32, f32))> = None;
+    let mut consider = |t: f32, fx: f32, fy: f32| {
+        // A candidate is a real entry only if the crossing point sits on the
+        // rect's side (small tolerance for float rounding at corners).
+        let on_side = (-0.01..=1.01).contains(&fx) && (-0.01..=1.01).contains(&fy);
+        if (0.0..=1.0).contains(&t) && on_side && best.map_or(true, |(bt, _)| t < bt) {
+            best = Some((t, (fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0))));
+        }
+    };
+    if dx > 0.0 && px < x0 {
+        let t = (x0 - px) / dx;
+        consider(t, 0.0, (py + t * dy - y0) / h);
+    }
+    if dx < 0.0 && px >= x1 {
+        let t = (x1 - px) / dx;
+        consider(t, 1.0, (py + t * dy - y0) / h);
+    }
+    if dy > 0.0 && py < y0 {
+        let t = (y0 - py) / dy;
+        consider(t, (px + t * dx - x0) / w, 0.0);
+    }
+    if dy < 0.0 && py >= y1 {
+        let t = (y1 - py) / dy;
+        consider(t, (px + t * dx - x0) / w, 1.0);
+    }
+    if let Some((_, f)) = best {
+        return f;
+    }
+    let fx = ((to.0 - b.x) as f32 / w).clamp(0.0, 1.0);
+    let fy = ((to.1 - b.y) as f32 / h).clamp(0.0, 1.0);
+    let (dl, dr, dt, db) = (fx, 1.0 - fx, fy, 1.0 - fy);
+    let m = dl.min(dr).min(dt).min(db);
+    if m == dl {
+        (0.0, fy)
+    } else if m == dr {
+        (1.0, fy)
+    } else if m == dt {
+        (fx, 0.0)
+    } else {
+        (fx, 1.0)
+    }
+}
+
+#[cfg(test)]
+mod entry_tests {
+    use super::*;
+    // A tall panel that does NOT start at the origin, so an off-by-origin bug
+    // cannot hide behind zeros.
+    const PANEL: Rect = Rect { x: -320, y: 1080, w: 2560, h: 1440 };
+
+    #[test]
+    fn a_fast_move_deep_into_the_panel_still_reports_the_edge_it_crossed() {
+        // Came down from the monitor above and overshot far past the seam:
+        // the hand-back must use where it ENTERED (the top edge), not how far
+        // the pointer happened to travel in one report.
+        let (fx, fy) = entry_on_rect(PANEL, (900, 1000), (900, 2400));
+        assert_eq!(fy, 0.0, "entered through the TOP edge");
+        assert!((fx - (1220.0 / 2560.0)).abs() < 0.01, "kept its place along that edge, got {fx}");
+    }
+
+    #[test]
+    fn a_slow_step_across_the_seam_agrees_with_the_fast_one() {
+        let slow = entry_on_rect(PANEL, (900, 1070), (900, 1090));
+        let fast = entry_on_rect(PANEL, (900, 1000), (900, 2400));
+        assert_eq!(slow, fast, "the same crossing must not depend on mouse speed");
+    }
+
+    #[test]
+    fn a_side_entry_pins_that_side() {
+        let (fx, fy) = entry_on_rect(PANEL, (-900, 1800), (500, 1800));
+        assert_eq!(fx, 0.0, "entered through the LEFT edge");
+        assert!((fy - 0.5).abs() < 0.01, "at half height, got {fy}");
+    }
+
+    #[test]
+    fn no_motion_falls_back_to_the_nearest_side() {
+        // The block appeared under a resting cursor: nothing was crossed, so
+        // pin the side it is closest to rather than inventing a travel.
+        let (_, fy) = entry_on_rect(PANEL, (900, 1120), (900, 1120));
+        assert_eq!(fy, 0.0, "nearest side is the top");
+    }
+}

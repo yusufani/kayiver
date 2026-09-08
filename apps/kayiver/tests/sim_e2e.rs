@@ -605,6 +605,119 @@ fn shared_panel_arms_the_edge_to_a_beyond_monitor_without_a_link() {
     assert!(host.state()["forwarding"].as_bool().unwrap(), "host must be forwarding to the client");
 }
 
+/// Bug class #14: coming back from the screen ABOVE the panel must land at
+/// the seam you crossed, not wherever the mouse report happened to end.
+///
+/// Real symptom, in the user's words: "crossing from B to C, the mouse
+/// teleports from the top of B to the bottom of B." One physical flick
+/// carries tens of pixels, so the driven side measured the FINAL position
+/// inside the panel and handed control back at that DEPTH — cross down from
+/// C and you reappear far down the other machine's copy of the panel. The
+/// cursor guard has always measured where the segment ENTERED the rect; the
+/// driven path now uses the same call.
+///
+/// Deliberately its own desk shape, and the panel is off-origin on BOTH
+/// sides so a zero-origin bug cannot hide.
+#[test]
+fn returning_from_the_screen_above_lands_at_the_seam_not_the_far_side() {
+    let port = 27360;
+    let host_toml = format!(
+        r#"name = "simhost"
+mode = "host"
+port = {port}
+edge_dwell_ms = 0
+
+[[peers]]
+name = "simwin"
+psk = "{PSK}"
+os = "windows"
+
+[[peers.screens]]
+x = 300
+y = 700
+w = 2000
+h = 1200
+
+[[layout.links]]
+from = "simhost"
+edge = "right"
+to = "simwin"
+
+[shared_monitor]
+local_index = 2
+peer = "simwin"
+peer_index = 0
+hotkey = true
+
+[shared_monitor.local_rect]
+x = 1200
+y = 0
+w = 2000
+h = 1200
+
+[shared_monitor.peer_rect]
+x = 300
+y = 700
+w = 2000
+h = 1200
+"#
+    );
+    let client_toml = format!(
+        r#"name = "simwin"
+mode = "client"
+port = {port}
+
+[[peers]]
+name = "simhost"
+psk = "{PSK}"
+addr = "127.0.0.1:{port}"
+"#
+    );
+    // host: A + the panel to its right. client: its copy of the panel with a
+    // smaller screen ("C") sitting directly above it.
+    let mut host = Machine::spawn("host", &host_toml, "0,0,1200,1000;1200,0,2000,1200", port + 1, "seam");
+    let mut client = Machine::spawn("client", &client_toml, "300,700,2000,1200;400,-300,1000,1000", port + 2, "seam");
+    wait_until("host sees the client", Duration::from_secs(15), || {
+        host.log_text().contains("client connected: simwin")
+    });
+
+    // The panel shows the HOST, so the client blocks its copy and C is the
+    // only place beyond it. Cross up onto C.
+    wait_until("host arms the top edge toward C", Duration::from_secs(10), || {
+        host.state()["portals"].as_array().unwrap().iter().any(|e| e == "Top")
+    });
+    client.injected();
+    host.ctl(serde_json::json!({ "op": "warp", "x": 1800, "y": 40 }));
+    let r = host.ctl(serde_json::json!({ "op": "edge", "edge": "top", "ratio": 1800.0 / 3200.0 }));
+    assert!(r["ok"].as_bool().unwrap_or(false), "top edge must cross to C: {r}");
+    wait_until("client is driven onto C", Duration::from_secs(10), || {
+        client
+            .injected()
+            .iter()
+            .any(|e| e["kind"] == "mouse_to" && e["dx"] == 0 && e["dy"] == 0 && e["y"].as_i64().unwrap_or(0) < 700)
+    });
+
+    // Now ONE fast flick downward, far past the seam — as a real mouse does.
+    host.ctl(serde_json::json!({ "op": "input_move", "dx": 0, "dy": 900 }));
+    wait_until("control comes home off the panel", Duration::from_secs(10), || {
+        !host.state()["forwarding"].as_bool().unwrap()
+    });
+
+    // It must arrive at the TOP of the host's panel — the seam it crossed —
+    // not 900px down it. The panel is (1200,0,2000,1200).
+    let c = host.state()["cursor"].clone();
+    let (x, y) = (c[0].as_i64().unwrap(), c[1].as_i64().unwrap());
+    assert!(
+        (1200..3200).contains(&x),
+        "should land on the panel, got ({x},{y})"
+    );
+    assert!(
+        y < 200,
+        "must land at the seam it crossed, not deep down the panel: got y={y} \
+         (the flick's depth would have put it near 900)"
+    );
+}
+
 /// Bug class #13: the peer's copy of the shared panel MOVES on its own —
 /// Windows re-lands it at a slightly different origin after every KVM /
 /// display event (seen drifting -638 → -335 → -300 on the real desk). Every
