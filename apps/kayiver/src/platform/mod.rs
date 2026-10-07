@@ -66,7 +66,6 @@ pub struct CaptureCtl {
     pub mac_shortcuts: AtomicBool,
     /// Target LEFT-hid for (⌃, ⌥, ⌘) on Windows peers (right = left+4).
     pub win_mods: RwLock<(u16, u16, u16)>,
-    /// A live desktop snapshot, refreshed when monitors move or reconnect.
     bounds: RwLock<Rect>,
 }
 
@@ -200,6 +199,8 @@ pub use stub::*;
 mod tray_windows;
 #[cfg(all(target_os = "windows", not(feature = "sim")))]
 mod passive_windows;
+#[cfg(all(target_os = "windows", not(feature = "sim")))]
+pub mod quickshare_windows;
 
 /// A full-screen notice drawn on the shared monitor while it's showing the
 /// OTHER machine (this machine's copy is passive). `show(None)` clears it.
@@ -274,4 +275,96 @@ mod tests {
         assert_eq!(fx, 0.0);
         assert!((fy - 700.0 / 1440.0).abs() < 0.01);
     }
+}
+
+/// Backends without persistent identities use conservative geometry matching.
+#[cfg(any(feature = "sim", not(target_os = "macos")))]
+pub fn identified_monitors() -> Vec<(Option<String>, Rect)> {
+    monitors().into_iter().map(|r| (None, r)).collect()
+}
+
+/// Which local monitors (same order as `monitors()`) are built-in laptop
+/// panels. Backends that can't tell report all-false.
+#[cfg(any(feature = "sim", not(any(target_os = "macos", target_os = "windows"))))]
+pub fn builtin_flags() -> Vec<bool> {
+    monitors().iter().map(|_| false).collect()
+}
+
+pub fn resolve_shared_local(sm: &kayiver_core::config::SharedMonitor) -> Option<(usize, Rect)> {
+    let displays = identified_monitors();
+    if sm.local_id.is_none() {
+        // Local legacy indices cannot distinguish a vanished panel from a
+        // same-size remaining screen. Only its exact saved rectangle is safe.
+        let saved = sm.local_rect?;
+        let mut candidates = displays.iter().enumerate().filter(|(_, (_, r))| *r == saved);
+        let first = candidates.next()?;
+        return if candidates.next().is_none() { Some((first.0, first.1.1)) } else { None };
+    }
+    kayiver_core::layout::resolve_monitor(&displays, sm.local_id.as_deref(), sm.local_rect)
+        .map(|i| (i, displays[i].1))
+}
+
+/// Migrate only an exact, unambiguous saved rectangle; never trust an old index.
+pub fn bind_shared_identity(sm: &mut kayiver_core::config::SharedMonitor) -> bool {
+    if sm.local_id.is_some() || !sm.configured() { return false; }
+    let displays = identified_monitors();
+    let mut matches = displays.iter().filter(|(_, r)| Some(*r) == sm.local_rect);
+    if let (Some((Some(id), _)), None) = (matches.next(), matches.next()) {
+        sm.local_id = Some(id.clone());
+        return true;
+    }
+    false
+}
+
+/// Query in the app process, rather than a CLI inheriting Terminal's grants.
+pub fn permissions_status() -> serde_json::Value {
+    #[cfg(all(target_os = "macos", not(feature = "sim")))]
+    {
+        let (accessibility, input_monitoring, _) = permission_grants();
+        let event_posting = accessibility;
+        serde_json::json!({"supported": true, "accessibility": accessibility,
+            "input_monitoring": input_monitoring, "event_posting": event_posting,
+            "all_granted": accessibility && input_monitoring})
+    }
+    #[cfg(any(not(target_os = "macos"), feature = "sim"))]
+    { serde_json::json!({"supported": false}) }
+}
+
+pub fn permission_action(action: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(matches!(action, "request" | "accessibility" | "input_monitoring" | "event_posting"), "unknown permission action");
+    #[cfg(all(target_os = "macos", not(feature = "sim")))]
+    {
+        let pane = match action {
+            "request" => {
+                request_permission_prompts();
+                let (accessibility, _, _) = permission_grants();
+                if accessibility { "Privacy_ListenEvent" } else { "Privacy_Accessibility" }
+            }
+            "input_monitoring" => "Privacy_ListenEvent",
+            _ => "Privacy_Accessibility",
+        };
+        let status = std::process::Command::new("open")
+            .arg(format!("x-apple.systempreferences:com.apple.preference.security?{pane}"))
+            .status()?;
+        anyhow::ensure!(status.success(), "could not open macOS permission settings");
+        Ok(())
+    }
+    #[cfg(any(not(target_os = "macos"), feature = "sim"))]
+    { anyhow::bail!("macOS permissions are not available on this platform") }
+}
+
+/// The GUI exposes permission controls itself; do not steal focus by opening
+/// System Settings on a timer. Its engine starts once the user grants access.
+#[cfg(target_os = "macos")]
+pub fn wait_for_gui_permissions() -> anyhow::Result<()> {
+    #[cfg(not(feature = "sim"))]
+    {
+        loop {
+            let (accessibility, input_monitoring, _) = permission_grants();
+            if accessibility && input_monitoring { return Ok(()); }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+    #[cfg(feature = "sim")]
+    { ensure_permissions() }
 }

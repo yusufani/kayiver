@@ -417,3 +417,44 @@ mod entry_tests {
         assert_eq!(fy, 0.0, "nearest side is the top");
     }
 }
+
+/// A known identity must match exactly once. Never fall back to an index or
+/// resolution when that physical display is absent. Legacy configurations
+/// may use exact geometry, or a unique size when the origin has moved.
+pub fn resolve_monitor(displays: &[(Option<String>, Rect)], id: Option<&str>, saved: Option<Rect>) -> Option<usize> {
+    let unique = |candidates: Vec<usize>| {
+        if candidates.len() == 1 { Some(candidates[0]) } else { None }
+    };
+    if let Some(id) = id {
+        return unique(displays.iter().enumerate().filter(|(_, (key, _))| key.as_deref() == Some(id)).map(|(i, _)| i).collect());
+    }
+    let saved = saved?;
+    let exact: Vec<_> = displays.iter().enumerate().filter(|(_, (_, r))| *r == saved).map(|(i, _)| i).collect();
+    if !exact.is_empty() { return unique(exact); }
+    unique(displays.iter().enumerate().filter(|(_, (_, r))| r.w == saved.w && r.h == saved.h).map(|(i, _)| i).collect())
+}
+
+#[cfg(test)]
+mod monitor_identity_tests {
+    use super::*;
+    const PANEL: Rect = Rect { x: 2560, y: 0, w: 2560, h: 1440 };
+    const LAPTOP: Rect = Rect { x: -1512, y: 273, w: 1512, h: 982 };
+    #[test]
+    fn opening_laptop_and_reordering_preserves_selected_panel() {
+        let displays = vec![(Some("laptop".into()), LAPTOP), (Some("other".into()), PANEL), (Some("panel".into()), Rect { x: 0, y: 0, ..PANEL })];
+        assert_eq!(resolve_monitor(&displays, Some("panel"), Some(PANEL)), Some(2));
+        assert_eq!(resolve_monitor(&displays[..2], Some("panel"), Some(PANEL)), None);
+    }
+    #[test]
+    fn ambiguous_legacy_sizes_do_not_pick_another_monitor() {
+        let displays = vec![(None, Rect { x: 0, ..PANEL }), (None, Rect { x: -2560, ..PANEL })];
+        assert_eq!(resolve_monitor(&displays, None, Some(PANEL)), None);
+        assert_eq!(resolve_monitor(&displays, None, Some(displays[1].1)), Some(1));
+    }
+    #[test]
+    fn duplicate_ids_are_not_safe_and_reconnection_works() {
+        let displays = vec![(Some("panel".into()), PANEL), (Some("panel".into()), LAPTOP)];
+        assert_eq!(resolve_monitor(&displays, Some("panel"), Some(PANEL)), None);
+        assert_eq!(resolve_monitor(&displays[..1], Some("panel"), None), Some(0));
+    }
+}

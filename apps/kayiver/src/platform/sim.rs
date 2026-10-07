@@ -215,6 +215,14 @@ pub fn open_url(url: &str) {
     record("open_url", serde_json::json!({ "url": url }));
 }
 
+pub fn reveal_path(path: &str) {
+    record("reveal_path", serde_json::json!({ "path": path }));
+}
+
+pub fn get_clipboard_file() -> Option<String> {
+    None
+}
+
 // ----------------------------------------------------- control server ----
 
 fn control_server(port: u16) {

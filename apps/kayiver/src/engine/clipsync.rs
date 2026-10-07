@@ -7,6 +7,12 @@ use std::time::Duration;
 
 use crate::platform;
 
+/// Clipboard owners (especially Windows applications) are allowed to hold the
+/// clipboard briefly while finishing a copy operation.  Do not treat that as a
+/// missing value: retry before deciding that this change contains no text.
+const READ_RETRIES: u32 = 6;
+const READ_RETRY_DELAY: Duration = Duration::from_millis(75);
+
 /// The last clipboard text we synced (sent or received). The watcher compares
 /// against it so a value that came from the peer isn't broadcast back.
 pub type ClipState = Arc<Mutex<String>>;
@@ -22,8 +28,16 @@ pub fn watch(state: ClipState, send: impl Fn(String) + Send + 'static) {
     std::thread::Builder::new()
         .name("kayiver-clip".into())
         .spawn(move || {
+            let mut file_path = platform::get_clipboard_file();
             if let Some(cur) = platform::get_clipboard() {
+                if let Some(payload) = crate::engine::quickshare::detect_payload(Some(&cur), file_path.as_deref()) {
+                    crate::engine::quickshare::engine().update_candidate(payload);
+                }
                 *state.lock().unwrap() = cur;
+            } else if let Some(fp) = &file_path {
+                if let Some(payload) = crate::engine::quickshare::detect_payload(None, Some(fp)) {
+                    crate::engine::quickshare::engine().update_candidate(payload);
+                }
             }
             // Poll a cheap change counter; only read the whole clipboard when it
             // actually changed, so nothing heavy runs on the idle path.
@@ -34,8 +48,27 @@ pub fn watch(state: ClipState, send: impl Fn(String) + Send + 'static) {
                 if seq == last_seq {
                     continue;
                 }
+                // A clipboard can be momentarily unavailable just after its
+                // sequence number changes.  Advancing `last_seq` before a
+                // successful read used to permanently drop that copy.
+                let mut cur = None;
+                for attempt in 0..READ_RETRIES {
+                    if let Some(text) = platform::get_clipboard() {
+                        cur = Some(text);
+                        break;
+                    }
+                    if attempt + 1 < READ_RETRIES {
+                        std::thread::sleep(READ_RETRY_DELAY);
+                    }
+                }
+                file_path = platform::get_clipboard_file();
                 last_seq = seq;
-                let Some(cur) = platform::get_clipboard() else { continue };
+
+                if let Some(payload) = crate::engine::quickshare::detect_payload(cur.as_deref(), file_path.as_deref()) {
+                    crate::engine::quickshare::engine().update_candidate(payload);
+                }
+
+                let Some(cur) = cur else { continue };
                 if cur.is_empty() {
                     continue;
                 }

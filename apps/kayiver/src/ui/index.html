@@ -62,6 +62,13 @@
     background: var(--accent-grad);
     -webkit-background-clip: text; background-clip: text; color: transparent;
   }
+  .brand-row { display: flex; align-items: baseline; gap: 7px; }
+  .version-tag {
+    font-size: 10px; font-weight: 700; color: var(--faint);
+    background: var(--bg2); border: 1px solid var(--line);
+    padding: 1px 5px; border-radius: 5px; letter-spacing: .3px;
+    font-variant-numeric: tabular-nums;
+  }
   .brand .sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
   .statusbar { margin-left: auto; display: flex; align-items: center; gap: 14px; }
   .legend { display: flex; gap: 12px; align-items: center; }
@@ -122,6 +129,20 @@
     position: absolute; bottom: 5px; right: 8px; font-size: 10px;
     color: var(--faint); font-variant-numeric: tabular-nums;
   }
+  .mon .kind { position: absolute; bottom: 3px; left: 6px; font-size: 12px; cursor: pointer; opacity: .8; z-index: 2; }
+  .mon.panel .kind { display: none; }
+  .mon.laptop { border-radius: 11px 11px 3px 3px; border-bottom-width: 7px; }
+  .mon .ltr {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 26px; font-weight: 800; color: var(--mc); opacity: .85; pointer-events: none;
+  }
+  .mon.panel .ltr { display: none; }
+  #zoomBox { position: absolute; top: 10px; right: 10px; z-index: 40; display: flex; gap: 4px; align-items: center;
+    background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
+  #zoomBox button { width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--text);
+    font: inherit; font-size: 15px; cursor: pointer; }
+  #zoomBox button:hover { background: var(--line); }
+  #zoomBox span { font-size: 10.5px; color: var(--muted); min-width: 34px; text-align: center; font-variant-numeric: tabular-nums; }
   .mon .sdot { position: absolute; top: 8px; right: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
   .mon .sdot.on { background: var(--good); }
   .mon .sdot.off { background: var(--danger); }
@@ -146,6 +167,10 @@
   .splitseg:last-child { border-right: 0; }
   .splitseg:hover { opacity: .8; }
   .splitseg.active { opacity: 1; box-shadow: inset 0 0 0 2px var(--sc); }
+  .splitseg .segltr {
+    font-size: 19px; font-weight: 850; color: var(--sc); line-height: 1;
+    text-shadow: 0 1px 3px rgba(0,0,0,.3);
+  }
   .splitseg .segname {
     font-size: 10px; font-weight: 800; color: var(--sc); letter-spacing: .2px;
     max-width: calc(100% - 8px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
@@ -244,6 +269,11 @@
 
   #overlay { position: fixed; inset: 0; background: var(--ovl); backdrop-filter: blur(3px); display: none; align-items: center; justify-content: center; z-index: 100; }
   #settings { width: min(460px, 92vw); max-height: 86vh; overflow: auto; background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); padding: 22px 24px; }
+  .permission-state { font-size:12px; white-space:nowrap; }
+  .permission-granted { color:var(--good); }
+  .permission-missing { color:var(--danger); }
+  .permission-unknown { color:var(--muted); }
+  #permissionsBanner { margin:0 22px 8px; text-align:left; color:var(--danger); background:var(--panel); border:1px solid var(--danger); }
   #settings h2 { font-size: 17px; font-weight: 800; margin-bottom: 4px; }
   #settings .subttl { color: var(--muted); font-size: 12.5px; margin-bottom: 18px; }
   .srow { display: flex; align-items: center; gap: 12px; padding: 13px 0; border-top: 1px solid var(--line); }
@@ -295,7 +325,10 @@
       <use href="#mc" transform="translate(342,200)" fill="currentColor"/>
     </svg>
     <div>
-      <h1>kayıver</h1>
+      <div class="brand-row">
+        <h1>kayıver</h1>
+        <span class="version-tag">v0.2.0</span>
+      </div>
       <div class="sub">one keyboard &amp; mouse, every screen — drag each monitor</div>
     </div>
   </div>
@@ -321,7 +354,18 @@
      background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.4);
      color: var(--danger); font-size: 12.5px;"></div>
 
-<div id="canvas"><button id="sharedBtn"></button></div>
+<button id="permissionsBanner" style="display:none"></button>
+<div id="canvas"><button id="sharedBtn"></button><div id="zoomBox"><button id="zoomOut" title="Zoom out">−</button><span id="zoomLbl">100%</span><button id="zoomIn" title="Zoom in">+</button><button id="zoomReset" title="Reset">⟲</button></div></div>
+
+<div id="qsBanner" style="display:none; position:fixed; bottom:64px; right:24px; z-index:99; background:rgba(24,24,28,.95); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,.16); border-radius:14px; box-shadow:0 12px 30px rgba(0,0,0,.5); padding:10px 14px; align-items:center; gap:12px; max-width:360px; color:#fff;">
+  <div id="qsIcon" style="width:42px; height:42px; border-radius:50%; background:linear-gradient(135deg, rgba(37,99,235,.35), rgba(29,78,216,.20)); border:1.5px solid rgba(96,165,250,.45); box-shadow:0 0 16px rgba(37,99,235,.35); display:flex; align-items:center; justify-content:center; flex-shrink:0;"></div>
+  <div style="flex:1; min-width:0;">
+    <div id="qsTitle" style="font-size:12.5px; font-weight:600; color:#f4f4f5;">Quick Share</div>
+    <div id="qsDetail" style="font-size:11px; color:#a1a1aa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+  </div>
+  <button id="qsActBtn" style="background:#2563eb; color:#fff; border:none; border-radius:8px; font-size:11.5px; font-weight:600; padding:6px 12px; cursor:pointer; white-space:nowrap;"></button>
+  <button id="qsCloseBtn" style="background:none; border:none; color:#71717a; cursor:pointer; padding:4px; font-size:13px;">✕</button>
+</div>
 
 <footer>
   <div id="msg">drag each monitor; touching edges become crossings</div>
@@ -331,12 +375,20 @@
   <div style="flex:1"></div>
   <button class="dock-btn" id="liveBtn"><span class="dot" id="liveDot"></span><span id="liveLbl">live cursor</span></button>
   <button class="dock-btn" id="addDevBtn">+ <span id="addDevLbl">device</span></button>
+  <span style="font-size:10px;color:var(--faint);font-family:'IBM Plex Mono',monospace;opacity:0.7;margin-left:4px">v0.2.0</span>
 </footer>
 
 <div id="overlay">
   <div id="settings">
     <h2 id="settingsH2">Settings</h2>
     <div class="subttl" id="setSub">—</div>
+    <section id="permissionsSection" style="display:none">
+      <h3 id="permissionsTitle" style="margin:0;font-size:14px"></h3>
+      <div id="permissionRows"></div>
+      <small id="permissionsHelp" style="display:block;color:var(--muted);margin:8px 0"></small>
+      <button id="requestPermissions" type="button"></button>
+      <div id="permissionMsg" role="status" style="font-size:12px;margin:8px 0"></div>
+    </section>
     <div class="srow">
       <div class="lbl"><b id="langLbl">Dil</b></div>
       <select id="setLang" style="background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font:inherit;font-size:13px;cursor:pointer">
@@ -387,6 +439,11 @@
 // ---------------------------------------------------------------- i18n ----
 const I18N = {
   tr: {
+    permissionsTitle: "macOS izinleri", accessibility: "Erişilebilirlik", input_monitoring: "Giriş İzleme", event_posting: "Klavye ve fare kontrolü",
+    permissionGranted: "Verildi", permissionMissing: "Verilmedi", permissionUnknown: "Durum okunamadı",
+    permissionOpen: "Sistem ayarında aç", permissionRequest: "Tekrar izin iste",
+    permissionsHelp: "İzinleri macOS penceresinde onayla. Değişiklikler burada otomatik güncellenir.",
+    permissionsMissing: "macOS izinleri eksik · İzinleri aç", permissionsOpened: "Sistem izin ayarı açıldı; Kayiver'i etkinleştir.",
     sub: "tek klavye & fare, bütün ekranlar — her monitörü ayrı sürükle",
     connecting: "bağlanıyor…", settings: "Ayarlar", layout: "Yerleşim", save: "Kaydet",
     layoutHint: "her monitörü ayrı ayrı sürükle; kenarlar değince geçiş olur",
@@ -432,6 +489,11 @@ const I18N = {
     port: "port",
   },
   en: {
+    permissionsTitle: "macOS permissions", accessibility: "Accessibility", input_monitoring: "Input Monitoring", event_posting: "Keyboard and mouse control",
+    permissionGranted: "Granted", permissionMissing: "Not granted", permissionUnknown: "Status unavailable",
+    permissionOpen: "Open system setting", permissionRequest: "Request permissions again",
+    permissionsHelp: "Approve permissions in macOS. Changes update here automatically.",
+    permissionsMissing: "macOS permissions missing · Open permissions", permissionsOpened: "System permission settings opened; enable Kayiver.",
     sub: "one keyboard & mouse, every screen — drag each monitor",
     connecting: "connecting…", settings: "Settings", layout: "Layout", save: "Save",
     layoutHint: "drag each monitor; touching edges become crossings",
@@ -511,6 +573,7 @@ function applyStaticI18n() {
   byId('remoteDescS', t('remoteDesc'));
   byId('cfgFileLbl', t('cfgFile'));
   set('#setClose', t('close'));
+  renderPermissions(lastPermissions);
 }
 function hk() { return /Mac/.test(navigator.platform) ? '⌘⌥M' : 'Ctrl+Alt+M'; }
 function setLang(l) { lang = l; localStorage.setItem('kayiver-lang', l); applyStaticI18n(); renderLegend(); renderDock(); }
@@ -560,7 +623,17 @@ function bbox(rects) {
 // ---------------------------------------------------------------- build ----
 
 let stateSig = '';
-function stateSignature(s) { return JSON.stringify(s.machines.map(m => [m.name, m.me, m.monitors])); }
+let zoom = 1;
+function setZoom(z) {
+  zoom = Math.max(0.5, Math.min(2.5, Math.round(z * 100) / 100));
+  document.getElementById('zoomLbl').textContent = Math.round(zoom * 100) + '%';
+  if (lastBuiltState && !document.querySelector('.mon.dragging')) buildFromState(lastBuiltState);
+}
+document.getElementById('zoomIn').addEventListener('click', () => setZoom(zoom * 1.2));
+document.getElementById('zoomOut').addEventListener('click', () => setZoom(zoom / 1.2));
+document.getElementById('zoomReset').addEventListener('click', () => setZoom(1));
+canvas.addEventListener('wheel', e => { e.preventDefault(); setZoom(zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08)); }, { passive: false });
+function stateSignature(s) { return JSON.stringify([s.machines.map(m => [m.name, m.me, m.monitors, m.builtin]), s.shared_monitor]); }
 
 let lastBuiltState = null; // kept so a window resize can re-fit the whole map
 function buildFromState(s) {
@@ -578,10 +651,10 @@ function buildFromState(s) {
 
   let maxW = 1;
   for (const m of s.machines) maxW = Math.max(maxW, bbox(m.monitors).w);
-  // Scale so the widest machine takes ~40% of the canvas (min 150px) — keeps
-  // multi-machine layouts inside small windows too.
-  const targetW = Math.max(150, Math.min(340, canvas.clientWidth * 0.4));
-  const scale = Math.min(0.075, targetW / maxW);
+  // Scale so the widest machine takes ~72% of the canvas (min 300px, max 720px) —
+  // provides a closer default view.
+  const targetW = Math.max(300, Math.min(720, canvas.clientWidth * 0.72));
+  const scale = Math.min(0.18, targetW / maxW) * zoom;
 
   // per-machine cluster origins from the saved links
   const clusterPos = placeMachines(s.machines, s.links, scale);
@@ -594,11 +667,21 @@ function buildFromState(s) {
       mons.push({
         machine: m.name, me: m.me, idx,
         realW: mon.w, realH: mon.h, realX: mon.x, realY: mon.y,
+        builtin: !!(m.builtin || [])[idx],
         w: Math.max(46, mon.w * scale), h: Math.max(32, mon.h * scale),
         x: clusterPos[m.name].x + (mon.x - bb.x) * scale,
         y: clusterPos[m.name].y + (mon.y - bb.y) * scale,
       });
     });
+  }
+  // Name every screen A, B, C… in the same order on both machines.
+  {
+    let n = 0;
+    for (const m of ordered) {
+      mons.filter(t => t.machine === m.name).forEach(t => {
+        t.letter = n < 26 ? String.fromCharCode(65 + n) : String(n + 1); n++;
+      });
+    }
   }
   mons.forEach(makeTile);
   // Center the whole arrangement in the canvas so nothing hugs one edge.
@@ -656,9 +739,26 @@ function makeTile(t) {
   el.style.width = t.w + 'px'; el.style.height = t.h + 'px';
   el.innerHTML =
     '<span class="badge">ortak</span>' +
+    '<span class="ltr">' + t.letter + '</span>' +
     '<span class="name">' + t.machine + '</span>' +
     '<span class="sdot"></span>' +
-    '<span class="res">' + t.realW + '×' + t.realH + '</span>';
+    '<span class="res">' + t.realW + '×' + t.realH + '</span>' +
+    '<span class="kind" title="Ekran türü: laptop / monitör"></span>';
+  const kindKey = 'kayiver-kind:' + t.machine + ':' + t.idx + ':' + t.realW + 'x' + t.realH;
+  const kindEl = el.querySelector('.kind');
+  const paintKind = () => {
+    // Auto-detected by the OS (built-in panel); a manual choice overrides it.
+    let lap = !!t.builtin;
+    try { const v = localStorage.getItem(kindKey); if (v) lap = v === 'laptop'; } catch (_) {}
+    kindEl.textContent = lap ? '💻' : '🖥';
+    el.classList.toggle('laptop', lap);
+  };
+  paintKind();
+  kindEl.addEventListener('pointerdown', ev => {
+    ev.stopPropagation();
+    try { localStorage.setItem(kindKey, el.classList.contains('laptop') ? 'monitor' : 'laptop'); } catch (_) {}
+    paintKind();
+  });
   canvas.appendChild(el);
   t.el = el; t.sdot = el.querySelector('.sdot');
 
@@ -775,11 +875,11 @@ function mergeShared() {
     o.el.style.width = o.w + 'px'; o.el.style.height = o.h + 'px';
     clamp(o); pos(o);
   }
-  renderSplit(a, [a.machine, b.machine]);
+  renderSplit(a, b);
 }
 
 let panelEl = null;
-function renderSplit(a, names) {
+function renderSplit(a, b) {
   a.el.classList.add('panel');
   a.el.style.zIndex = 6;
   panelEl = a.el;
@@ -793,14 +893,21 @@ function renderSplit(a, names) {
   a.el.appendChild(x);
   const wrap = document.createElement('div');
   wrap.className = 'splitwrap';
-  for (const nm of names) {
-    const col = colorOf(nm);
+  const sides = [
+    { name: a.machine, ltr: a.letter || '?' },
+    { name: b.machine, ltr: b.letter || '?' },
+  ];
+  for (const s of sides) {
+    const col = colorOf(s.name);
     const seg = document.createElement('div');
     seg.className = 'splitseg';
-    seg.dataset.machine = nm;
+    seg.dataset.machine = s.name;
     seg.style.setProperty('--sc', col.c);
     seg.style.setProperty('--sg', col.g);
-    seg.innerHTML = '<span class="segname">' + nm + '</span><span class="segpick">' + t('activate') + '</span>';
+    seg.innerHTML =
+      '<span class="segltr">' + s.ltr + '</span>' +
+      '<span class="segname">' + s.name + '</span>' +
+      '<span class="segpick">' + t('activate') + '</span>';
     wrap.appendChild(seg);
   }
   a.el.appendChild(wrap);
@@ -1069,7 +1176,8 @@ function renderLegend() {
   for (const m of machines) {
     const col = COLORS[m.colorIdx % COLORS.length];
     const d = document.createElement('div'); d.className = 'legchip';
-    d.innerHTML = '<span class="legdot" style="background:' + col.c + '"></span>' + m.name + (m.me ? ' ' + t('thisMachine') : '');
+    d.innerHTML = '<span class="legdot" style="background:' + col.c + '"></span>' + m.name + (m.me ? ' ' + t('thisMachine') : '') +
+      ' <span style="opacity:.6">(' + mons.filter(x => x.machine === m.name).map(x => x.letter).join(', ') + ')</span>';
     el.appendChild(d);
   }
 }
@@ -1365,11 +1473,74 @@ document.getElementById('linkGo').addEventListener('click', async () => {
 });
 
 let pollN = 0;
+let currentQs = null;
+
+async function pollQuickShare() {
+  try {
+    const res = await fetch('/api/quickshare');
+    if (!res.ok) return;
+    const qs = await res.json();
+    currentQs = qs;
+    const banner = document.getElementById('qsBanner');
+    if (!qs || qs.status === 'done') {
+      banner.style.display = 'none';
+      return;
+    }
+    banner.style.display = 'flex';
+    const isUrl = qs.payload && qs.payload.Url !== undefined;
+    const iconEl = document.getElementById('qsIcon');
+    const titleEl = document.getElementById('qsTitle');
+    const detailEl = document.getElementById('qsDetail');
+    const actBtn = document.getElementById('qsActBtn');
+
+    if (isUrl) {
+      iconEl.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>';
+      iconEl.style.background = 'linear-gradient(135deg, rgba(37,99,235,.35), rgba(29,78,216,.20))';
+      iconEl.style.borderColor = 'rgba(96,165,250,.45)';
+      iconEl.style.boxShadow = '0 0 16px rgba(37,99,235,.35)';
+      titleEl.textContent = 'Web Bağlantısı (' + qs.peer + ')';
+      detailEl.textContent = qs.payload.Url.url;
+      actBtn.textContent = 'Tarayıcıda Aç';
+    } else {
+      iconEl.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>';
+      iconEl.style.background = 'linear-gradient(135deg, rgba(16,185,129,.35), rgba(5,150,105,.20))';
+      iconEl.style.borderColor = 'rgba(52,211,153,.45)';
+      iconEl.style.boxShadow = '0 0 16px rgba(16,185,129,.35)';
+      titleEl.textContent = 'Dosya Paylaşımı (' + qs.peer + ')';
+      detailEl.textContent = qs.payload && qs.payload.File ? qs.payload.File.name : '';
+      actBtn.textContent = 'Aktar';
+    }
+  } catch (_) {}
+}
+
+document.getElementById('qsActBtn').addEventListener('click', async () => {
+  if (!currentQs) return;
+  const isUrl = currentQs.payload && currentQs.payload.Url !== undefined;
+  await fetch('/api/quickshare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: isUrl ? 'open' : 'accept' }),
+  });
+  if (isUrl) document.getElementById('qsBanner').style.display = 'none';
+  else document.getElementById('qsActBtn').textContent = 'Aktarılıyor…';
+});
+
+document.getElementById('qsCloseBtn').addEventListener('click', async () => {
+  document.getElementById('qsBanner').style.display = 'none';
+  await fetch('/api/quickshare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'dismiss' }),
+  });
+});
+
 async function poll() {
   if (++pollN % 4 === 0) await refreshStateIfChanged();
   if (pollN % 4 === 2) pollAndroid();
+  if (pollN % 2 === 0) pollQuickShare();
   try {
     const st = await (await fetch('/api/status')).json();
+    renderPermissions(st.permissions);
     document.getElementById('hostDot').className = 'dot ' + (st.running ? 'on' : 'off');
     document.getElementById('hostTxt').textContent = st.running ? t('running') : t('stopped');
 
@@ -1395,6 +1566,7 @@ async function poll() {
 
     renderLink(st);
   } catch (_) {
+    renderPermissions(null);
     document.getElementById('hostDot').className = 'dot off';
     document.getElementById('hostTxt').textContent = t('unreachable');
   }
@@ -1441,6 +1613,49 @@ document.getElementById('save').addEventListener('click', async () => {
 
 // -------------------------------------------------------------- settings ----
 
+let lastPermissions = null;
+let permissionsRenderSig = '';
+function renderPermissions(permissions) {
+  if (permissions) lastPermissions = permissions;
+  const section = document.getElementById('permissionsSection');
+  const supported = permissions ? permissions.supported : lastPermissions && lastPermissions.supported;
+  const signature = JSON.stringify([permissions, supported, lang]);
+  if (signature === permissionsRenderSig) return;
+  permissionsRenderSig = signature;
+  section.style.display = supported ? 'block' : 'none';
+  const banner = document.getElementById('permissionsBanner');
+  banner.style.display = supported && permissions && !permissions.all_granted ? 'block' : 'none';
+  banner.textContent = t('permissionsMissing');
+  if (!supported) return;
+  document.getElementById('permissionsTitle').textContent = t('permissionsTitle');
+  document.getElementById('permissionsHelp').textContent = t('permissionsHelp');
+  document.getElementById('requestPermissions').textContent = t('permissionRequest');
+  const rows = document.getElementById('permissionRows');
+  rows.replaceChildren();
+  for (const key of ['accessibility', 'input_monitoring', 'event_posting']) {
+    const row = document.createElement('div'); row.className = 'srow';
+    const label = document.createElement('div'); label.className = 'lbl'; label.textContent = t(key);
+    const status = document.createElement('span');
+    const granted = permissions && permissions[key];
+    status.className = 'permission-state permission-' + (!permissions ? 'unknown' : granted ? 'granted' : 'missing');
+    status.textContent = t(!permissions ? 'permissionUnknown' : granted ? 'permissionGranted' : 'permissionMissing');
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'linklike';
+    button.textContent = t('permissionOpen'); button.addEventListener('click', () => permissionAction(key));
+    row.append(label, status, button); rows.append(row);
+  }
+}
+async function permissionAction(action) {
+  const message = document.getElementById('permissionMsg'); message.textContent = '';
+  try {
+    const response = await fetch('/api/permissions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
+    if (!response.ok) throw new Error(await response.text());
+    message.textContent = t('permissionsOpened');
+    renderPermissions(await (await fetch('/api/permissions')).json());
+  } catch (error) { message.textContent = error.message; }
+}
+document.getElementById('requestPermissions').addEventListener('click', () => permissionAction('request'));
+document.getElementById('permissionsBanner').addEventListener('click', openSettings);
+
 const overlay = document.getElementById('overlay');
 const setMsgEl = document.getElementById('setMsg');
 async function openSettings() {
@@ -1458,6 +1673,7 @@ async function openSettings() {
   document.getElementById('setDwell').value = String(settings.edge_dwell_ms || 0);
   document.getElementById('cfgPath').textContent = settings.config_path || '';
   renderRemoteInfo(); setMsgEl.textContent = ''; overlay.style.display = 'flex';
+  try { renderPermissions(await (await fetch('/api/permissions')).json()); } catch (_) { renderPermissions(null); }
 }
 function closeSettings() { overlay.style.display = 'none'; }
 function renderRemoteInfo() {

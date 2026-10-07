@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 11;
+pub const PROTOCOL_VERSION: u16 = 13;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -95,6 +95,10 @@ pub enum Msg {
     /// detached/attached), so the layout editor and crossing math use the
     /// current monitors instead of the ones from the initial `Hello`.
     Monitors { screen: Rect, monitors: Vec<Rect> },
+    /// Either side -> other: for each of my monitors (same order as
+    /// `monitors`), is it a built-in (laptop) panel? Lets the editor draw
+    /// laptop screens as laptops without the user telling it.
+    Builtin { flags: Vec<bool> },
     /// host -> client: reconnect to me at this address (the user picked a
     /// different path — Wi-Fi vs direct cable — in the editor). The client
     /// persists it as the peer's primary and drops the session; its reconnect
@@ -134,6 +138,42 @@ pub enum Msg {
     /// flip — the hotkey, the tray, the editor button and `kayiver monitor` all
     /// work on either machine, not just the one running the router.
     SharedRequest { owner: String },
+    /// Either direction: announce a shareable link or file when the user crosses over.
+    QuickShareOffer(QuickShareOffer),
+    /// Either direction: accept and request an offered file transfer.
+    QuickShareAccept { id: u64 },
+    /// Either direction: chunk of file data during transfer (max 32 KiB).
+    QuickShareChunk {
+        id: u64,
+        offset: u64,
+        data: Vec<u8>,
+        is_eof: bool,
+    },
+    /// Either direction: status of a file transfer (success/failure).
+    QuickShareStatus {
+        id: u64,
+        success: bool,
+        message: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum QuickSharePayload {
+    Url {
+        url: String,
+        title: Option<String>,
+    },
+    File {
+        name: String,
+        size: u64,
+        source_path: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuickShareOffer {
+    pub id: u64,
+    pub payload: QuickSharePayload,
 }
 
 impl Msg {

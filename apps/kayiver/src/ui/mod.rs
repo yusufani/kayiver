@@ -35,6 +35,8 @@ pub struct PeerLive {
     /// Human label for the interface the session rides ("Wi-Fi (en0)",
     /// "USB 10/100/1000 LAN (en8) · kablo").
     pub link_label: Option<String>,
+    /// Per-monitor "is a built-in laptop panel" flags the peer reported.
+    pub builtin: Vec<bool>,
 }
 
 /// Commands the editor (or `kayiver monitor`) sends to the running host router.
@@ -48,6 +50,63 @@ pub enum UiCmd {
     /// The editor's desk arrangement for `machine`'s monitors (its own
     /// coordinates): pushed to that peer, or applied here if it is us.
     Arrange { machine: String, monitors: Vec<kayiver_core::proto::Rect> },
+    /// Accept a quick share file transfer from `peer` for offer `id`.
+    QuickShareAccept { peer: String, id: u64 },
+    /// Dismiss the active quick share prompt.
+    QuickShareDismiss,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ActiveQuickShare {
+    pub peer: String,
+    pub id: u64,
+    pub payload: kayiver_core::proto::QuickSharePayload,
+    pub status: String, // "pending", "done", "error"
+    pub message: Option<String>,
+}
+
+type QuickShareNotifier = Box<dyn Fn(ActiveQuickShare) + Send + Sync>;
+static QUICKSHARE_NOTIFIER: OnceLock<QuickShareNotifier> = OnceLock::new();
+
+pub fn register_quickshare_notifier(f: impl Fn(ActiveQuickShare) + Send + Sync + 'static) {
+    let _ = QUICKSHARE_NOTIFIER.set(Box::new(f));
+}
+
+pub fn present_quick_share(peer: String, offer: kayiver_core::proto::QuickShareOffer) {
+    let item = ActiveQuickShare {
+        peer,
+        id: offer.id,
+        payload: offer.payload,
+        status: "pending".into(),
+        message: None,
+    };
+    live().lock().unwrap().quick_share = Some(item.clone());
+    if let Some(cb) = QUICKSHARE_NOTIFIER.get() {
+        cb(item);
+    }
+}
+
+pub fn complete_quick_share_file(id: u64, success: bool, message: Option<String>) {
+    let mut s = live().lock().unwrap();
+    if let Some(qs) = &mut s.quick_share {
+        if qs.id == id {
+            qs.status = if success { "done".into() } else { "error".into() };
+            qs.message = message.clone();
+            let item = qs.clone();
+            drop(s);
+            if let Some(cb) = QUICKSHARE_NOTIFIER.get() {
+                cb(item);
+            }
+        }
+    }
+}
+
+pub fn dismiss_quick_share() {
+    live().lock().unwrap().quick_share = None;
+}
+
+pub fn get_quick_share() -> Option<ActiveQuickShare> {
+    live().lock().unwrap().quick_share.clone()
 }
 
 /// Expose actual capture geometry for diagnosing crossing failures.
@@ -78,6 +137,8 @@ pub struct LiveState {
     /// Client: the host's editor view (StateSync payload). The client's
     /// editor serves this so both machines show the same map.
     pub synced_state: Option<String>,
+    /// Active quick share prompt (URL or file).
+    pub quick_share: Option<ActiveQuickShare>,
 }
 
 static LIVE: OnceLock<Mutex<LiveState>> = OnceLock::new();
@@ -100,6 +161,14 @@ pub fn set_connected(peer: &str, connected: bool) {
         e.rtt_max_ms = None;
         e.rtt_max_at = None;
     }
+}
+
+pub fn set_builtin(peer: &str, flags: Vec<bool>) {
+    live().lock().unwrap().peers.entry(peer.to_string()).or_default().builtin = flags;
+}
+
+pub fn builtin_of(peer: &str) -> Vec<bool> {
+    live().lock().unwrap().peers.get(peer).map(|p| p.builtin.clone()).unwrap_or_default()
 }
 
 pub fn set_rtt(peer: &str, rtt_ms: f64) {
@@ -529,7 +598,11 @@ async fn handle(mut stream: TcpStream, required_token: Option<String>) -> Result
         }
     }
 
-    let (status, ctype, payload) = route(&request_line, &body);
+    let remote_permission_action = required_token.is_some()
+        && request_line.split_whitespace().take(2).eq(["POST", "/api/permissions"]);
+    let (status, ctype, payload) = if remote_permission_action {
+        ("403 Forbidden", "text/plain", b"permission actions must be performed on this machine".to_vec())
+    } else { route(&request_line, &body) };
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         payload.len()
@@ -555,6 +628,11 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
             Ok(json) => ("200 OK", "application/json", json.into_bytes()),
             Err(e) => ("500 Internal Server Error", "text/plain", e.to_string().into_bytes()),
         },
+        ("GET", "/api/permissions") => ("200 OK", "application/json", crate::platform::permissions_status().to_string().into_bytes()),
+        ("POST", "/api/permissions") => match api_permissions(body) {
+            Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
+            Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+        },
         ("GET", "/api/status") => ("200 OK", "application/json", api_status().into_bytes()),
         ("GET", "/api/cursor") => ("200 OK", "application/json", api_cursor().into_bytes()),
         ("POST", "/api/layout") => match api_save_layout(body) {
@@ -570,6 +648,15 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
         },
         ("POST", "/api/shared-config") => match api_shared_config(body) {
+            Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
+            Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+        },
+        ("GET", "/api/quickshare") => {
+            let qs = live().lock().unwrap().quick_share.clone();
+            let json = serde_json::to_string(&qs).unwrap_or_else(|_| "null".into());
+            ("200 OK", "application/json", json.into_bytes())
+        }
+        ("POST", "/api/quickshare") => match api_quickshare_action(body) {
             Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
         },
@@ -774,6 +861,7 @@ fn api_shared_config(body: &[u8]) -> Result<()> {
     let mut cfg = Config::load_or_init()?;
     if v.get("clear").and_then(|x| x.as_bool()).unwrap_or(false) {
         cfg.shared_monitor.local_index = None;
+        cfg.shared_monitor.local_id = None;
         cfg.shared_monitor.local_rect = None;
         cfg.shared_monitor.peer_index = None;
         cfg.shared_monitor.peer_rect = None;
@@ -786,20 +874,22 @@ fn api_shared_config(body: &[u8]) -> Result<()> {
     let peer_name = v.get("peer").and_then(|x| x.as_str()).context("missing peer")?.to_string();
     // Capture both monitors' geometry now — it becomes the safety check that
     // prevents ever detaching the wrong monitor later.
-    let local_rect = crate::platform::monitors().get(local_pick as usize).copied();
+    let displays = crate::platform::identified_monitors();
+    let (local_id, local_rect) = displays.get(local_pick as usize).cloned().context("local monitor is no longer connected")?;
     let peer = cfg
         .peers
         .iter()
         .find(|x| x.name == peer_name)
         .with_context(|| format!("unknown peer '{peer_name}'"))?;
-    let peer_rect = peer.screens.get(peer_pick as usize).copied();
+    let peer_rect = peer.screens.get(peer_pick as usize).copied().context("peer monitor is no longer available")?;
 
     let to_platform_index = |os: &str, pick: u32| if os == "macos" { pick + 1 } else { pick };
     cfg.shared_monitor.local_index = Some(to_platform_index(std::env::consts::OS, local_pick));
-    cfg.shared_monitor.local_rect = local_rect;
+    cfg.shared_monitor.local_id = local_id;
+    cfg.shared_monitor.local_rect = Some(local_rect);
     cfg.shared_monitor.peer_index =
         Some(to_platform_index(peer.os.as_deref().unwrap_or("windows"), peer_pick));
-    cfg.shared_monitor.peer_rect = peer_rect;
+    cfg.shared_monitor.peer_rect = Some(peer_rect);
     cfg.shared_monitor.peer = Some(peer_name);
     if let Some(h) = v.get("hotkey").and_then(|x| x.as_bool()) {
         cfg.shared_monitor.hotkey = h;
@@ -858,6 +948,7 @@ fn api_state() -> Result<String> {
         "name": cfg.name,
         "me": true,
         "monitors": crate::platform::monitors(),
+        "builtin": crate::platform::builtin_flags(),
     })];
     for p in &cfg.peers {
         machines.push(serde_json::json!({
@@ -865,20 +956,19 @@ fn api_state() -> Result<String> {
             "me": false,
             // Real shapes once the peer has connected at least once.
             "monitors": if p.screens.is_empty() { &fallback } else { &p.screens },
+            "builtin": builtin_of(&p.name),
         }));
     }
-    // Resolve selections from current rectangles: display indices can reorder.
+    // Editor-facing view of the shared-monitor config: raw platform indices
+    // converted back to 0-based monitor picks.
     let sm = &cfg.shared_monitor;
-    let unique_pick = |screens: &[kayiver_core::proto::Rect], rect: Option<kayiver_core::proto::Rect>| {
-        let rect = rect?;
-        let picks: Vec<_> = screens.iter().enumerate().filter(|(_, r)| **r == rect).map(|(i, _)| i).collect();
-        (picks.len() == 1).then(|| picks[0])
-    };
-    let shared = if sm.configured() {
+    let local_pick = crate::platform::resolve_shared_local(sm).map(|(i, _)| i);
+    let shared = if sm.configured() && local_pick.is_some() {
         let peer_name = sm.peer.clone().or_else(|| cfg.peers.first().map(|p| p.name.clone()));
-        let local_pick = unique_pick(&crate::platform::monitors(), sm.local_rect);
-        let peer_pick = peer_name.as_ref().and_then(|name| cfg.peer(name))
-            .and_then(|peer| unique_pick(&peer.screens, sm.peer_rect));
+        let peer_pick = peer_name.as_ref().and_then(|n| cfg.peer(n)).and_then(|p| {
+            let displays: Vec<_> = p.screens.iter().map(|r| (None, *r)).collect();
+            kayiver_core::layout::resolve_monitor(&displays, None, sm.peer_rect)
+        });
         serde_json::json!({
             "local_monitor": local_pick,
             "peer": peer_name,
@@ -894,6 +984,12 @@ fn api_state() -> Result<String> {
         "links": cfg.layout.links,
         "shared_monitor": shared,
     }))?)
+}
+
+fn api_permissions(body: &[u8]) -> Result<()> {
+    let value: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
+    let action = value.get("action").and_then(|v| v.as_str()).context("missing permission action")?;
+    crate::platform::permission_action(action)
 }
 
 fn api_status() -> String {
@@ -927,6 +1023,7 @@ fn api_status() -> String {
         .map(|(addr, label)| serde_json::json!({ "addr": addr, "label": label }))
         .collect();
     serde_json::json!({
+        "permissions": crate::platform::permissions_status(),
         "capture": capture,
         "running": s.running,
         "focus": s.focus,
@@ -983,6 +1080,36 @@ fn api_save_layout(body: &[u8]) -> Result<()> {
     Ok(())
 }
 
+fn api_quickshare_action(body: &[u8]) -> Result<()> {
+    let v: serde_json::Value = serde_json::from_slice(body).context("invalid json")?;
+    let action = v["action"].as_str().context("missing action field")?;
+    let qs = live().lock().unwrap().quick_share.clone().context("no active quick share")?;
+
+    match action {
+        "open" => {
+            if let kayiver_core::proto::QuickSharePayload::Url { url, .. } = &qs.payload {
+                crate::platform::open_url(url);
+                dismiss_quick_share();
+                let _ = send_cmd(UiCmd::QuickShareDismiss);
+            }
+        }
+        "accept" => {
+            if let kayiver_core::proto::QuickSharePayload::File { .. } = &qs.payload {
+                let _ = send_cmd(UiCmd::QuickShareAccept {
+                    peer: qs.peer,
+                    id: qs.id,
+                });
+            }
+        }
+        "dismiss" => {
+            dismiss_quick_share();
+            let _ = send_cmd(UiCmd::QuickShareDismiss);
+        }
+        _ => anyhow::bail!("unknown quickshare action: {action}"),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -996,8 +1123,49 @@ mod tests {
     }
 
     #[test]
+    fn permission_actions_reject_invalid_requests_without_opening_settings() {
+        for body in [b"{}".as_slice(), b"{\"action\":\"reset-everything\"}", b"not-json"] {
+            assert_eq!(route("POST /api/permissions HTTP/1.1", body).0, "400 Bad Request");
+        }
+        let (status, _, body) = route("GET /api/permissions HTTP/1.1", b"");
+        assert_eq!(status, "200 OK");
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(value["supported"].is_boolean());
+    }
+
+    #[test]
     fn rejects_unknown_path() {
         let (status, _, _) = route("GET /etc/passwd HTTP/1.1", b"");
         assert_eq!(status, "404 Not Found");
+    }
+
+    #[test]
+    fn quickshare_api_routes() {
+        // GET when empty
+        let (status, ctype, _body) = route("GET /api/quickshare HTTP/1.1", b"");
+        assert_eq!(status, "200 OK");
+        assert_eq!(ctype, "application/json");
+
+        // Present an offer
+        present_quick_share(
+            "peer-pc".into(),
+            kayiver_core::proto::QuickShareOffer {
+                id: 42,
+                payload: kayiver_core::proto::QuickSharePayload::Url {
+                    url: "https://example.com".into(),
+                    title: None,
+                },
+            },
+        );
+
+        let (status, _, body) = route("GET /api/quickshare HTTP/1.1", b"");
+        assert_eq!(status, "200 OK");
+        let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(val["id"], 42);
+
+        // Dismiss action
+        let (status, _, _) = route("POST /api/quickshare HTTP/1.1", br#"{"action":"dismiss"}"#);
+        assert_eq!(status, "200 OK");
+        assert!(get_quick_share().is_none());
     }
 }

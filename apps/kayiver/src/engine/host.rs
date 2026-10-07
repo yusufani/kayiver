@@ -48,7 +48,7 @@ enum DrivenCross {
 
 const PING_INTERVAL: Duration = Duration::from_secs(1);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(15);
-const RETURN_COOLDOWN: Duration = Duration::from_millis(300);
+const RETURN_COOLDOWN: Duration = Duration::from_millis(70);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 /// Per-candidate probe: short, so a stale address doesn't stall a whole
 /// reconnect round.
@@ -140,7 +140,10 @@ fn reapply_arrangement(desired: &[kayiver_core::proto::Rect]) -> bool {
     }
 }
 
-pub fn run(cfg: Config) -> Result<()> {
+pub fn run(mut cfg: Config) -> Result<()> {
+    if platform::bind_shared_identity(&mut cfg.shared_monitor) {
+        cfg.save()?;
+    }
     reapply_arrangement(&cfg.arrangement);
     let bounds = platform::desktop_bounds();
     info!(name = %cfg.name, ?bounds, "starting kayiver");
@@ -303,6 +306,8 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         tablet_entry_ratio: 0.5,
     };
 
+    router.refresh_shared_rects();
+
     // Re-apply the restored ownership locally right away: if the panel is
     // showing the peer, this desk's copy must be blocked from the first
     // frame, not from whenever the peer happens to connect.
@@ -349,6 +354,22 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
                     if !sent {
                         warn!("use-addr: peer '{peer}' offline");
                     }
+                }
+                Some(crate::ui::UiCmd::QuickShareAccept { peer, id }) => {
+                    info!("sending QuickShareAccept #{id} to {peer}");
+                    if let Some(qs) = crate::ui::get_quick_share() {
+                        if qs.id == id {
+                            if let kayiver_core::proto::QuickSharePayload::File { name, size, .. } = &qs.payload {
+                                if let Err(e) = crate::engine::quickshare::engine().prepare_inbound_transfer(id, name, *size) {
+                                    warn!("failed to prepare inbound file transfer: {e:#}");
+                                }
+                            }
+                        }
+                    }
+                    router.send_to(&peer, Msg::QuickShareAccept { id });
+                }
+                Some(crate::ui::UiCmd::QuickShareDismiss) => {
+                    crate::ui::dismiss_quick_share();
                 }
                 None => break,
             },
@@ -468,6 +489,13 @@ impl Router {
             if dead {
                 debug!("focused session {name} gone");
             }
+        }
+    }
+
+    fn try_send_quick_share(&self, peer: &str) {
+        if let Some(offer) = crate::engine::quickshare::engine().get_offer_for_crossing() {
+            info!("quickshare: offering #{}: {:?} to {peer}", offer.id, offer.payload);
+            self.send_to(peer, Msg::QuickShareOffer(offer));
         }
     }
 
@@ -613,6 +641,10 @@ impl Router {
     /// connect, the peer's cursor was still on its panel copy, and the peer
     /// promptly took control of the arbiter with no one at its desk.
     fn apply_peer_block(&mut self, rect: Option<kayiver_core::proto::Rect>) {
+        let sm = self.shared.read().unwrap().clone();
+        let rect = if rect.is_some() && sm.local_id.is_some() {
+            platform::resolve_shared_local(&sm).map(|(_, r)| r)
+        } else { rect };
         if let Some(b) = rect {
             let busy = self.ctl.forwarding.load(Ordering::SeqCst) || self.driven.is_some();
             if !busy {
@@ -745,6 +777,7 @@ impl Router {
         let mut next = self.shared.read().unwrap().clone();
         next.local_index = Some(if cfg!(target_os = "macos") { picks[0] as u32 + 1 } else { picks[0] as u32 });
         next.local_rect = Some(local_rect);
+        next.local_id = platform::identified_monitors().get(picks[0]).and_then(|(id, _)| id.clone());
         next.peer_index = Some(if saved.peer(peer).and_then(|p| p.os.as_deref()) == Some("macos") {
             peer_pick as u32 + 1
         } else { peer_pick as u32 });
@@ -849,10 +882,15 @@ impl Router {
             | Msg::CursorLeft { .. }
             | Msg::SharedCross { .. }
             | Msg::Monitors { .. }
+            | Msg::Builtin { .. }
             | Msg::Clipboard { .. }
             | Msg::OpenUrl { .. }
             | Msg::SharedRequest { .. }
-            | Msg::UseAddr { .. } => debug!("not router business, from {name}"),
+            | Msg::UseAddr { .. }
+            | Msg::QuickShareOffer(_)
+            | Msg::QuickShareAccept { .. }
+            | Msg::QuickShareChunk { .. }
+            | Msg::QuickShareStatus { .. } => debug!("not router business, from {name}"),
         }
     }
 
@@ -1021,9 +1059,10 @@ impl Router {
                     Some((peer, entry_edge)) if self.session_exists(&peer) => {
                         info!("cursor -> {peer} (via {edge} edge)");
                         crate::ui::set_cross_flash(edge);
-                        self.focus = Some(peer);
+                        self.focus = Some(peer.clone());
                         self.pending_drop_url = drag;
                         self.send_to_focus(Msg::Enter { edge: entry_edge, ratio });
+                        self.try_send_quick_share(&peer);
                     }
                     _ => {
                         // Race: peer vanished between the portal check and now.
@@ -1317,82 +1356,47 @@ impl Router {
         self.sessions.lock().unwrap().contains_key(name)
     }
 
-    /// Re-derive the shared-panel rects from live geometry. The panel is the
-    /// same physical glass on both sides, so it is identified by SIZE:
-    /// Windows re-anchors every monitor rect when the primary display
-    /// changes (macOS when the arrangement changes) — position is not stable
-    /// across those, resolution is. Persists any change and re-applies the
-    /// block so both sides skip the panel's REAL location.
+    /// Resolve local identity before geometry or indices. Keep last known
+    /// geometry on disk while unplugged, but remove the effective cursor block.
     fn refresh_shared_rects(&mut self) {
         let sm = self.shared.read().unwrap().clone();
-        if !sm.configured() {
-            return;
-        }
-        let mut new_local = sm.local_rect;
+        if !sm.configured() { return; }
+        let resolved = platform::resolve_shared_local(&sm);
+        let new_local = resolved.map(|(_, r)| r);
+        let new_index = resolved.map(|(i, _)| if cfg!(target_os = "macos") { i as u32 + 1 } else { i as u32 }).or(sm.local_index);
+        let saved = Config::load_or_init().ok().map(|c| c.shared_monitor);
         let mut new_peer = sm.peer_rect;
-        if let Some(lr) = sm.local_rect {
-            let mons = platform::monitors();
-            // LOCAL side: size does NOT identify the panel here — another
-            // monitor can legitimately have the same resolution (this desk's
-            // A and B are both 2560x1440, and a size-match once re-anchored
-            // the panel onto A, gluing the peer's screens to the wrong
-            // monitor). Resolve by the configured display INDEX instead, and
-            // when the panel is simply absent (the transient while its input
-            // is switched away), keep the last known rect untouched.
-            if !mons.contains(&lr) && mons.len() >= 2 {
-                let idx = sm.local_index.map(|i| {
-                    (if cfg!(target_os = "macos") { i.saturating_sub(1) } else { i }) as usize
-                });
-                if let Some(m) = idx.and_then(|i| mons.get(i)).copied() {
-                    if m.w == lr.w && m.h == lr.h {
-                        info!("shared panel moved locally: {lr:?} -> {m:?}");
-                        new_local = Some(m);
-                    }
-                }
-            }
-        }
-        if let (Some(pr), Some(peer)) = (sm.peer_rect, shared_peer_name(&self.cfg, &sm)) {
+        let peer_rect = sm.peer_rect.or_else(|| saved.as_ref().and_then(|s| s.peer_rect));
+        if let (Some(pr), Some(peer)) = (peer_rect, shared_peer_name(&self.cfg, &sm)) {
             let screens = self.peer_screens.read().unwrap().get(&peer).cloned().unwrap_or_default();
-            if !screens.is_empty() && !screens.contains(&pr) {
-                // PEER side: try the configured index first (0-based attached
-                // order on Windows), but a primary-display switch reorders
-                // that list, so fall back to a size match only when it is
-                // UNAMBIGUOUS — exactly one candidate.
-                let by_index = sm
-                    .peer_index
-                    .and_then(|i| screens.get(i as usize))
-                    .filter(|m| m.w == pr.w && m.h == pr.h)
-                    .copied();
-                let by_size = || {
-                    let mut it = screens.iter().filter(|m| m.w == pr.w && m.h == pr.h);
-                    match (it.next(), it.next()) {
-                        (Some(m), None) => Some(*m),
-                        _ => None,
-                    }
-                };
-                if let Some(m) = by_index.or_else(by_size) {
-                    info!("shared panel moved on {peer}: {pr:?} -> {m:?} (primary display changed?)");
-                    new_peer = Some(m);
-                }
+            let displays: Vec<_> = screens.iter().map(|r| (None, *r)).collect();
+            new_peer = kayiver_core::layout::resolve_monitor(&displays, None, Some(pr)).map(|i| screens[i]);
+            if let Some(r) = new_peer.filter(|r| *r != pr) {
+                info!("shared panel moved on {peer}: {pr:?} -> {r:?}");
             }
         }
-        if new_local == sm.local_rect && new_peer == sm.peer_rect {
-            return;
-        }
+        if new_local == sm.local_rect && new_peer == sm.peer_rect && new_index == sm.local_index { return; }
         {
             let mut s = self.shared.write().unwrap();
             s.local_rect = new_local;
+            s.local_index = new_index;
             s.peer_rect = new_peer;
         }
         if let Ok(mut c) = Config::load_or_init() {
-            c.shared_monitor.local_rect = new_local;
-            c.shared_monitor.peer_rect = new_peer;
-            if let Err(e) = c.save() {
-                warn!("could not persist shared rects: {e:#}");
+            let before = c.shared_monitor.clone();
+            if let Some(r) = new_local { c.shared_monitor.local_rect = Some(r); }
+            if let Some(r) = new_peer { c.shared_monitor.peer_rect = Some(r); }
+            c.shared_monitor.local_index = new_index;
+            if c.shared_monitor != before {
+                if let Err(e) = c.save() { warn!("could not persist shared rects: {e:#}"); }
             }
         }
         let owner = self.shared_owner.clone();
-        self.set_shared_owner(&owner);
+        if self.arbiter { self.set_shared_owner(&owner); }
+        else {
+            let blocked = self.ctl.blocked.read().unwrap().is_some();
+            if blocked { self.apply_peer_block(new_local); }
+        }
     }
 
     /// Resolve a host edge crossing toward the shared peer by GEOMETRY, not the
@@ -1476,8 +1480,9 @@ impl Router {
             // later move onto the panel vanished into the peer. A dip from
             // that monitor back onto the panel is an ordinary seam crossing
             // and comes home through SharedCross, as it should.
-            self.focus = Some(peer);
+            self.focus = Some(peer.clone());
             self.send_to_focus(Msg::EnterAt { x, y });
+            self.try_send_quick_share(&peer);
             return true;
         }
 
@@ -1743,12 +1748,12 @@ async fn watch_layout(
     let path = Config::path();
     let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let mut last = mtime(&path);
-    let mut last_monitors = platform::monitors();
+    let mut last_monitors = platform::identified_monitors();
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let monitors = platform::monitors();
-        if monitors != last_monitors {
-            last_monitors = monitors;
+        let current_monitors = platform::identified_monitors();
+        if current_monitors != last_monitors {
+            last_monitors = current_monitors;
             let _ = evt_tx.send(SessionEvent::LocalMonitorsChanged);
         }
         let cur = mtime(&path);
@@ -2059,6 +2064,7 @@ async fn run_session(
     let _ = evt_tx.send(SessionEvent::Connected { name: name.clone() });
     crate::ui::set_connected(&name, true);
     crate::ui::set_link(&name, link_local, link_remote);
+    let _ = out_tx.send(Msg::Builtin { flags: platform::builtin_flags() });
 
     // Ping seq -> send time, so a Pong yields a round-trip measurement.
     let pending: Arc<Mutex<HashMap<u64, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -2164,6 +2170,7 @@ async fn run_session(
             if geo_tx.send(Msg::Monitors { screen, monitors: mons }).is_err() {
                 return;
             }
+            let _ = geo_tx.send(Msg::Builtin { flags: platform::builtin_flags() });
         }
     });
 
@@ -2203,6 +2210,10 @@ async fn run_session(
                     cache_peer_screens(&name, &monitors, None, &peer_screens);
                     let _ = evt_tx.send(SessionEvent::LayoutChanged);
                 }
+                Msg::Builtin { flags } => {
+                    crate::ui::set_builtin(&name, flags);
+                    let _ = evt_tx.send(SessionEvent::LayoutChanged);
+                }
                 Msg::SharedRequest { owner } => {
                     let _ = evt_tx.send(SessionEvent::SharedRequest { name: name.clone(), owner });
                 }
@@ -2210,6 +2221,44 @@ async fn run_session(
                 Msg::OpenUrl { url } => {
                     info!("{name}: open url {url}");
                     platform::open_url(&url);
+                }
+                Msg::QuickShareOffer(offer) => {
+                    info!("{name}: quick share offer #{}: {:?}", offer.id, offer.payload);
+                    crate::ui::present_quick_share(name.clone(), offer);
+                }
+                Msg::QuickShareAccept { id } => {
+                    info!("{name}: peer accepted quick share file #{id}");
+                    if let Some(source_path) = crate::engine::quickshare::engine().find_source_file(id) {
+                        let out_tx = out_tx.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = crate::engine::quickshare::engine().stream_file(id, source_path, out_tx.clone()).await {
+                                warn!("quickshare stream error for #{id}: {e:#}");
+                                let _ = out_tx.send(Msg::QuickShareStatus { id, success: false, message: Some(e.to_string()) });
+                            }
+                        });
+                    } else {
+                        warn!("{name}: source file for #{id} not found");
+                        let _ = out_tx.send(Msg::QuickShareStatus { id, success: false, message: Some("Dosya bulunamadı".into()) });
+                    }
+                }
+                Msg::QuickShareChunk { id, offset, data, is_eof } => {
+                    match crate::engine::quickshare::engine().handle_inbound_chunk(id, offset, &data, is_eof) {
+                        Ok(Some(final_path)) => {
+                            info!("quickshare: file #{id} received successfully: {}", final_path.display());
+                            crate::platform::reveal_path(&final_path.to_string_lossy());
+                            crate::ui::complete_quick_share_file(id, true, Some(final_path.display().to_string()));
+                            let _ = out_tx.send(Msg::QuickShareStatus { id, success: true, message: None });
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            warn!("quickshare error writing chunk #{id}: {e:#}");
+                            crate::ui::complete_quick_share_file(id, false, Some(e.to_string()));
+                            let _ = out_tx.send(Msg::QuickShareStatus { id, success: false, message: Some(e.to_string()) });
+                        }
+                    }
+                }
+                Msg::QuickShareStatus { id, success, message } => {
+                    info!("{name}: quick share status #{id}: success={success}, msg={message:?}");
                 }
                 Msg::Ping(n) => {
                     // BOTH sides run a ping task now, so both must answer one.
@@ -2251,14 +2300,25 @@ async fn run_session(
     }
     .await;
 
-    {
+    // A peer that reconnects replaces our slot with a NEWER session. When the
+    // old one dies afterwards it must not mark the peer offline or fire
+    // Disconnected: that tore down the live session's portals/focus and left
+    // the editor showing a red dot while input still flowed.
+    let still_current = {
         let mut s = sessions.lock().unwrap();
-        if s.get(&name).map_or(false, |(id, _)| *id == session_id) {
-            s.remove(&name);
+        match s.get(&name) {
+            Some((id, _)) if *id == session_id => {
+                s.remove(&name);
+                true
+            }
+            Some(_) => false,
+            None => true,
         }
+    };
+    if still_current {
+        crate::ui::set_connected(&name, false);
+        let _ = evt_tx.send(SessionEvent::Disconnected { name });
     }
-    crate::ui::set_connected(&name, false);
-    let _ = evt_tx.send(SessionEvent::Disconnected { name });
     ping_task.abort();
     geo_task.abort();
     writer_task.abort();

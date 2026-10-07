@@ -145,6 +145,9 @@ pub struct SharedMonitor {
     /// `kayiver display list`; Windows: 0-based attached-display order).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_index: Option<u32>,
+    /// Persistent macOS display UUID; indices are only current platform picks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_id: Option<String>,
     /// This machine's shared monitor geometry — verified before detaching so an
     /// index slip can never turn off the wrong monitor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -192,6 +195,7 @@ impl Default for SharedMonitor {
     fn default() -> Self {
         SharedMonitor {
             local_index: None,
+            local_id: None,
             local_rect: None,
             peer: None,
             peer_index: None,
@@ -357,9 +361,13 @@ mod tests {
         peer.set_psk(&[9u8; 32]);
         cfg.peers.push(peer);
 
+        cfg.shared_monitor.local_id = Some("selected-panel-uuid".into());
         let text = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.name, "mac-studio");
+        assert_eq!(back.shared_monitor.local_id.as_deref(), Some("selected-panel-uuid"));
+        let legacy = text.replace("local_id = \"selected-panel-uuid\"\n", "");
+        assert!(toml::from_str::<Config>(&legacy).unwrap().shared_monitor.local_id.is_none());
         assert_eq!(back.peer("win").unwrap().psk_bytes().unwrap(), [9u8; 32]);
         assert_eq!(back.layout.target("win", Edge::Left).unwrap().0, "mac-studio");
     }

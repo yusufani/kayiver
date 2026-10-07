@@ -2,6 +2,7 @@
 pub mod clipsync;
 pub mod host;
 pub mod pairing;
+pub mod quickshare;
 
 use kayiver_core::layout::Edge;
 use kayiver_core::proto::InputEvent;

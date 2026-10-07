@@ -15,7 +15,7 @@
 
 #![allow(non_snake_case, non_upper_case_globals, clippy::upper_case_acronyms)]
 
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -86,6 +86,7 @@ extern "C" {
     fn CGGetOnlineDisplayList(max: u32, ids: *mut u32, count: *mut u32) -> i32;
     fn CGDisplayBounds(id: u32) -> CGRect;
     fn CGDisplayIsInMirrorSet(display: u32) -> u32;
+    fn CGDisplayIsBuiltin(display: u32) -> u32;
     fn CGBeginDisplayConfiguration(config: *mut *mut c_void) -> i32;
     fn CGConfigureDisplayMirrorOfDisplay(config: *mut c_void, display: u32, master: u32) -> i32;
     fn CGCompleteDisplayConfiguration(config: *mut c_void, option: u32) -> i32;
@@ -93,6 +94,11 @@ extern "C" {
     fn CGRequestListenEventAccess() -> bool;
     fn CGPreflightPostEventAccess() -> bool;
     fn CGRequestPostEventAccess() -> bool;
+}
+
+#[link(name = "ColorSync", kind = "framework")]
+extern "C" {
+    fn CGDisplayCreateUUIDFromDisplayID(display: u32) -> *const c_void;
 }
 
 #[link(name = "IOKit", kind = "framework")]
@@ -127,6 +133,10 @@ extern "C" {
         value_callbacks: *const c_void,
     ) -> *const c_void;
     fn CFRelease(p: *const c_void);
+    fn CFUUIDGetUUIDBytes(uuid: *const c_void) -> DisplayUuidBytes;
+    fn CFStringCreateWithCString(alloc: *const c_void, cstr: *const c_char, encoding: u32) -> CFStringRef;
+    fn CFPreferencesGetAppIntegerValue(key: CFStringRef, app: CFStringRef, exists: *mut u8) -> i64;
+    fn CFPreferencesGetAppBooleanValue(key: CFStringRef, app: CFStringRef, exists: *mut u8) -> u8;
     static kCFBooleanTrue: *const c_void;
     static kCFTypeDictionaryKeyCallBacks: c_void;
     static kCFTypeDictionaryValueCallBacks: c_void;
@@ -192,6 +202,34 @@ pub fn apply_arrangement(_desired: &[Rect]) -> Result<bool> {
 /// manager job. Elsewhere the OS keeps its own arrangement, so nothing to do.
 pub fn rescue_windows_off(_blocked: Rect) -> usize {
     0
+}
+
+#[repr(C)]
+struct DisplayUuidBytes { bytes: [u8; 16] }
+
+/// Read UUID and geometry from the same enumeration to avoid index drift.
+pub fn identified_monitors() -> Vec<(Option<String>, Rect)> {
+    online_display_ids().into_iter().map(|id| unsafe {
+        let uuid = CGDisplayCreateUUIDFromDisplayID(id);
+        let key = if uuid.is_null() { None } else {
+            let bytes = CFUUIDGetUUIDBytes(uuid).bytes;
+            CFRelease(uuid);
+            Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
+        };
+        (key, cgrect_to_rect(CGDisplayBounds(id)))
+    }).collect()
+}
+
+/// Built-in (laptop) flag per active display, same order as `monitors()`.
+pub fn builtin_flags() -> Vec<bool> {
+    unsafe {
+        let mut ids = [0u32; 16];
+        let mut count = 0u32;
+        if CGGetActiveDisplayList(16, ids.as_mut_ptr(), &mut count) != 0 || count == 0 {
+            return vec![CGDisplayIsBuiltin(CGMainDisplayID()) != 0];
+        }
+        ids[..count as usize].iter().map(|&id| CGDisplayIsBuiltin(id) != 0).collect()
+    }
 }
 
 pub fn monitors() -> Vec<Rect> {
@@ -348,10 +386,12 @@ pub fn display_disabled(index: u32) -> Option<bool> {
     Some(unsafe { CGDisplayIsInMirrorSet(target) } != 0)
 }
 
-pub fn ensure_permissions() -> Result<()> {
-    if permissions_ok() {
-        return Ok(());
-    }
+pub fn permission_grants() -> (bool, bool, bool) {
+    unsafe { (AXIsProcessTrusted(), CGPreflightListenEventAccess(), CGPreflightPostEventAccess()) }
+}
+
+/// Trigger requests without waiting, so the editor remains responsive.
+pub fn request_permission_prompts() {
     unsafe {
         // Each of these pops the corresponding system dialog (once) and
         // registers this binary in the right Privacy & Security list.
@@ -369,6 +409,13 @@ pub fn ensure_permissions() -> Result<()> {
             CGRequestPostEventAccess();
         }
     }
+}
+
+pub fn ensure_permissions() -> Result<()> {
+    if permissions_ok() {
+        return Ok(());
+    }
+    request_permission_prompts();
     eprintln!();
     eprintln!("kayiver needs two macOS permissions: Accessibility and Input Monitoring.");
     eprintln!("Approve the dialogs that just appeared — kayiver will continue by itself.");
@@ -414,6 +461,57 @@ pub fn doctor_permissions() {
         println!("  accessibility   : {}", if AXIsProcessTrusted() { "granted" } else { "MISSING (System Settings -> Privacy & Security -> Accessibility)" });
         println!("  input monitoring: {}", if CGPreflightListenEventAccess() { "granted" } else { "MISSING (System Settings -> Privacy & Security -> Input Monitoring)" });
         println!("  event posting   : {}", if CGPreflightPostEventAccess() { "granted" } else { "MISSING (usually granted with Accessibility)" });
+    }
+    if let Some(mods) = zoom_scroll_modifiers() {
+        println!(
+            "  zoom scroll     : ON ({mods}+scroll) — macOS Zoom handles this upstream of our\n\
+             \x20                   event tap, so this Mac still zooms while you are driving a\n\
+             \x20                   peer. Turn it off in System Settings -> Accessibility ->\n\
+             \x20                   Zoom -> \"Use scroll gesture with modifier keys to zoom\"."
+        );
+    }
+}
+
+const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+
+/// Create a CFString from a NUL-terminated literal. Caller releases it.
+unsafe fn cfstr(s: &str) -> CFStringRef {
+    let c = std::ffi::CString::new(s).unwrap();
+    CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), K_CF_STRING_ENCODING_UTF8)
+}
+
+/// macOS Zoom's "use scroll gesture with modifier keys" is applied before
+/// CGEventTaps get a say: kayiver swallows the scroll while forwarding, yet the
+/// Mac zooms anyway. There is nothing the tap can do about it, so `doctor`
+/// names the culprit instead. Returns the modifier names when it is enabled.
+fn zoom_scroll_modifiers() -> Option<String> {
+    unsafe {
+        let app = cfstr("com.apple.universalaccess");
+        let mut exists = 0u8;
+        let on_key = cfstr("closeViewScrollWheelToggle");
+        let on = CFPreferencesGetAppBooleanValue(on_key, app, &mut exists) != 0 && exists != 0;
+        CFRelease(on_key as *const c_void);
+        let mods = if on {
+            let mod_key = cfstr("closeViewScrollWheelModifiersInt");
+            let raw = CFPreferencesGetAppIntegerValue(mod_key, app, &mut exists);
+            CFRelease(mod_key as *const c_void);
+            let raw = if exists != 0 { raw as u64 } else { FLAG_CTRL };
+            let names: Vec<&str> = [
+                (FLAG_SHIFT, "Shift"),
+                (FLAG_CTRL, "Control"),
+                (FLAG_ALT, "Option"),
+                (FLAG_CMD, "Command"),
+            ]
+            .iter()
+            .filter(|(bit, _)| raw & bit != 0)
+            .map(|&(_, name)| name)
+            .collect();
+            Some(if names.is_empty() { "modifier".to_string() } else { names.join("+") })
+        } else {
+            None
+        };
+        CFRelease(app as *const c_void);
+        mods
     }
 }
 
@@ -582,7 +680,16 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
             let p = CGEventGetLocation(event);
             let dx = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_X) as i32;
             let dy = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_Y) as i32;
-            maybe_enter_portal(state, p.x as i32, p.y as i32, dx, dy);
+            if maybe_enter_portal(state, p.x as i32, p.y as i32, dx, dy) {
+                // We just crossed into forwarding! Forward the initial momentum
+                // delta so motion glides seamlessly across the boundary.
+                let dx = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_X) as i32;
+                let dy = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_Y) as i32;
+                if dx != 0 || dy != 0 {
+                    let _ = state.tx.send(Captured::Input(InputEvent::MouseMove { dx, dy }));
+                }
+                return std::ptr::null_mut(); // swallow the transition event
+            }
         }
         return event;
     }
@@ -660,9 +767,9 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
     std::ptr::null_mut() // swallow
 }
 
-unsafe fn maybe_enter_portal(state: &mut CaptureState, x: i32, y: i32, dx: i32, dy: i32) {
+unsafe fn maybe_enter_portal(state: &mut CaptureState, x: i32, y: i32, dx: i32, dy: i32) -> bool {
     if Instant::now() < *state.ctl.cooldown_until.lock().unwrap() {
-        return;
+        return false;
     }
     let bounds = state.ctl.bounds();
     let portals = state.ctl.portals.read().unwrap().clone();
@@ -675,12 +782,12 @@ unsafe fn maybe_enter_portal(state: &mut CaptureState, x: i32, y: i32, dx: i32, 
                 match state.edge_pending {
                     Some((e, since)) if e == edge => {
                         if since.elapsed() < Duration::from_millis(dwell) {
-                            return; // still charging up at this edge
+                            return false; // still charging up at this edge
                         }
                     }
                     _ => {
                         state.edge_pending = Some((edge, Instant::now()));
-                        return; // just arrived at the edge; start the timer
+                        return false; // just arrived at the edge; start the timer
                     }
                 }
             }
@@ -697,11 +804,12 @@ unsafe fn maybe_enter_portal(state: &mut CaptureState, x: i32, y: i32, dx: i32, 
             CGWarpMouseCursorPosition(state.park);
             let ratio = ratio_on_edge(bounds, edge, x, y);
             let _ = state.tx.send(Captured::EdgeHit { edge, ratio });
-            return;
+            return true;
         }
     }
     // Not touching any portal edge — reset the dwell timer.
     state.edge_pending = None;
+    false
 }
 
 /// Triple-Esc within 900ms yanks input back to the host even if the remote
@@ -987,9 +1095,52 @@ pub fn open_url(url: &str) {
     let _ = std::process::Command::new("open").arg(url).spawn();
 }
 
+/// Highlight / reveal a file in the file manager (Finder on macOS).
+pub fn reveal_path(path: &str) {
+    let _ = std::process::Command::new("open").arg("-R").arg(path).spawn();
+}
+
+fn percent_decode(s: &str) -> String {
+    let mut bytes = Vec::new();
+    let mut iter = s.as_bytes().iter().copied();
+    while let Some(b) = iter.next() {
+        if b == b'%' {
+            if let (Some(h1), Some(h2)) = (iter.next(), iter.next()) {
+                let hex_str = [h1, h2];
+                if let Ok(s) = std::str::from_utf8(&hex_str) {
+                    if let Ok(val) = u8::from_str_radix(s, 16) {
+                        bytes.push(val);
+                        continue;
+                    }
+                }
+            }
+        }
+        bytes.push(b);
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| s.to_string())
+}
+
+/// If a file was copied (e.g. in Finder), return its local file path.
+pub fn get_clipboard_file() -> Option<String> {
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::NSString;
+    let pb = NSPasteboard::generalPasteboard();
+    let ty = NSString::from_str("public.file-url");
+    if let Some(s) = pb.stringForType(&ty) {
+        let st = s.to_string();
+        if let Some(rest) = st.strip_prefix("file://") {
+            let decoded = percent_decode(rest);
+            if std::path::Path::new(&decoded).exists() {
+                return Some(decoded);
+            }
+        }
+    }
+    None
+}
+
 /// Monotonic clipboard change counter (cheap; avoids reading the whole
 /// clipboard every poll). Bumps on any change by any app.
 pub fn clipboard_seq() -> u64 {
     use objc2_app_kit::NSPasteboard;
-    unsafe { NSPasteboard::generalPasteboard().changeCount() as u64 }
+    NSPasteboard::generalPasteboard().changeCount() as u64
 }

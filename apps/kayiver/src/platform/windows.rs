@@ -19,13 +19,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
-use kayiver_core::layout::{ratio_on_edge, touches_edge, Edge};
+use kayiver_core::layout::{point_in, ratio_on_edge, touches_edge, Edge};
 use kayiver_core::proto::{InputEvent, MouseButton, Rect};
 use tokio::sync::mpsc::UnboundedSender;
 
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::System::Power::{
+    SetThreadExecutionState, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+    keybd_event, mouse_event, MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
     KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC,
     MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
@@ -33,12 +36,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_XUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetClipCursor, GetCursorPos, GetMessageW, GetSystemMetrics, SetCursorPos,
-    SetWindowsHookExW, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
-    WM_XBUTTONUP,
+    CallNextHookEx, GetClipCursor, GetCursorPos, GetMessageW, GetSystemMetrics, PostMessageW,
+    SetCursorPos, SetWindowsHookExW, HWND_BROADCAST, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
+    SC_MONITORPOWER, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use crate::engine::Captured;
@@ -49,7 +52,7 @@ const LLMHF_INJECTED: u32 = 0x1;
 const LLKHF_INJECTED: u32 = 0x10;
 /// Park the cursor this far inside the portal edge while forwarding, so
 /// proposed positions in the hook are never clamped by the desktop bounds.
-const PARK_INSET: i32 = 300;
+const PARK_INSET: i32 = 8;
 
 pub fn desktop_bounds() -> Rect {
     unsafe {
@@ -431,6 +434,61 @@ pub fn monitors() -> Vec<Rect> {
     }
 }
 
+/// Built-in (laptop) panel flags, same order as `monitors()`. A display is
+/// built-in when its connection (output technology) is internal / embedded
+/// DisplayPort / embedded UDI, read from the display-config API.
+pub fn builtin_flags() -> Vec<bool> {
+    use windows::Win32::Devices::Display::{
+        DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig,
+        DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_HEADER,
+        DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED,
+        DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED,
+        DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME, QDC_ONLY_ACTIVE_PATHS,
+    };
+    // (GDI device name, internal?) for each active path.
+    let mut internal: Vec<(String, bool)> = Vec::new();
+    unsafe {
+        let (mut np, mut nm) = (0u32, 0u32);
+        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm).is_ok() {
+            let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
+            let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
+            if QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut np, paths.as_mut_ptr(), &mut nm, modes.as_mut_ptr(), None)
+                .is_ok()
+            {
+                for path in paths.iter().take(np as usize) {
+                    let mut src = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+                        header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                            r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                            size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                            adapterId: path.sourceInfo.adapterId,
+                            id: path.sourceInfo.id,
+                        },
+                        ..Default::default()
+                    };
+                    if DisplayConfigGetDeviceInfo(&mut src.header) != 0 {
+                        continue;
+                    }
+                    let n = src.viewGdiDeviceName.iter().position(|&c| c == 0).unwrap_or(src.viewGdiDeviceName.len());
+                    let name = String::from_utf16_lossy(&src.viewGdiDeviceName[..n]);
+                    let tech = path.targetInfo.outputTechnology;
+                    let is_internal = tech == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL
+                        || tech == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED
+                        || tech == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED;
+                    internal.push((name, is_internal));
+                }
+            }
+        }
+    }
+    let attached = attached_displays();
+    if attached.is_empty() {
+        return vec![false];
+    }
+    attached
+        .iter()
+        .map(|(name, _)| internal.iter().any(|(n, i)| *i && n.eq_ignore_ascii_case(name)))
+        .collect()
+}
+
 /// Make the process per-monitor DPI aware, so `GetSystemMetrics`,
 /// `EnumDisplayMonitors` and `SendInput` all speak the same (physical) pixel
 /// coordinates. Without this, on a scaled display (125/150/175%) the geometry
@@ -450,6 +508,7 @@ pub fn init() {
     // this same thread (single-threaded tokio runtime), so binding it here is
     // what makes remote-launched kayiver actually move the cursor.
     attach_input_desktop();
+    super::quickshare_windows::init();
 }
 
 /// (Re)bind the calling thread to the current input desktop. The input
@@ -869,7 +928,18 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 
     if !forwarding {
         if msg == WM_MOUSEMOVE {
-            maybe_enter_portal(state, info.pt.x, info.pt.y);
+            let prev_pt = (info.pt.x, info.pt.y);
+            if maybe_enter_portal(state, info.pt.x, info.pt.y) {
+                // We crossed into forwarding: compute delta against the park point
+                // and forward initial momentum so the transition doesn't stall.
+                let park = *state.park.lock().unwrap();
+                let dx = prev_pt.0 - park.0;
+                let dy = prev_pt.1 - park.1;
+                if dx != 0 || dy != 0 {
+                    let _ = state.tx.send(Captured::Input(InputEvent::MouseMove { dx, dy }));
+                }
+                return LRESULT(1); // swallow the transition event
+            }
         }
         return CallNextHookEx(None, code, wparam, lparam);
     }
@@ -879,6 +949,9 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         WM_MOUSEMOVE => {
             let dx = info.pt.x - park.0;
             let dy = info.pt.y - park.1;
+            // Pin the physical cursor back to the park position so it does not drift,
+            // wander into other monitors, or trigger Windows taskbar gestures while forwarding.
+            let _ = SetCursorPos(park.0, park.1);
             if dx == 0 && dy == 0 {
                 None
             } else {
@@ -965,9 +1038,9 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
     LRESULT(1) // swallow
 }
 
-unsafe fn maybe_enter_portal(state: &CapState, x: i32, y: i32) {
+unsafe fn maybe_enter_portal(state: &CapState, x: i32, y: i32) -> bool {
     if Instant::now() < *state.ctl.cooldown_until.lock().unwrap() {
-        return;
+        return false;
     }
     let bounds = state.ctl.bounds();
     let portals = state.ctl.portals.read().unwrap().clone();
@@ -980,12 +1053,12 @@ unsafe fn maybe_enter_portal(state: &CapState, x: i32, y: i32) {
                 match *pending {
                     Some((e, since)) if e == edge => {
                         if since.elapsed() < Duration::from_millis(dwell) {
-                            return; // still charging up
+                            return false; // still charging up
                         }
                     }
                     _ => {
                         *pending = Some((edge, Instant::now()));
-                        return; // just arrived; start the timer
+                        return false; // just arrived; start the timer
                     }
                 }
             }
@@ -998,19 +1071,25 @@ unsafe fn maybe_enter_portal(state: &CapState, x: i32, y: i32) {
             *state.park.lock().unwrap() = (px, py);
             let ratio = ratio_on_edge(bounds, edge, x, y);
             let _ = state.tx.send(Captured::EdgeHit { edge, ratio });
-            return;
+            return true;
         }
     }
     // Not touching any portal edge — reset the dwell timer.
     *state.edge_pending.lock().unwrap() = None;
+    false
 }
 
 fn park_point(bounds: Rect, edge: Edge, x: i32, y: i32) -> (i32, i32) {
+    // Find the monitor containing (x, y) so parking never jumps across screens.
+    let m = monitors()
+        .into_iter()
+        .find(|m| point_in(*m, x, y))
+        .unwrap_or(bounds);
     match edge {
-        Edge::Left => ((bounds.x + PARK_INSET).min(bounds.right() - 1), y),
-        Edge::Right => ((bounds.right() - 1 - PARK_INSET).max(bounds.x), y),
-        Edge::Top => (x, (bounds.y + PARK_INSET).min(bounds.bottom() - 1)),
-        Edge::Bottom => (x, (bounds.bottom() - 1 - PARK_INSET).max(bounds.y)),
+        Edge::Left => ((m.x + PARK_INSET).min(m.right() - 1), y.clamp(m.y, m.bottom() - 1)),
+        Edge::Right => ((m.right() - 1 - PARK_INSET).max(m.x), y.clamp(m.y, m.bottom() - 1)),
+        Edge::Top => (x.clamp(m.x, m.right() - 1), (m.y + PARK_INSET).min(m.bottom() - 1)),
+        Edge::Bottom => (x.clamp(m.x, m.right() - 1), (m.bottom() - 1 - PARK_INSET).max(m.y)),
     }
 }
 
@@ -1051,11 +1130,62 @@ pub struct Injector {
     /// Last time an injection problem was logged, to keep the log readable
     /// while a game clips the cursor for minutes at a time.
     last_issue_log: Option<Instant>,
+    /// Last time a display-wake pulse was sent.
+    last_wake: Option<Instant>,
 }
 
 impl Injector {
     pub fn new() -> Result<Self> {
-        Ok(Injector { down_keys: Vec::new(), down_buttons: Vec::new(), last_issue_log: None })
+        Ok(Injector {
+            down_keys: Vec::new(),
+            down_buttons: Vec::new(),
+            last_issue_log: None,
+            last_wake: None,
+        })
+    }
+
+    /// Wake sleeping monitors and reset the display sleep idle timer.
+    ///
+    /// When the Windows screen has turned off (Display sleep / VIDEOIDLE),
+    /// plain SendInput or SetCursorPos often doesn't trigger display power-on
+    /// because Windows distinguishes hardware input from synthetic input.
+    /// Calling SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)
+    /// together with SC_MONITORPOWER (-1 = power on), driver-level mouse movement deltas (+1, -1),
+    /// and a dummy keystroke (VK_F24) reliably wakes up all displays without flickering or side effects.
+    fn wake_display(&mut self) {
+        let now = Instant::now();
+        if let Some(last) = self.last_wake {
+            if now.duration_since(last) < Duration::from_secs(2) {
+                return;
+            }
+        }
+        self.last_wake = Some(now);
+
+        unsafe {
+            // 1. Tell Windows power manager display activity is required right now
+            SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+
+            // 2. Broadcast monitor power-on message (-1 = ON, 1 = standby, 2 = off)
+            let _ = PostMessageW(
+                Some(HWND_BROADCAST),
+                WM_SYSCOMMAND,
+                WPARAM(SC_MONITORPOWER as usize),
+                LPARAM(-1),
+            );
+
+            // 3. Driver-level mouse event pulses with actual delta (+1, -1)
+            // (Many graphics drivers ignore 0,0 deltas for waking monitors)
+            mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, 0);
+            mouse_event(MOUSEEVENTF_MOVE, -1, 0, 0, 0);
+
+            // 4. Send low-level keybd_event pulses (VK_SHIFT and VK_F24)
+            // keybd_event communicates directly with the driver/raw-input stack
+            // and reliably wakes monitors from power-save mode across all Windows versions.
+            keybd_event(0x10, 0, KEYBD_EVENT_FLAGS(0), 0); // VK_SHIFT down
+            keybd_event(0x10, 0, KEYEVENTF_KEYUP, 0);      // VK_SHIFT up
+            keybd_event(0x87, 0, KEYBD_EVENT_FLAGS(0), 0); // VK_F24 down
+            keybd_event(0x87, 0, KEYEVENTF_KEYUP, 0);      // VK_F24 up
+        }
     }
 
     fn send_mouse(&mut self, flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, data: i32) {
@@ -1091,6 +1221,7 @@ impl Injector {
     /// desktop + retry once if the cursor didn't actually move (lock screen /
     /// UAC switched desktops, or a fullscreen app clips the cursor).
     pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) {
+        self.wake_display();
         if dx != 0 || dy != 0 {
             self.send_mouse(MOUSEEVENTF_MOVE, dx, dy, 0);
         }
@@ -1126,6 +1257,7 @@ impl Injector {
 
     pub fn button(&mut self, b: MouseButton, pressed: bool) {
         if pressed {
+            self.wake_display();
             if !self.down_buttons.contains(&b) {
                 self.down_buttons.push(b);
             }
@@ -1157,6 +1289,7 @@ impl Injector {
     pub fn key(&mut self, hid: u16, pressed: bool) {
         let Some(vk) = keymap::hid_to_native(hid) else { return };
         if pressed {
+            self.wake_display();
             if !self.down_keys.contains(&hid) {
                 self.down_keys.push(hid);
             }
@@ -1201,13 +1334,32 @@ impl Injector {
 // ------------------------------------------------------ clipboard / urls ----
 
 const CF_UNICODETEXT: u32 = 13;
+const CLIPBOARD_OPEN_RETRIES: u32 = 20;
+const CLIPBOARD_OPEN_RETRY_DELAY: Duration = Duration::from_millis(25);
+
+/// Windows permits another process to hold the clipboard while it completes a
+/// copy/paste operation.  A single `OpenClipboard` attempt makes clipboard
+/// sharing randomly lose updates, so wait briefly for the owner to release it.
+fn open_clipboard_with_retry() -> bool {
+    use windows::Win32::System::DataExchange::OpenClipboard;
+
+    for attempt in 0..CLIPBOARD_OPEN_RETRIES {
+        if unsafe { OpenClipboard(None) }.is_ok() {
+            return true;
+        }
+        if attempt + 1 < CLIPBOARD_OPEN_RETRIES {
+            std::thread::sleep(CLIPBOARD_OPEN_RETRY_DELAY);
+        }
+    }
+    false
+}
 
 /// Read the clipboard as text.
 pub fn get_clipboard() -> Option<String> {
-    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData};
     use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
     unsafe {
-        if OpenClipboard(None).is_err() {
+        if !open_clipboard_with_retry() {
             return None;
         }
         let result = (|| {
@@ -1235,15 +1387,14 @@ pub fn get_clipboard() -> Option<String> {
 
 /// Replace the clipboard with `text`.
 pub fn set_clipboard(text: &str) {
-    use windows::Win32::Foundation::HGLOBAL;
     use windows::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+        CloseClipboard, EmptyClipboard, SetClipboardData,
     };
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
     unsafe {
         let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
         let bytes = wide.len() * std::mem::size_of::<u16>();
-        if OpenClipboard(None).is_err() {
+        if !open_clipboard_with_retry() {
             return;
         }
         let _ = EmptyClipboard();
@@ -1286,6 +1437,18 @@ pub fn open_url(url: &str) {
             SW_SHOWNORMAL,
         );
     }
+}
+
+/// Highlight / reveal a file in File Explorer.
+pub fn reveal_path(path: &str) {
+    let _ = std::process::Command::new("explorer.exe")
+        .arg(format!("/select,\"{path}\""))
+        .spawn();
+}
+
+/// If a file was copied on Windows, return its local file path (if readable).
+pub fn get_clipboard_file() -> Option<String> {
+    None
 }
 
 /// Monotonic clipboard change counter (cheap change detection).

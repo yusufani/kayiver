@@ -5,9 +5,8 @@
 //! background thread. The editor window is a WKWebView (wry) pointed at the
 //! embedded server — no external browser involved.
 //!
-//! Dock behaviour: while the editor window is open the app is a normal
-//! `Regular` app (Dock icon + app switcher); when the window is closed it
-//! drops to `Accessory` so only the menu-bar icon remains.
+//! The app stays an `Accessory`: the menu bar and editor are available
+//! without a Dock icon. A launcher reopen brings the editor to the front.
 
 #![cfg(target_os = "macos")]
 
@@ -67,6 +66,9 @@ enum UserEvent {
     Status { line: String, warn: bool },
     /// ~60 fps overlay pump: live cursor position + a one-shot crossing flash.
     Overlay { x: i32, y: i32, flash: u8 },
+    /// Quick share prompt (URL or file).
+    QuickShare(crate::ui::ActiveQuickShare),
+    QuickShareDismiss,
 }
 
 struct MenuIds {
@@ -121,12 +123,14 @@ pub fn run_host(cfg: Config) -> Result<()> {
     // window appear immediately; the editor shows "not running" until the
     // permissions are granted and the host comes up.
     std::thread::Builder::new().name("kayiver-engine".into()).spawn(move || {
-        if let Err(e) = crate::platform::ensure_permissions().and_then(|_| crate::engine::host::run(cfg)) {
+        if let Err(e) = crate::platform::wait_for_gui_permissions().and_then(|_| crate::engine::host::run(cfg)) {
             eprintln!("kayiver engine exited: {e:#}");
             // Keep the GUI alive so the user can read the error / retry.
         }
     })?;
-    run_shell(true)
+    // Finder/Spotlight launch without a subcommand should show the editor.
+    // Login agents explicitly invoke `run` and stay in the menu bar.
+    run_shell(std::env::args_os().len() == 1)
 }
 
 /// `kayiver ui`: no engine here. If a running kayiver already serves the
@@ -146,10 +150,9 @@ pub fn run_editor() -> Result<()> {
     run_shell(true)
 }
 
-fn run_shell(_open_window_now: bool) -> Result<()> {
+fn run_shell(open_window_now: bool) -> Result<()> {
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
-    // Start as a menu-bar app (no Dock icon); we flip to Regular whenever a
-    // window is open so it also shows in the Dock.
+    // Stay a menu-bar app even while the editor is open.
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
 
     let proxy = event_loop.create_proxy();
@@ -182,11 +185,18 @@ fn run_shell(_open_window_now: bool) -> Result<()> {
 
     let (tray, ids, status_item) = build_tray()?;
 
+    // Register Quick Share notifier to deliver events to the GUI event loop.
+    let qs_proxy = event_loop.create_proxy();
+    crate::ui::register_quickshare_notifier(move |qs| {
+        let _ = qs_proxy.send_event(UserEvent::QuickShare(qs));
+    });
+
+    let bubble_proxy = event_loop.create_proxy();
+
     let mut editor: Option<(Window, WebView)> = None;
     let mut overlay: Option<(Window, WebView, (i32, i32))> = None;
-    // Open the window once on launch so the app is visible (and in the Dock);
-    // closing it later drops back to menu-bar-only.
-    let mut open_pending = true;
+    let mut quick_share: Option<(Window, WebView)> = None;
+    let mut open_pending = open_window_now;
 
     event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -195,7 +205,7 @@ fn run_shell(_open_window_now: bool) -> Result<()> {
             open_pending = false;
             match open_editor_window(target) {
                 Ok(w) => {
-                    show_in_dock(target, &w.0);
+                    focus_editor(target, &w.0);
                     editor = Some(w);
                 }
                 Err(e) => eprintln!("editor window failed: {e:#}"),
@@ -209,6 +219,7 @@ fn run_shell(_open_window_now: bool) -> Result<()> {
         }
 
         match event {
+            Event::Reopen { .. } => present_editor(target, &mut editor),
             Event::UserEvent(UserEvent::Overlay { x, y, flash }) => {
                 if let Some((_, wv, origin)) = &overlay {
                     let _ = wv.evaluate_script(&format!(
@@ -218,21 +229,31 @@ fn run_shell(_open_window_now: bool) -> Result<()> {
                     ));
                 }
             }
+            Event::UserEvent(UserEvent::QuickShare(qs)) => {
+                if qs.status == "pending" {
+                    if let Some((w, _)) = quick_share.take() {
+                        w.set_visible(false);
+                    }
+                    match open_quick_share_bubble(target, &bubble_proxy, &qs) {
+                        Ok(w) => quick_share = Some(w),
+                        Err(e) => eprintln!("quick share bubble failed: {e:#}"),
+                    }
+                } else if let Some((_, wv)) = &quick_share {
+                    let msg = qs.message.as_deref().unwrap_or("");
+                    let _ = wv.evaluate_script(&format!(
+                        "window.updateStatus&&updateStatus('{}', '{}')",
+                        qs.status, msg
+                    ));
+                }
+            }
+            Event::UserEvent(UserEvent::QuickShareDismiss) => {
+                if let Some((w, _)) = quick_share.take() {
+                    w.set_visible(false);
+                }
+            }
             Event::UserEvent(UserEvent::Menu(m)) => {
                 if m.id == ids.open {
-                    match &editor {
-                        Some((w, _)) => {
-                            show_in_dock(target, w);
-                            w.set_focus();
-                        }
-                        None => match open_editor_window(target) {
-                            Ok(w) => {
-                                show_in_dock(target, &w.0);
-                                editor = Some(w);
-                            }
-                            Err(e) => eprintln!("editor window failed: {e:#}"),
-                        },
-                    }
+                    present_editor(target, &mut editor);
                 } else if m.id == ids.toggle_shared {
                     // The running host owns the logic; go through the local API.
                     let _ = crate::ui::local_api("POST", "/api/shared", Some(r#"{"owner":"toggle"}"#));
@@ -249,6 +270,7 @@ fn run_shell(_open_window_now: bool) -> Result<()> {
             }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
                 // Window closed → drop it and retreat to the menu bar only.
+                if let Some((window, _)) = editor.as_ref() { window.set_visible(false); }
                 editor = None;
                 target.set_activation_policy_at_runtime(ActivationPolicy::Accessory);
                 target.set_dock_visibility(false);
@@ -258,11 +280,35 @@ fn run_shell(_open_window_now: bool) -> Result<()> {
     });
 }
 
-/// Bring the app into the Dock + app switcher and focus the window.
-fn show_in_dock(target: &EventLoopWindowTarget<UserEvent>, window: &Window) {
-    target.set_activation_policy_at_runtime(ActivationPolicy::Regular);
-    target.set_dock_visibility(true);
+/// Spotlight, launchers and the tray all reuse the same editor window.
+fn present_editor(target: &EventLoopWindowTarget<UserEvent>, editor: &mut Option<(Window, WebView)>) {
+    if let Some((window, _)) = editor.as_ref() {
+        window.set_visible(true);
+        window.set_minimized(false);
+        focus_editor(target, window);
+    } else {
+        match open_editor_window(target) {
+            Ok(window) => {
+                focus_editor(target, &window.0);
+                *editor = Some(window);
+            }
+            Err(e) => eprintln!("editor window failed: {e:#}"),
+        }
+    }
+}
+
+/// Focus the editor while remaining a menu-bar accessory.
+fn focus_editor(target: &EventLoopWindowTarget<UserEvent>, window: &Window) {
+    target.set_activation_policy_at_runtime(ActivationPolicy::Accessory);
+    target.set_dock_visibility(false);
     target.show_application();
+    // Unhiding alone does not activate an accessory app; launchers need the
+    // window to come forward even when another application owns focus.
+    #[allow(deprecated)]
+    unsafe {
+        let mtm = objc2_foundation::MainThreadMarker::new_unchecked();
+        objc2_app_kit::NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+    }
     window.set_focus();
 }
 
@@ -353,4 +399,305 @@ fn open_overlay(
         .with_html(OVERLAY_HTML)
         .build(&window)?;
     Ok((window, webview, (pos.x as i32, pos.y as i32)))
+}
+
+const QUICKSHARE_TEMPLATE: &str = r#"<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+html, body {
+  width: 100%; height: 100%; overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: transparent;
+}
+.card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 100%;
+  padding: 10px 14px;
+  background: rgba(24, 24, 28, 0.96);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  color: #fff;
+}
+.icon-box {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.35), rgba(29, 78, 216, 0.20));
+  border: 1.5px solid rgba(96, 165, 250, 0.45);
+  box-shadow: 0 0 16px rgba(37, 99, 235, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.icon-box svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+.icon-box.file {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.35), rgba(5, 150, 105, 0.20));
+  border-color: rgba(52, 211, 153, 0.45);
+  box-shadow: 0 0 16px rgba(16, 185, 129, 0.35);
+}
+.content {
+  flex: 1;
+  min-width: 0;
+}
+.title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f4f4f5;
+  margin-bottom: 2px;
+}
+.detail {
+  font-size: 11px;
+  color: #a1a1aa;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+.btn-action {
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  outline: none;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 13px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.btn-action:hover {
+  background: #1d4ed8;
+}
+.btn-action:active {
+  transform: scale(0.96);
+}
+.btn-close {
+  background: transparent;
+  border: none;
+  color: #71717a;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+  border-radius: 4px;
+}
+.btn-close:hover {
+  color: #fff;
+}
+.progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  width: 100%;
+  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+  border-bottom-left-radius: 14px;
+  border-bottom-right-radius: 14px;
+}
+</style>
+</head>
+<body>
+<div class="card" id="card">
+  <div class="icon-box ${ICON_CLASS}">${ICON}</div>
+  <div class="content">
+    <div class="title" id="title">${TITLE}</div>
+    <div class="detail" id="detail">${DETAIL}</div>
+  </div>
+  <button class="btn-action" id="actBtn" data-is-file="${IS_FILE}" onclick="doAction()">${ACTION_TEXT}</button>
+  <button class="btn-close" onclick="doClose()">✕</button>
+  <div class="progress" id="prog"></div>
+</div>
+<script>
+let totalMs = 8000;
+let remaining = totalMs;
+let lastTick = performance.now();
+let paused = false;
+let transferring = false;
+
+const card = document.getElementById('card');
+const prog = document.getElementById('prog');
+const actBtn = document.getElementById('actBtn');
+const titleEl = document.getElementById('title');
+const detailEl = document.getElementById('detail');
+
+card.addEventListener('mouseenter', () => paused = true);
+card.addEventListener('mouseleave', () => {
+  paused = false;
+  lastTick = performance.now();
+});
+
+function tick() {
+  const now = performance.now();
+  if (!paused && !transferring) {
+    remaining -= (now - lastTick);
+    if (remaining <= 0) {
+      doClose();
+      return;
+    }
+    prog.style.width = ((remaining / totalMs) * 100) + '%';
+  }
+  lastTick = now;
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+function doAction() {
+  if (actBtn.getAttribute('data-is-file') === 'true') {
+    transferring = true;
+    actBtn.disabled = true;
+    actBtn.innerText = 'Aktarılıyor…';
+    actBtn.style.background = '#4b5563';
+    prog.style.display = 'none';
+  }
+  window.ipc && window.ipc.postMessage('action');
+}
+
+function doClose() {
+  window.ipc && window.ipc.postMessage('close');
+}
+
+window.updateStatus = function(status, msg) {
+  if (status === 'done') {
+    actBtn.innerText = '✓ İndirildi';
+    actBtn.style.background = '#10b981';
+    titleEl.innerText = 'Dosya Kaydedildi!';
+    if (msg) detailEl.innerText = msg;
+    setTimeout(() => doClose(), 2500);
+  } else if (status === 'error') {
+    actBtn.innerText = 'Hata';
+    actBtn.style.background = '#ef4444';
+    if (msg) detailEl.innerText = msg;
+    setTimeout(() => doClose(), 3500);
+  }
+};
+</script>
+</body>
+</html>
+"#;
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn render_quickshare_html(qs: &crate::ui::ActiveQuickShare) -> String {
+    let (icon, icon_class, title, detail, action_text, is_file) = match &qs.payload {
+        kayiver_core::proto::QuickSharePayload::Url { url, title: _ } => {
+            let domain = url
+                .strip_prefix("https://")
+                .or_else(|| url.strip_prefix("http://"))
+                .unwrap_or(url);
+            let svg = r##"<svg viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>"##;
+            (svg, "url", "Web Bağlantısı", domain.to_string(), "Aç", false)
+        }
+        kayiver_core::proto::QuickSharePayload::File { name, size, .. } => {
+            let detail = format!("{} · {}", name, crate::engine::quickshare::format_size(*size));
+            let svg = r##"<svg viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>"##;
+            (svg, "file", "Dosya Paylaşımı", detail, "Aktar", true)
+        }
+    };
+
+    QUICKSHARE_TEMPLATE
+        .replace("${ICON}", icon)
+        .replace("${ICON_CLASS}", icon_class)
+        .replace("${TITLE}", title)
+        .replace("${DETAIL}", &html_escape(&detail))
+        .replace("${ACTION_TEXT}", action_text)
+        .replace("${IS_FILE}", if is_file { "true" } else { "false" })
+}
+
+fn open_quick_share_bubble(
+    target: &tao::event_loop::EventLoopWindowTarget<UserEvent>,
+    proxy: &tao::event_loop::EventLoopProxy<UserEvent>,
+    qs: &crate::ui::ActiveQuickShare,
+) -> Result<(Window, WebView)> {
+    let mon = target.primary_monitor().or_else(|| target.available_monitors().next());
+    let (w, h) = (350.0, 84.0);
+    let pos = match &mon {
+        Some(m) => {
+            let size = m.size().to_logical::<f64>(m.scale_factor());
+            let origin = m.position().to_logical::<f64>(m.scale_factor());
+            tao::dpi::LogicalPosition::new(
+                origin.x + size.width - w - 24.0,
+                origin.y + size.height - h - 36.0,
+            )
+        }
+        None => tao::dpi::LogicalPosition::new(800.0, 500.0),
+    };
+
+    let window = WindowBuilder::new()
+        .with_title("Kayıver Quick Share")
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_always_on_top(true)
+        .with_inner_size(tao::dpi::LogicalSize::new(w, h))
+        .with_position(pos)
+        .with_resizable(false)
+        .with_focused(false)
+        .build(target)?;
+
+    unsafe {
+        use objc2::msg_send;
+        let ns = window.ns_window() as *mut objc2::runtime::AnyObject;
+        if !ns.is_null() {
+            let _: () = msg_send![ns, setLevel: 2_147_483_631i64];
+            let _: () = msg_send![ns, setCollectionBehavior: 1u64 << 0 | 1u64 << 4];
+        }
+    }
+
+    let dismiss_proxy = proxy.clone();
+    let peer_c = qs.peer.clone();
+    let id = qs.id;
+    let url_opt = match &qs.payload {
+        kayiver_core::proto::QuickSharePayload::Url { url, .. } => Some(url.clone()),
+        _ => None,
+    };
+    let is_file = matches!(qs.payload, kayiver_core::proto::QuickSharePayload::File { .. });
+
+    let webview = wry::WebViewBuilder::new()
+        .with_transparent(true)
+        .with_html(&render_quickshare_html(qs))
+        .with_ipc_handler(move |req| {
+            let msg = req.body().as_str();
+            match msg {
+                "action" => {
+                    if let Some(url) = &url_opt {
+                        crate::platform::open_url(url);
+                        let _ = dismiss_proxy.send_event(UserEvent::QuickShareDismiss);
+                        let _ = crate::ui::send_cmd(crate::ui::UiCmd::QuickShareDismiss);
+                    } else if is_file {
+                        let _ = crate::ui::send_cmd(crate::ui::UiCmd::QuickShareAccept {
+                            peer: peer_c.clone(),
+                            id,
+                        });
+                    }
+                }
+                "close" => {
+                    let _ = dismiss_proxy.send_event(UserEvent::QuickShareDismiss);
+                    let _ = crate::ui::send_cmd(crate::ui::UiCmd::QuickShareDismiss);
+                }
+                _ => {}
+            }
+        })
+        .build(&window)?;
+
+    Ok((window, webview))
 }

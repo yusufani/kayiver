@@ -24,14 +24,19 @@ IDENT=app.kayiver
 echo "==> building release"
 "$CARGO" build --release -p kayiver
 
+if [ -n "${KAYIVER_SIGN_PW:-}" ]; then
+  security unlock-keychain -p "$KAYIVER_SIGN_PW" "$KC"
+fi
+
 echo "==> stopping running app"
 pkill -f "Kayiver.app/Contents/MacOS/kayiver" 2>/dev/null || true
 sleep 1
 
-security unlock-keychain -p "${KAYIVER_SIGN_PW:?set KAYIVER_SIGN_PW (local signing keychain password)}" "$KC"
 for APP in "${APPS[@]}"; do
   [ -d "$APP" ] || continue
   echo "==> installing + signing $APP"
+  /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$APP/Contents/Info.plist" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$APP/Contents/Info.plist"
   cp target/release/kayiver "$APP/Contents/MacOS/kayiver"
   codesign --force --deep --sign "$HASH" --keychain "$KC" --identifier "$IDENT" "$APP"
 done
