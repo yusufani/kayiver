@@ -33,6 +33,19 @@ pub fn motion_towards_edge(edge: Edge, dx: i32, dy: i32) -> bool {
     }
 }
 
+/// Match the native cursor: desktop-union gaps are walls, not screens.
+pub fn clamp_monitor_move(monitors: &[Rect], from: (i32, i32), to: (i32, i32)) -> (i32, i32) {
+    if monitors.iter().any(|m| point_in(*m, to.0, to.1)) { return to; }
+    let clamp = |m: &Rect| (to.0.clamp(m.x, m.right() - 1), to.1.clamp(m.y, m.bottom() - 1));
+    if let Some(m) = monitors.iter().find(|m| point_in(**m, from.0, from.1)) { return clamp(m); }
+    monitors.iter().min_by_key(|m| {
+        let p = clamp(m);
+        let dx = i64::from(p.0) - i64::from(to.0);
+        let dy = i64::from(p.1) - i64::from(to.1);
+        dx * dx + dy * dy
+    }).map(clamp).unwrap_or(from)
+}
+
 pub struct CaptureCtl {
     /// True while input is being forwarded to a remote machine.
     pub forwarding: AtomicBool,

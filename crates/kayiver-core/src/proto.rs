@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 13;
+pub const PROTOCOL_VERSION: u16 = 14;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -122,8 +122,9 @@ pub enum Msg {
     SharedBlock { rect: Option<Rect> },
     /// client -> host: my cursor moved onto the shared panel at relative
     /// position `(fx, fy)` in 0..1. The panel shows the host, so the host takes
-    /// the cursor onto its own copy of the panel at the same relative spot.
-    SharedCross { fx: f32, fy: f32 },
+    /// the cursor onto its own copy at the seam, then consumes the remaining
+    /// native pixel movement (dx, dy) after that seam.
+    SharedCross { fx: f32, fy: f32, dx: i32, dy: i32 },
     /// host -> client: warp your cursor to this absolute point and take input
     /// (used when control crosses onto your copy of the shared panel).
     EnterAt { x: i32, y: i32 },
@@ -155,6 +156,8 @@ pub enum Msg {
         success: bool,
         message: Option<String>,
     },
+    /// Movement already in flight when the receiver handed the cursor back.
+    SharedCarry { dx: i32, dy: i32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

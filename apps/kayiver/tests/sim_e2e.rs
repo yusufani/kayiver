@@ -671,7 +671,7 @@ fn crossing_to_the_windows_screen_above_survives_a_primary_switch() {
     });
     let cursor = host.state()["cursor"].clone();
     assert!(cursor[0].as_i64().is_some_and(|x| (3500..3700).contains(&x)), "must return at the same horizontal position: {cursor}");
-    assert!(cursor[1].as_i64().is_some_and(|y| (0..10).contains(&y)), "must return at the top seam: {cursor}");
+    assert!(cursor[1].as_i64().is_some_and(|y| (140..170).contains(&y)), "must keep movement remaining after the top seam: {cursor}");
 }
 
 #[test]
@@ -707,8 +707,77 @@ fn stale_client_panel_pair_is_repaired_before_crossing_back() {
     });
     let cursor = host.state()["cursor"].clone();
     assert!(cursor[0].as_i64().is_some_and(|x| (3500..3700).contains(&x)), "wrong return x: {cursor}");
-    assert!(cursor[1].as_i64().is_some_and(|y| (0..10).contains(&y)), "must return at C's top seam: {cursor}");
+    assert!(cursor[1].as_i64().is_some_and(|y| (240..270).contains(&y)), "must preserve the remaining movement onto C: {cursor}");
     assert!(!client.state()["driven"].as_bool().unwrap());
+}
+
+fn primary_windows_desk(scenario: &str, port: u16) -> (Machine, Machine) {
+    let host_cfg = host_cfg(port)
+        .replace("x = 0\ny = 0\nw = 2560\nh = 1440", "x = -163\ny = 1080\nw = 2560\nh = 1440")
+        .replace("x = 636\ny = -1080", "x = 0\ny = 0");
+    let client_cfg = client_cfg_shared(port)
+        .replace("last_owner = \"simwin\"", "last_owner = \"simhost\"")
+        .replace("[shared_monitor.local_rect]\nx = 0\ny = 0", "[shared_monitor.local_rect]\nx = -163\ny = 1080");
+    let mut host = Machine::spawn("host", &host_cfg, HOST_MONS, port + 1, scenario);
+    let mut client = Machine::spawn("client", &client_cfg,
+        "0,0,1920,1080;-163,1080,2560,1440", port + 2, scenario);
+    wait_until("Windows adopts its real panel", Duration::from_secs(10), || {
+        client.state()["blocked"] == serde_json::json!([-163,1080,2560,1440])
+    });
+    host.ctl(serde_json::json!({"op":"edge", "edge":"top", "ratio":3600.0/5120.0}));
+    wait_until("Windows is driven on D", Duration::from_secs(5), || {
+        client.state()["driven"].as_bool().unwrap()
+    });
+    (host, client)
+}
+
+#[test]
+fn d_side_walls_do_not_drift_into_gaps_or_follow_machine_links() {
+    let (mut host, mut client) = primary_windows_desk("dwall", 27480);
+    host.ctl(serde_json::json!({"op":"input_move", "dx":4000, "dy":0}));
+    wait_until("D right edge is a wall", Duration::from_secs(5), || {
+        client.state()["cursor"][0] == 1919
+    });
+    assert!(host.state()["forwarding"].as_bool().unwrap());
+    host.ctl(serde_json::json!({"op":"input_move", "dx":-4000, "dy":0}));
+    wait_until("D left edge is a wall", Duration::from_secs(5), || {
+        client.state()["cursor"][0] == 0
+    });
+    assert!(host.state()["forwarding"].as_bool().unwrap(), "D left must not teleport to Mac");
+    assert!(client.state()["driven"].as_bool().unwrap());
+    host.ctl(serde_json::json!({"op":"input_move", "dx":50, "dy":0}));
+    wait_until("motion resumes without hidden gap debt", Duration::from_secs(5), || {
+        client.state()["cursor"][0] == 50
+    });
+}
+
+#[test]
+fn return_preserves_movement_already_in_flight() {
+    let (mut host, mut client) = primary_windows_desk("carry", 27500);
+    client.ctl(serde_json::json!({"op":"delay_shared_return", "ms":250}));
+    host.ctl(serde_json::json!({"op":"input_move", "dx":0, "dy":300}));
+    wait_until("receiver has crossed before driver hears back", Duration::from_secs(5), || {
+        !client.state()["driven"].as_bool().unwrap()
+    });
+    assert!(host.state()["forwarding"].as_bool().unwrap());
+    host.ctl(serde_json::json!({"op":"input_move", "dx":-60, "dy":140}));
+    wait_until("both crossing remainder and in-flight movement reach C", Duration::from_secs(5), || {
+        let c = host.state()["cursor"].clone();
+        !host.state()["forwarding"].as_bool().unwrap() &&
+            c[0].as_i64().is_some_and(|x| (3536..3545).contains(&x)) &&
+            c[1].as_i64().is_some_and(|y| (390..397).contains(&y))
+    });
+}
+
+#[test]
+fn a_large_flick_crosses_the_panel_even_if_it_ends_beyond_it() {
+    let (mut host, mut client) = primary_windows_desk("hugeflick", 27520);
+    host.ctl(serde_json::json!({"op":"input_move", "dx":0, "dy":2000}));
+    wait_until("a coalesced flick crosses the seam", Duration::from_secs(5), || {
+        !host.state()["forwarding"].as_bool().unwrap()
+    });
+    assert!(!client.state()["driven"].as_bool().unwrap());
+    assert_eq!(host.state()["cursor"][1], 1439, "remaining movement stops at C's real bottom wall");
 }
 
 #[test]
@@ -738,21 +807,11 @@ fn taskbar_seam_return_does_not_reenter_on_inward_motion() {
     });
 }
 
-/// Bug class #14: coming back from the screen ABOVE the panel must land at
-/// the seam you crossed, not wherever the mouse report happened to end.
-///
-/// Real symptom, in the user's words: "crossing from B to C, the mouse
-/// teleports from the top of B to the bottom of B." One physical flick
-/// carries tens of pixels, so the driven side measured the FINAL position
-/// inside the panel and handed control back at that DEPTH — cross down from
-/// C and you reappear far down the other machine's copy of the panel. The
-/// cursor guard has always measured where the segment ENTERED the rect; the
-/// driven path now uses the same call.
-///
-/// Deliberately its own desk shape, and the panel is off-origin on BOTH
-/// sides so a zero-origin bug cannot hide.
+/// A fast flick consumes the movement up to the seam on Windows, then
+/// carries the remainder onto the Mac panel in its native coordinates.
+/// This desk is offset on both sides so origin assumptions cannot hide.
 #[test]
-fn returning_from_the_screen_above_lands_at_the_seam_not_the_far_side() {
+fn returning_from_the_screen_above_preserves_movement_after_the_seam() {
     let port = 27360;
     let host_toml = format!(
         r#"name = "simhost"
@@ -836,8 +895,8 @@ addr = "127.0.0.1:{port}"
         !host.state()["forwarding"].as_bool().unwrap()
     });
 
-    // It must arrive at the TOP of the host's panel — the seam it crossed —
-    // not 900px down it. The panel is (1200,0,2000,1200).
+    // Only the unconsumed part of the 900px move belongs on this panel.
+    // The ~49px before its top seam must not be applied a second time.
     let c = host.state()["cursor"].clone();
     let (x, y) = (c[0].as_i64().unwrap(), c[1].as_i64().unwrap());
     assert!(
@@ -845,9 +904,8 @@ addr = "127.0.0.1:{port}"
         "should land on the panel, got ({x},{y})"
     );
     assert!(
-        y < 200,
-        "must land at the seam it crossed, not deep down the panel: got y={y} \
-         (the flick's depth would have put it near 900)"
+        (830..880).contains(&y),
+        "must carry only the movement AFTER the seam, got y={y}"
     );
 }
 

@@ -319,15 +319,9 @@ mod relocate_tests {
     }
 }
 
-/// Where the segment `from`→`to` (ending inside `b`) enters the rect, as
-/// fractions across it — the entered edge pinned to exactly 0.0 / 1.0 and the
-/// crossing point preserved along it. Every side the segment could have
-/// crossed is intersected and the first hit along the travel (smallest t)
-/// wins, so a diagonal entry near a corner still resolves to the side that was
-/// physically hit first. When there is no crossing to measure (`from` already
-/// inside, or no motion — e.g. the block appeared under a resting cursor),
-/// falls back to pinning the nearest side of the caught position.
-pub fn entry_on_rect(b: Rect, from: (i32, i32), to: (i32, i32)) -> (f32, f32) {
+/// First entry of a movement segment into the rectangle, even when a large
+/// coalesced report ends beyond its opposite edge. None means no entry.
+pub fn segment_rect_entry(b: Rect, from: (i32, i32), to: (i32, i32)) -> Option<(f32, f32)> {
     let (px, py) = (from.0 as f32, from.1 as f32);
     let (dx, dy) = (to.0 as f32 - px, to.1 as f32 - py);
     let w = b.w.max(1) as f32;
@@ -360,9 +354,14 @@ pub fn entry_on_rect(b: Rect, from: (i32, i32), to: (i32, i32)) -> (f32, f32) {
         let t = (y1 - py) / dy;
         consider(t, (px + t * dx - x0) / w, 1.0);
     }
-    if let Some((_, f)) = best {
-        return f;
-    }
+    best.map(|(_, f)| f)
+}
+
+/// Pin a seam entry, or the nearest side when there is no movement crossing.
+pub fn entry_on_rect(b: Rect, from: (i32, i32), to: (i32, i32)) -> (f32, f32) {
+    if let Some(f) = segment_rect_entry(b, from, to) { return f; }
+    let w = b.w.max(1) as f32;
+    let h = b.h.max(1) as f32;
     let fx = ((to.0 - b.x) as f32 / w).clamp(0.0, 1.0);
     let fy = ((to.1 - b.y) as f32 / h).clamp(0.0, 1.0);
     let (dl, dr, dt, db) = (fx, 1.0 - fx, fy, 1.0 - fy);

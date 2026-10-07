@@ -1,4 +1,4 @@
-# Wire protocol (version 10)
+# Wire protocol (version 14)
 
 Transport: TCP, `TCP_NODELAY`, default port **24817**. All frames are
 `u16 big-endian length` + payload, max 65535 bytes. Payloads are
@@ -29,7 +29,8 @@ so a mouse move is ~6 bytes).
 | `CursorLeft { edge, ratio }` | C → H | Client cursor pushed through a portal edge; client stops applying input immediately. |
 | `Monitors { screen, monitors }` | C → H | The client's desktop geometry changed (display attached/detached, primary switched). |
 | `SharedBlock { rect }` | H → C | Treat `rect` as the shared panel showing the OTHER machine: don't rest the cursor on it. `None` clears it. No display is ever detached. |
-| `SharedCross { fx, fy }` | C → H | The client's cursor moved onto the shared panel, at relative position in 0..1. |
+| `SharedCross { fx, fy, dx, dy }` | C → H | First seam hit (relative 0..1), plus unconsumed motion in the sender's pixels. Receiver scales that remainder to its own panel. |
+| `SharedCarry { dx, dy }` | C → H | Motion already in flight before the driver received SharedCross. Accepted while the driver is local; Leave ends the sender's carry phase. |
 | `SharedRequest { owner }` | both | Please make `owner` the machine the panel shows (`"toggle"` flips). Lets the hotkey, tray, editor button and `kayiver monitor` work on EITHER machine — the sender asks, the router arbitrates. |
 | `StateSync { state, shared_configured, owner }` | H → C | The host's whole editor view as JSON, so both machines draw the same map. |
 | `UseAddr { addr }` | H → C | Reconnect to me here (the user picked Wi-Fi vs cable in the editor). |
@@ -45,7 +46,7 @@ is full duplex and the roles are set at pairing time, not negotiated.
 
 | Event | Fields | Notes |
 |---|---|---|
-| `MouseMove` | `dx, dy: i32` | Relative, raw OS deltas. Receiver accumulates, clamps to its bounds. |
+| `MouseMove` | `dx, dy: i32` | Relative, raw OS deltas. Receiver accumulates and clamps to real monitor rectangles, preserving shared-seam remainder. |
 | `MouseButton` | `button, pressed` | `Left \| Right \| Middle \| X1 \| X2` |
 | `Wheel` | `dx, dy: i32` | 1/120-notch units (Windows convention). Positive = up / right. |
 | `Key` | `key: u16, pressed` | **USB HID usage ID, keyboard page (0x07)** — e.g. `A` = 0x04, `LeftShift` = 0xE1. Platform backends translate to native codes. Auto-repeat is transmitted as repeated presses. |
@@ -69,6 +70,9 @@ Session PSK = `SHA256(key ‖ "kayiver-session-psk-v1")`, stored base64 in the
 config of both machines.
 
 ## Versioning
+
+Release 0.2.1 uses protocol 14. Update both machines together; older wire
+versions are rejected before input begins. SharedCarry is appended to the enum.
 
 `PROTOCOL_VERSION` is checked in `Hello`/`Welcome`. Incompatible changes
 bump it; the enums are postcard-encoded by variant index, so **append new

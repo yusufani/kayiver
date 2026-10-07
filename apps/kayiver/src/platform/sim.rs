@@ -40,6 +40,7 @@ struct SimWorld {
     capture: Option<(Arc<CaptureCtl>, UnboundedSender<Captured>)>,
     clipboard: Option<String>,
     clip_seq: u64,
+    handoff_delay_ms: u64,
 }
 
 static WORLD: OnceLock<Mutex<SimWorld>> = OnceLock::new();
@@ -58,6 +59,7 @@ fn world() -> &'static Mutex<SimWorld> {
             capture: None,
             clipboard: None,
             clip_seq: 0,
+            handoff_delay_ms: 0,
         })
     })
 }
@@ -98,6 +100,8 @@ pub fn desktop_bounds() -> Rect {
 pub fn rescue_windows_off(_blocked: Rect) -> usize {
     0
 }
+
+pub fn handoff_delay_ms() -> u64 { world().lock().unwrap().handoff_delay_ms }
 
 pub fn monitors() -> Vec<Rect> {
     world().lock().unwrap().monitors.clone()
@@ -341,6 +345,10 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             }
             ctl.forwarding.store(true, Ordering::SeqCst);
             let _ = tx.send(Captured::EdgeHit { edge, ratio });
+            ok
+        }
+        "delay_shared_return" => {
+            world().lock().unwrap().handoff_delay_ms = cmd["ms"].as_u64().unwrap_or(0);
             ok
         }
         "capture_motion" => {

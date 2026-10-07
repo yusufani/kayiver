@@ -24,6 +24,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-gnu
+      - run: cargo test -p kayiver-core
+      - run: cargo test -p kayiver --features sim --test sim_e2e -- --test-threads=1
       - run: cargo build --release -p kayiver --target x86_64-pc-windows-gnu
       - run: cp target/x86_64-pc-windows-gnu/release/kayiver.exe kayiver-windows-x64.exe
       - uses: actions/upload-artifact@v4
@@ -63,6 +65,7 @@ jobs:
               <key>CFBundleVersion</key><string>${VERSION}</string>
               <key>LSMinimumSystemVersion</key><string>11.0</string>
               <key>NSHighResolutionCapable</key><true/>
+              <key>LSUIElement</key><true/>
               <key>NSHumanReadableCopyright</key><string>MIT</string>
           </dict>
           </plist>
