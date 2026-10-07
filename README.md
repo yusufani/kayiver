@@ -224,4 +224,4 @@ desk has a regression scenario there. See [docs/TESTING.md](docs/TESTING.md).
 **Free for personal use.** Kayıver is licensed under the
 [PolyForm Noncommercial License 1.0.0](LICENSE): individuals and other
 noncommercial users can use it freely. **Companies and any commercial use
-need a commercial license** — get in touch: **yusuf.ani@dbrain.tech**.
+need a commercial license** — get in touch: **yusuf.ani8@gmail.com**.
