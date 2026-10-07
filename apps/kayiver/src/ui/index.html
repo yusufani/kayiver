@@ -569,8 +569,11 @@ function buildFromState(s) {
   sharedBtn.style.display = 'none'; candidate = null;
   sharedCfg = s.shared_monitor;
 
-  // assign colors: me first
-  const ordered = [...s.machines].sort((a, b) => (b.me ? 1 : 0) - (a.me ? 1 : 0));
+  // Use the same anchor and name order for letters and colors on both machines.
+  const anchor = s.label_anchor || s.machines[0]?.name;
+  const ordered = [...s.machines].sort((a, b) =>
+    (b.name === anchor ? 1 : 0) - (a.name === anchor ? 1 : 0) ||
+    (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   machines = ordered.map((m, i) => ({ name: m.name, me: m.me, colorIdx: i }));
 
   let maxW = 1;

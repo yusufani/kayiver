@@ -35,6 +35,8 @@ engine injected, with coordinates).
 |---|---|
 | `diagonal_cross_lands_at_entry_height` | diagonal entry read as a TOP entry → cursor dumped in the peer's corner |
 | `primary_display_switch_rederives_peer_rect` | Windows primary switch re-anchored every rect → crossings landed on the wrong monitor |
+| `moving_a_local_monitor_refreshes_the_shared_crossing_boundary` | Moving a laptop screen left capture using the old desktop boundary → the crossing above the shared panel stayed closed |
+| `crossing_to_the_windows_screen_above_survives_a_primary_switch` | Crossing onto the separate Windows screen must stay on that screen and return through the shared panel seam after Windows changes its primary display |
 | `vanished_panel_never_reanchors_to_same_size_screen` | panel input switched away → size-match glued the peer's screens onto A |
 | `owner_survives_host_restart` | deploy reset ownership → notice overlay covered the client's fullscreen game |
 | `no_nonce_desync_under_load_and_geometry_churn` | timer racing a half-read frame → Noise nonce desync → `decrypt error` loop |

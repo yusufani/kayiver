@@ -105,6 +105,7 @@ enum SessionEvent {
     /// — this is where being DRIVEN by a peer is handled (Enter/Input/Leave).
     Inbound { name: String, msg: Msg },
     LayoutChanged,
+    LocalMonitorsChanged,
 }
 
 /// "ctrl"/"alt"/"win" → left-modifier HID; anything else falls back.
@@ -642,7 +643,7 @@ impl Router {
     /// absolute cursor. Returns the crossing it caused, if any.
     fn apply_driven_input(&mut self, ev: InputEvent) -> Option<DrivenCross> {
         let mut pos = self.driven.as_ref()?.pos;
-        let bounds = self.ctl.bounds;
+        let bounds = self.ctl.bounds();
         let mut cross = None;
         match ev {
             InputEvent::MouseMove { dx, dy } => {
@@ -716,7 +717,7 @@ impl Router {
     fn on_inbound(&mut self, name: String, msg: Msg) {
         match msg {
             Msg::Enter { edge, ratio } => {
-                let pos = point_on_edge(self.ctl.bounds, edge, ratio, EDGE_INSET);
+                let pos = point_on_edge(self.ctl.bounds(), edge, ratio, EDGE_INSET);
                 self.enter_driven(&name, pos);
             }
             Msg::EnterAt { x, y } => self.enter_driven(&name, (x, y)),
@@ -821,7 +822,7 @@ impl Router {
         } else if self.tablet_active {
             self.tablet_active = false;
             self.exit_forwarding();
-            let b = self.ctl.bounds;
+            let b = self.ctl.bounds();
             platform::warp_cursor_settled(b.x + b.w / 2, b.y + b.h / 2);
             crate::ui::set_focus(None);
             info!("tablet control released");
@@ -883,7 +884,7 @@ impl Router {
             // opposite one), at the entry position — that's where the cursor left.
             let entry = te.unwrap_or(Edge::Left);
             self.set_tablet_control(false);
-            let (x, y) = kayiver_core::layout::point_on_edge(self.ctl.bounds, entry, self.tablet_entry_ratio, EDGE_INSET);
+            let (x, y) = kayiver_core::layout::point_on_edge(self.ctl.bounds(), entry, self.tablet_entry_ratio, EDGE_INSET);
             platform::warp_cursor_settled(x, y);
             *self.ctl.cooldown_until.lock().unwrap() = Instant::now() + RETURN_COOLDOWN;
         }
@@ -986,7 +987,7 @@ impl Router {
                 self.release_all();
                 self.send_to_focus(Msg::Leave);
                 self.focus = None;
-                let b = self.ctl.bounds;
+                let b = self.ctl.bounds();
                 platform::warp_cursor_settled(b.x + b.w / 2, b.y + b.h / 2);
             }
             Captured::SharedHotkey => self.request_shared_owner("toggle"),
@@ -1142,7 +1143,13 @@ impl Router {
                 self.set_shared_owner(&owner);
             }
             SessionEvent::Inbound { name, msg } => self.on_inbound(name, msg),
+            SessionEvent::LocalMonitorsChanged => {
+                let msg = Msg::Monitors { screen: platform::desktop_bounds(), monitors: platform::monitors() };
+                for (_, tx) in self.sessions.lock().unwrap().values() { let _ = tx.send(msg.clone()); }
+                self.on_session_event(SessionEvent::LayoutChanged);
+            }
             SessionEvent::LayoutChanged => {
+                self.ctl.update_bounds(platform::desktop_bounds());
                 self.refresh_shared_rects();
                 self.refresh_portals();
                 self.broadcast_state();
@@ -1347,7 +1354,7 @@ impl Router {
         if !self.session_exists(&peer) {
             return false;
         }
-        let b = self.ctl.bounds;
+        let b = self.ctl.bounds();
         let (ex, ey) = kayiver_core::layout::point_on_edge(b, edge, ratio, 0);
 
         // peer coords -> this desktop's coords, anchored on the shared panel.
@@ -1525,7 +1532,7 @@ impl Router {
     }
 
     fn return_local_at(&self, entry_edge: Edge, ratio: f32) {
-        let (x, y) = kayiver_core::layout::point_on_edge(self.ctl.bounds, entry_edge, ratio, EDGE_INSET);
+        let (x, y) = kayiver_core::layout::point_on_edge(self.ctl.bounds(), entry_edge, ratio, EDGE_INSET);
         self.exit_forwarding();
         platform::warp_cursor_settled(x, y);
         crate::ui::set_cross_flash(entry_edge); // cursor arrived back on this machine
@@ -1597,7 +1604,7 @@ impl Router {
         if target_peer != shared_peer {
             return false;
         }
-        let b = self.ctl.bounds;
+        let b = self.ctl.bounds();
         // Does the panel fill this whole desktop edge? (If it only covers part
         // of it, another monitor might legitimately cross there — leave it.)
         let spans = match edge {
@@ -1654,10 +1661,10 @@ impl Router {
             // Only arm where the panel actually reaches this desk edge, so we
             // don't arm an interior seam the OS already handles as one desktop.
             let at_desk_edge = match edge {
-                Edge::Top => local.y <= self.ctl.bounds.y + 4,
-                Edge::Bottom => local.bottom() >= self.ctl.bounds.bottom() - 4,
-                Edge::Left => local.x <= self.ctl.bounds.x + 4,
-                Edge::Right => local.right() >= self.ctl.bounds.right() - 4,
+                Edge::Top => local.y <= self.ctl.bounds().y + 4,
+                Edge::Bottom => local.bottom() >= self.ctl.bounds().bottom() - 4,
+                Edge::Left => local.x <= self.ctl.bounds().x + 4,
+                Edge::Right => local.right() >= self.ctl.bounds().right() - 4,
             };
             if beyond && at_desk_edge {
                 out.push(edge);
@@ -1679,8 +1686,14 @@ async fn watch_layout(
     let path = Config::path();
     let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let mut last = mtime(&path);
+    let mut last_monitors = platform::monitors();
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
+        let monitors = platform::monitors();
+        if monitors != last_monitors {
+            last_monitors = monitors;
+            let _ = evt_tx.send(SessionEvent::LocalMonitorsChanged);
+        }
         let cur = mtime(&path);
         if cur == last {
             continue;
@@ -2199,7 +2212,7 @@ async fn run_session(
 /// edge or the shared panel's blocked rect — i.e. a crossing may be imminent.
 fn cursor_near_portal(ctl: &CaptureCtl) -> bool {
     let (x, y) = platform::cursor_pos();
-    let b = ctl.bounds;
+    let b = ctl.bounds();
     let near_edge = ctl.portals.read().unwrap().iter().any(|e| match e {
         Edge::Left => x - b.x < WARM_EDGE_PX,
         Edge::Right => b.x + b.w - x < WARM_EDGE_PX,

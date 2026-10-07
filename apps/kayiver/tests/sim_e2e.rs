@@ -605,6 +605,75 @@ fn shared_panel_arms_the_edge_to_a_beyond_monitor_without_a_link() {
     assert!(host.state()["forwarding"].as_bool().unwrap(), "host must be forwarding to the client");
 }
 
+#[test]
+fn moving_a_local_monitor_refreshes_the_shared_crossing_boundary() {
+    let port = 27420;
+    let mut host = Machine::spawn("host", &host_cfg(port),
+        "0,0,2560,1440;2560,0,2560,1440;0,-982,1512,982", port + 1, "boundsrefresh");
+    let mut client = Machine::spawn("client", &client_cfg(port), CLIENT_MONS,
+        port + 2, "boundsrefresh");
+    wait_until("client connects", Duration::from_secs(15), || {
+        host.log_text().contains("client connected: simwin")
+    });
+    assert!(!host.state()["portals"].as_array().unwrap().iter().any(|e| e == "Top"));
+    // Moving the laptop down makes the shared panel reach the desktop's top.
+    host.ctl(serde_json::json!({"op":"set_monitors", "monitors":[
+        [0,0,2560,1440], [2560,0,2560,1440], [-1512,273,1512,982]
+    ]}));
+    wait_until("top crossing follows the new desktop bounds", Duration::from_secs(10), || {
+        host.state()["portals"].as_array().unwrap().iter().any(|e| e == "Top")
+    });
+    client.injected();
+    let ratio = (3800.0 + 1512.0) / (5120.0 + 1512.0);
+    assert!(host.ctl(serde_json::json!({"op":"edge", "edge":"top", "ratio":ratio}))["ok"].as_bool().unwrap());
+    wait_until("cursor lands on the Windows screen above the panel", Duration::from_secs(5), || {
+        client.injected().iter().any(|e| e["kind"] == "mouse_to" &&
+            e["x"].as_i64().is_some_and(|x| (636..2556).contains(&x)) &&
+            e["y"].as_i64().is_some_and(|y| (-1080..0).contains(&y)))
+    });
+}
+
+#[test]
+fn crossing_to_the_windows_screen_above_survives_a_primary_switch() {
+    let port = 27430;
+    let mut host = Machine::spawn("host", &host_cfg(port),
+        "0,0,2560,1440;2560,0,2560,1440;-1512,273,1512,982", port + 1, "aboveprimary");
+    let mut client = Machine::spawn("client", &client_cfg(port), CLIENT_MONS,
+        port + 2, "aboveprimary");
+    wait_until("client connects", Duration::from_secs(15), || {
+        host.log_text().contains("client connected: simwin")
+    });
+    // The separate Windows screen becomes primary; its panel copy moves below it.
+    client.ctl(serde_json::json!({"op":"set_monitors", "monitors":[
+        [0,0,1920,1080], [-163,1080,2560,1440]
+    ]}));
+    wait_until("host uses the moved panel", Duration::from_secs(10), || {
+        let cfg = host.config_text();
+        cfg.contains("x = -163") && cfg.contains("y = 1080")
+    });
+    client.injected();
+    let ratio = (3600.0 + 1512.0) / (5120.0 + 1512.0);
+    assert!(host.ctl(serde_json::json!({"op":"edge", "edge":"top", "ratio":ratio}))["ok"].as_bool().unwrap());
+    wait_until("cursor lands on D above the shared panel", Duration::from_secs(5), || {
+        client.injected().iter().any(|e| e["kind"] == "mouse_to" &&
+            e["x"].as_i64().is_some_and(|x| (0..1920).contains(&x)) &&
+            e["y"].as_i64().is_some_and(|y| (900..1080).contains(&y)))
+    });
+    host.ctl(serde_json::json!({"op":"input_move", "dx":0, "dy":-100}));
+    wait_until("input stays on D", Duration::from_secs(5), || {
+        client.state()["cursor"][1].as_i64().is_some_and(|y| (800..980).contains(&y))
+    });
+    assert!(host.state()["forwarding"].as_bool().unwrap());
+    assert!(!client.state()["blocked"].is_null(), "moving to D must not change the panel owner");
+    host.ctl(serde_json::json!({"op":"input_move", "dx":0, "dy":300}));
+    wait_until("crossing down returns to C", Duration::from_secs(5), || {
+        !host.state()["forwarding"].as_bool().unwrap()
+    });
+    let cursor = host.state()["cursor"].clone();
+    assert!(cursor[0].as_i64().is_some_and(|x| (3500..3700).contains(&x)), "must return at the same horizontal position: {cursor}");
+    assert!(cursor[1].as_i64().is_some_and(|y| (0..10).contains(&y)), "must return at the top seam: {cursor}");
+}
+
 /// Bug class #14: coming back from the screen ABOVE the panel must land at
 /// the seam you crossed, not wherever the mouse report happened to end.
 ///

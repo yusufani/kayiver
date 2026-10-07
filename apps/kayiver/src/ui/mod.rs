@@ -883,6 +883,7 @@ fn api_state() -> Result<String> {
     };
     Ok(serde_json::to_string(&serde_json::json!({
         "machines": machines,
+        "label_anchor": if cfg.mode == kayiver_core::config::Mode::Host { Some(cfg.name.as_str()) } else { cfg.peers.first().map(|p| p.name.as_str()) },
         "links": cfg.layout.links,
         "shared_monitor": shared,
     }))?)

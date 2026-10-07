@@ -969,7 +969,7 @@ unsafe fn maybe_enter_portal(state: &CapState, x: i32, y: i32) {
     if Instant::now() < *state.ctl.cooldown_until.lock().unwrap() {
         return;
     }
-    let bounds = state.ctl.bounds;
+    let bounds = state.ctl.bounds();
     let portals = state.ctl.portals.read().unwrap().clone();
     let dwell = state.ctl.edge_dwell_ms.load(Ordering::Relaxed);
     for edge in portals {

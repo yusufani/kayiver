@@ -55,10 +55,19 @@ pub struct CaptureCtl {
     pub mac_shortcuts: AtomicBool,
     /// Target LEFT-hid for (⌃, ⌥, ⌘) on Windows peers (right = left+4).
     pub win_mods: RwLock<(u16, u16, u16)>,
-    pub bounds: Rect,
+    /// A live desktop snapshot, refreshed when monitors move or reconnect.
+    bounds: RwLock<Rect>,
 }
 
 impl CaptureCtl {
+    pub fn bounds(&self) -> Rect {
+        *self.bounds.read().unwrap()
+    }
+
+    pub fn update_bounds(&self, bounds: Rect) {
+        *self.bounds.write().unwrap() = bounds;
+    }
+
     pub fn new(bounds: Rect) -> Self {
         CaptureCtl {
             forwarding: AtomicBool::new(false),
@@ -71,7 +80,7 @@ impl CaptureCtl {
             tablet_edge: RwLock::new(None),
             mac_shortcuts: AtomicBool::new(true),
             win_mods: RwLock::new((0xE0, 0xE3, 0xE0)), // ⌃→Ctrl ⌥→Win ⌘→Ctrl
-            bounds,
+            bounds: RwLock::new(bounds),
         }
     }
 }
