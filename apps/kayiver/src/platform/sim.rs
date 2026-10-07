@@ -335,6 +335,31 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             let _ = tx.send(Captured::EdgeHit { edge, ratio });
             ok
         }
+        "capture_motion" => {
+            // A native callback's position and raw delta can disagree just
+            // after a warp. Exercise that same portal predicate as macOS.
+            let Some((ctl, tx)) = capture_handles() else {
+                return serde_json::json!({ "ok": false, "error": "no capture" });
+            };
+            let x = cmd["x"].as_i64().unwrap_or(0) as i32;
+            let y = cmd["y"].as_i64().unwrap_or(0) as i32;
+            let dx = cmd["dx"].as_i64().unwrap_or(0) as i32;
+            let dy = cmd["dy"].as_i64().unwrap_or(0) as i32;
+            if std::time::Instant::now() >= *ctl.cooldown_until.lock().unwrap() {
+                let bounds = ctl.bounds();
+                let portals = ctl.portals.read().unwrap().clone();
+                for edge in portals {
+                    if kayiver_core::layout::touches_edge(bounds, edge, x, y)
+                        && super::motion_towards_edge(edge, dx, dy) {
+                        ctl.forwarding.store(true, Ordering::SeqCst);
+                        let ratio = kayiver_core::layout::ratio_on_edge(bounds, edge, x, y);
+                        let _ = tx.send(Captured::EdgeHit { edge, ratio });
+                        break;
+                    }
+                }
+            }
+            ok
+        }
         "input_move" => {
             let (dx, dy) = (
                 cmd["dx"].as_i64().unwrap_or(0) as i32,

@@ -50,6 +50,11 @@ pub enum UiCmd {
     Arrange { machine: String, monitors: Vec<kayiver_core::proto::Rect> },
 }
 
+/// Expose actual capture geometry for diagnosing crossing failures.
+pub fn set_capture(ctl: std::sync::Arc<crate::platform::CaptureCtl>) {
+    live().lock().unwrap().capture = Some(ctl);
+}
+
 /// Hand a command to the running router (false if none is running).
 pub fn send_cmd(cmd: UiCmd) -> bool {
     live().lock().unwrap().cmd.as_ref().map(|tx| tx.send(cmd).is_ok()).unwrap_or(false)
@@ -57,6 +62,7 @@ pub fn send_cmd(cmd: UiCmd) -> bool {
 
 #[derive(Default)]
 pub struct LiveState {
+    capture: Option<std::sync::Arc<crate::platform::CaptureCtl>>,
     pub running: bool,
     pub focus: Option<String>,
     pub peers: HashMap<String, PeerLive>,
@@ -861,21 +867,22 @@ fn api_state() -> Result<String> {
             "monitors": if p.screens.is_empty() { &fallback } else { &p.screens },
         }));
     }
-    // Editor-facing view of the shared-monitor config: raw platform indices
-    // converted back to 0-based monitor picks.
-    let from_platform_index = |os: &str, idx: u32| if os == "macos" { idx.saturating_sub(1) } else { idx };
+    // Resolve selections from current rectangles: display indices can reorder.
     let sm = &cfg.shared_monitor;
+    let unique_pick = |screens: &[kayiver_core::proto::Rect], rect: Option<kayiver_core::proto::Rect>| {
+        let rect = rect?;
+        let picks: Vec<_> = screens.iter().enumerate().filter(|(_, r)| **r == rect).map(|(i, _)| i).collect();
+        (picks.len() == 1).then(|| picks[0])
+    };
     let shared = if sm.configured() {
         let peer_name = sm.peer.clone().or_else(|| cfg.peers.first().map(|p| p.name.clone()));
-        let peer_os = peer_name
-            .as_ref()
-            .and_then(|n| cfg.peer(n))
-            .and_then(|p| p.os.clone())
-            .unwrap_or_else(|| "windows".into());
+        let local_pick = unique_pick(&crate::platform::monitors(), sm.local_rect);
+        let peer_pick = peer_name.as_ref().and_then(|name| cfg.peer(name))
+            .and_then(|peer| unique_pick(&peer.screens, sm.peer_rect));
         serde_json::json!({
-            "local_monitor": from_platform_index(std::env::consts::OS, sm.local_index.unwrap()),
+            "local_monitor": local_pick,
             "peer": peer_name,
-            "peer_monitor": from_platform_index(&peer_os, sm.peer_index.unwrap()),
+            "peer_monitor": peer_pick,
             "hotkey": sm.hotkey,
         })
     } else {
@@ -890,6 +897,15 @@ fn api_state() -> Result<String> {
 }
 
 fn api_status() -> String {
+    // Never hold the UI mutex while acquiring capture locks.
+    let capture = live().lock().unwrap().capture.clone();
+    let capture = capture.as_ref().map(|ctl| serde_json::json!({
+            "bounds": ctl.bounds(),
+            "blocked": *ctl.blocked.read().unwrap(),
+            "forwarding": ctl.forwarding.load(std::sync::atomic::Ordering::SeqCst),
+            "driven": ctl.driven.load(std::sync::atomic::Ordering::SeqCst),
+            "portals": *ctl.portals.read().unwrap(),
+        }));
     let s = live().lock().unwrap();
     let peers: HashMap<&String, serde_json::Value> = s
         .peers
@@ -911,6 +927,7 @@ fn api_status() -> String {
         .map(|(addr, label)| serde_json::json!({ "addr": addr, "label": label }))
         .collect();
     serde_json::json!({
+        "capture": capture,
         "running": s.running,
         "focus": s.focus,
         "peers": peers,

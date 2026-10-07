@@ -674,6 +674,70 @@ fn crossing_to_the_windows_screen_above_survives_a_primary_switch() {
     assert!(cursor[1].as_i64().is_some_and(|y| (0..10).contains(&y)), "must return at the top seam: {cursor}");
 }
 
+#[test]
+fn stale_client_panel_pair_is_repaired_before_crossing_back() {
+    let port = 27440;
+    let host_config = host_cfg(port)
+        .replace("x = 0\ny = 0\nw = 2560\nh = 1440", "x = -163\ny = 1080\nw = 2560\nh = 1440")
+        .replace("x = 636\ny = -1080", "x = 0\ny = 0");
+    // This matches the broken Windows config: D paired with A, while the
+    // arbiter and both editor views pair the shared panel C/E.
+    let client_config = client_cfg_shared(port)
+        .replace("last_owner = \"simwin\"", "last_owner = \"simhost\"")
+        .replace("[shared_monitor.local_rect]\nx = 0\ny = 0\nw = 2560\nh = 1440",
+            "[shared_monitor.local_rect]\nx = 0\ny = 0\nw = 1920\nh = 1080")
+        .replace("[shared_monitor.peer_rect]\nx = 2560", "[shared_monitor.peer_rect]\nx = 0");
+    let mut host = Machine::spawn("host", &host_config, HOST_MONS, port + 1, "stalepair");
+    let mut client = Machine::spawn("client", &client_config,
+        "0,0,1920,1080;-163,1080,2560,1440", port + 2, "stalepair");
+    wait_until("client persists the arbiter's C/E pair", Duration::from_secs(10), || {
+        let cfg = client.config_text();
+        cfg.contains("[shared_monitor.local_rect]\nx = -163\ny = 1080") &&
+            cfg.contains("[shared_monitor.peer_rect]\nx = 2560\ny = 0")
+    });
+    assert!(!client.state()["portals"].as_array().unwrap().iter().any(|e| e == "Right"),
+        "D's right edge must not lead to the shared panel");
+    assert!(host.ctl(serde_json::json!({"op":"edge", "edge":"top", "ratio":3600.0/5120.0}))["ok"].as_bool().unwrap());
+    wait_until("Windows is driven on D", Duration::from_secs(5), || {
+        client.state()["driven"].as_bool().unwrap()
+    });
+    host.ctl(serde_json::json!({"op":"input_move", "dx":0, "dy":300}));
+    wait_until("crossing D's taskbar seam returns to C", Duration::from_secs(5), || {
+        !host.state()["forwarding"].as_bool().unwrap()
+    });
+    let cursor = host.state()["cursor"].clone();
+    assert!(cursor[0].as_i64().is_some_and(|x| (3500..3700).contains(&x)), "wrong return x: {cursor}");
+    assert!(cursor[1].as_i64().is_some_and(|y| (0..10).contains(&y)), "must return at C's top seam: {cursor}");
+    assert!(!client.state()["driven"].as_bool().unwrap());
+}
+
+#[test]
+fn taskbar_seam_return_does_not_reenter_on_inward_motion() {
+    let (mut host, mut client) = desk("seambounce", 27460);
+    host.ctl(serde_json::json!({"op":"edge", "edge":"top", "ratio":3600.0/5120.0}));
+    wait_until("Windows is driven above the panel", Duration::from_secs(5), || {
+        client.state()["driven"].as_bool().unwrap()
+    });
+    host.ctl(serde_json::json!({"op":"input_move", "dx":0, "dy":300}));
+    wait_until("taskbar crossing hands control home", Duration::from_secs(5), || {
+        !host.state()["forwarding"].as_bool().unwrap()
+    });
+    let c = host.state()["cursor"].clone();
+    assert!(c[1].as_i64().unwrap() >= 2, "returned onto an armed edge: {c}");
+    // After the cooldown, native position can still report the seam
+    // while the RAW movement is inward.
+    std::thread::sleep(Duration::from_millis(350));
+    host.ctl(serde_json::json!({"op":"capture_motion", "x":c[0], "y":0, "dx":20, "dy":2}));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!host.state()["forwarding"].as_bool().unwrap(), "inward return bounced back into Windows");
+    assert!(!client.state()["driven"].as_bool().unwrap());
+    // Deliberately pushing OUT again still crosses normally.
+    host.ctl(serde_json::json!({"op":"capture_motion", "x":c[0], "y":0, "dx":0, "dy":-2}));
+    wait_until("outward motion can re-enter Windows", Duration::from_secs(5), || {
+        client.state()["driven"].as_bool().unwrap()
+    });
+}
+
 /// Bug class #14: coming back from the screen ABOVE the panel must land at
 /// the seam you crossed, not wherever the mouse report happened to end.
 ///

@@ -22,6 +22,17 @@ use kayiver_core::proto::Rect;
 
 use crate::engine::Captured;
 
+/// A cursor parked on a seam must only cross when pushed OUT of the desk.
+/// macOS can report the previous edge position briefly after a return warp.
+pub fn motion_towards_edge(edge: Edge, dx: i32, dy: i32) -> bool {
+    match edge {
+        Edge::Left => dx < 0,
+        Edge::Right => dx > 0,
+        Edge::Top => dy < 0,
+        Edge::Bottom => dy > 0,
+    }
+}
+
 pub struct CaptureCtl {
     /// True while input is being forwarded to a remote machine.
     pub forwarding: AtomicBool,

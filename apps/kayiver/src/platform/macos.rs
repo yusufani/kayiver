@@ -580,7 +580,9 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         // Local mode: watch for portal edge hits on motion, touch nothing else.
         if etype == ET_MOVED || etype == ET_LEFT_DRAG || etype == ET_RIGHT_DRAG || etype == ET_OTHER_DRAG {
             let p = CGEventGetLocation(event);
-            maybe_enter_portal(state, p.x as i32, p.y as i32);
+            let dx = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_X) as i32;
+            let dy = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_Y) as i32;
+            maybe_enter_portal(state, p.x as i32, p.y as i32, dx, dy);
         }
         return event;
     }
@@ -658,7 +660,7 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
     std::ptr::null_mut() // swallow
 }
 
-unsafe fn maybe_enter_portal(state: &mut CaptureState, x: i32, y: i32) {
+unsafe fn maybe_enter_portal(state: &mut CaptureState, x: i32, y: i32, dx: i32, dy: i32) {
     if Instant::now() < *state.ctl.cooldown_until.lock().unwrap() {
         return;
     }
@@ -666,7 +668,7 @@ unsafe fn maybe_enter_portal(state: &mut CaptureState, x: i32, y: i32) {
     let portals = state.ctl.portals.read().unwrap().clone();
     let dwell = state.ctl.edge_dwell_ms.load(Ordering::Relaxed);
     for edge in portals {
-        if touches_edge(bounds, edge, x, y) {
+        if touches_edge(bounds, edge, x, y) && super::motion_towards_edge(edge, dx, dy) {
             // Optional dwell: require the cursor to rest against this edge for
             // `dwell` ms before crossing, so a quick brush doesn't jump screens.
             if dwell > 0 {

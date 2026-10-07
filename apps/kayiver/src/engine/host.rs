@@ -151,6 +151,7 @@ pub fn run(cfg: Config) -> Result<()> {
     }
 
     let ctl = Arc::new(CaptureCtl::new(bounds));
+    crate::ui::set_capture(ctl.clone());
     let (cap_tx, cap_rx) = mpsc::unbounded_channel();
     if cfg.capture == "off" {
         info!("capture = \"off\": this machine can be driven but never drives");
@@ -712,6 +713,56 @@ impl Router {
         cross
     }
 
+    /// Mirror the arbiter's actual screen pair, not just its editor or owner.
+    /// Legacy client indices can still point at a different monitor after a
+    /// primary-display change, even when its editor already shows the right pair.
+    fn adopt_shared_pair(&mut self, peer: &str, state: &str, owner: &str) -> bool {
+        let parsed = (|| -> Option<(usize, kayiver_core::proto::Rect, usize, kayiver_core::proto::Rect, Vec<kayiver_core::proto::Rect>)> {
+            let state: serde_json::Value = serde_json::from_str(state).ok()?;
+            let shared = state.get("shared_monitor")?;
+            if shared.get("peer")?.as_str()? != self.cfg.name { return None; }
+            let local_pick = usize::try_from(shared.get("peer_monitor")?.as_u64()?).ok()?;
+            let peer_pick = usize::try_from(shared.get("local_monitor")?.as_u64()?).ok()?;
+            let machines = state.get("machines")?.as_array()?;
+            let rect = |name: &str, pick: usize| {
+                let machine = machines.iter().find(|m| m["name"].as_str() == Some(name))?;
+                serde_json::from_value::<kayiver_core::proto::Rect>(machine.get("monitors")?.get(pick)?.clone()).ok()
+            };
+            let remote = machines.iter().find(|m| m["name"].as_str() == Some(peer))?;
+            let remote_screens = serde_json::from_value::<Vec<kayiver_core::proto::Rect>>(remote.get("monitors")?.clone()).ok()?;
+            Some((local_pick, rect(&self.cfg.name, local_pick)?, peer_pick, rect(peer, peer_pick)?, remote_screens))
+        })();
+        let Some((_, local_rect, peer_pick, peer_rect, remote_screens)) = parsed else { return false };
+        // A synced view can be in flight while the local monitor list changes.
+        // Bind only an exact, unique current screen; never guess from resolution.
+        let monitors = platform::monitors();
+        let picks: Vec<_> = monitors.iter().enumerate().filter(|(_, r)| **r == local_rect).map(|(i, _)| i).collect();
+        if picks.len() != 1 { return false; }
+        // StateSync is authored by the authenticated arbiter. Welcome does not
+        // include its monitors, so a newly paired client may have no cache yet.
+        cache_peer_screens(peer, &remote_screens, None, &self.peer_screens);
+        let Ok(mut saved) = Config::load_or_init() else { return false };
+        let mut next = self.shared.read().unwrap().clone();
+        next.local_index = Some(if cfg!(target_os = "macos") { picks[0] as u32 + 1 } else { picks[0] as u32 });
+        next.local_rect = Some(local_rect);
+        next.peer_index = Some(if saved.peer(peer).and_then(|p| p.os.as_deref()) == Some("macos") {
+            peer_pick as u32 + 1
+        } else { peer_pick as u32 });
+        next.peer_rect = Some(peer_rect);
+        next.peer = Some(peer.to_string());
+        next.last_owner = Some(owner.to_string());
+        let changed = *self.shared.read().unwrap() != next;
+        if changed {
+            info!("shared pair adopted from {peer}: local={local_rect:?}, peer={peer_rect:?}");
+            *self.shared.write().unwrap() = next.clone();
+        }
+        if saved.shared_monitor != next {
+            saved.shared_monitor = next;
+            if let Err(e) = saved.save() { warn!("could not persist shared pair: {e:#}"); }
+        }
+        changed
+    }
+
     /// Route one message that arrived from `name`. These are the arms that
     /// used to live in the client engine — every machine handles them now.
     fn on_inbound(&mut self, name: String, msg: Msg) {
@@ -764,6 +815,7 @@ impl Router {
                     return;
                 }
                 debug!("state synced from {name} ({} bytes)", state.len());
+                let pair_changed = self.adopt_shared_pair(&name, &state, &owner);
                 crate::ui::set_synced_state(state);
                 crate::ui::set_shared_state(shared_configured, Some(name.clone()), Some(owner.clone()));
                 // The arbiter's word on who the panel shows is THE state; ours
@@ -774,13 +826,14 @@ impl Router {
                 let sm = self.shared.read().unwrap().clone();
                 let known = owner == self.cfg.name
                     || shared_peer_name(&self.cfg, &sm).as_deref() == Some(owner.as_str());
-                if sm.configured() && known && self.shared_owner != owner {
+                if sm.configured() && known && (self.shared_owner != owner || pair_changed) {
                     info!("shared owner adopted from {name}: {owner}");
                     self.shared_owner = owner.clone();
                     self.persist_shared_owner(&owner);
                     crate::ui::set_shared_owner(Some(owner.clone()));
                     let to_me = owner == self.cfg.name;
                     self.apply_peer_block(if to_me { None } else { sm.local_rect });
+                    self.refresh_portals();
                 }
             }
             // Exhaustive on purpose — no catch-all. These are consumed by the
@@ -1164,8 +1217,12 @@ impl Router {
                     self.send_to_focus(Msg::Leave);
                     self.focus = None;
                     self.exit_forwarding();
-                    let x = r.x + (fx * r.w as f32) as i32;
-                    let y = r.y + (fy * r.h as f32) as i32;
+                    // Leave the return seam itself: a native event may still report
+                    // that exact edge after the warp and re-enter the peer.
+                    let ix = EDGE_INSET.min((r.w - 1).max(0) / 2);
+                    let iy = EDGE_INSET.min((r.h - 1).max(0) / 2);
+                    let x = (r.x + (fx * r.w as f32) as i32).clamp(r.x + ix, r.right() - 1 - ix);
+                    let y = (r.y + (fy * r.h as f32) as i32).clamp(r.y + iy, r.bottom() - 1 - iy);
                     platform::warp_cursor_settled(x, y);
                     info!("cursor -> {} (onto shared panel)", self.cfg.name);
                 }
