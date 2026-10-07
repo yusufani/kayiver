@@ -236,6 +236,7 @@ fn control_server(port: u16) {
     };
     tracing::info!("sim ctl listening on 127.0.0.1:{port}");
     for stream in listener.incoming().flatten() {
+        let _ = stream.set_nodelay(true);
         let mut out = match stream.try_clone() {
             Ok(o) => o,
             Err(_) => continue,

@@ -76,6 +76,7 @@ impl Machine {
         loop {
             match TcpStream::connect(("127.0.0.1", port)) {
                 Ok(s) => {
+                    s.set_nodelay(true).unwrap();
                     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                     self.ctl = Some(BufReader::new(s));
                     return;
@@ -294,11 +295,12 @@ fn diagonal_cross_lands_at_entry_height() {
         "host must be forwarding after the handover"
     );
 
-    // Mac-modifier remap: the sim host build runs on macOS and the peer's
-    // config says os = "windows". Defaults: ⌘ (0xE3) → Ctrl (224),
+    // Mac hosts remap modifiers for a Windows peer; other hosts retain HID codes.
+    // The peer's config says os = "windows". Defaults: ⌘ (0xE3) → Ctrl (224),
     // ⌥ (0xE2) → Win (227), ⌃ (0xE0) → Ctrl (224). Press+release both.
     client.injected();
-    for (send, want) in [(0xE3u16, 224i64), (0xE2u16, 227i64), (0xE0u16, 224i64)] {
+    for (send, mac_want) in [(0xE3u16, 224i64), (0xE2u16, 227i64), (0xE0u16, 224i64)] {
+        let want = if cfg!(target_os = "macos") { mac_want } else { i64::from(send) };
         for pressed in [true, false] {
             let r = host.ctl(serde_json::json!({ "op": "input_key", "key": send, "pressed": pressed }));
             assert!(r["ok"].as_bool().unwrap(), "key inject failed: {r}");

@@ -71,7 +71,7 @@ config of both machines.
 
 ## Versioning
 
-Release 0.2.1 uses protocol 14. Update both machines together; older wire
+Release 0.2.2 uses protocol 14. Update both machines together; older wire
 versions are rejected before input begins. SharedCarry is appended to the enum.
 
 `PROTOCOL_VERSION` is checked in `Hello`/`Welcome`. Incompatible changes
