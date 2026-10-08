@@ -40,7 +40,7 @@ struct Driven {
 /// What an input event from the driving peer triggered on this desk.
 enum DrivenCross {
     /// The cursor pushed out through one of our own edges — hand it back.
-    Portal(Edge, f32),
+    Portal(Edge, f32, i32, i32),
     /// The cursor moved onto our copy of the shared panel, which is showing
     /// the other machine.
     Shared(f32, f32, i32, i32),
@@ -94,7 +94,7 @@ type PeerScreens = Arc<RwLock<HashMap<String, Vec<kayiver_core::proto::Rect>>>>;
 enum SessionEvent {
     Connected { name: String },
     Disconnected { name: String },
-    CursorLeft { name: String, edge: Edge, ratio: f32 },
+    CursorLeft { name: String, edge: Edge, ratio: f32, dx: i32, dy: i32 },
     /// The peer's cursor moved onto the shared panel (showing this host), at
     /// relative position (fx, fy) — take control back onto our copy of it.
     SharedCross { name: String, fx: f32, fy: f32, dx: i32, dy: i32, received: Instant },
@@ -687,7 +687,7 @@ impl Router {
     /// before the driver learned about the handoff. Never inject into a new focus.
     fn apply_return_motion(&self, peer: &str, dx: i32, dy: i32) {
         if dx == 0 && dy == 0 { return; }
-        if self.focus.is_some() || self.driven.is_some() || self.shared_owner != self.cfg.name { return; }
+        if self.focus.is_some() || self.driven.is_some() || self.returned_capture_peer.as_deref() != Some(peer) { return; }
         let _motion = self.ctl.motion_gate.lock().unwrap();
         let from = platform::cursor_pos();
         if let Some(to) = self.return_motion_target(peer, from, dx, dy) {
@@ -744,9 +744,10 @@ impl Router {
                         };
                         if out {
                             info!(dx, dy, from_x = pos.0, from_y = pos.1, "cross timing: driven portal exit motion");
-                            let cx = nx.clamp(bounds.x, bounds.right() - 1);
-                            let cy = ny.clamp(bounds.y, bounds.bottom() - 1);
-                            cross = Some(DrivenCross::Portal(edge, ratio_on_edge(bounds, edge, cx, cy)));
+                            let (fx, fy) = kayiver_core::layout::entry_on_rect(bounds, (nx, ny), pos);
+                            let cx = bounds.x + (fx * bounds.w as f32).round() as i32;
+                            let cy = bounds.y + (fy * bounds.h as f32).round() as i32;
+                            cross = Some(DrivenCross::Portal(edge, ratio_on_edge(bounds, edge, cx, cy), nx - cx, ny - cy));
                             break;
                         }
                     }
@@ -858,10 +859,11 @@ impl Router {
                     return;
                 }
                 match self.apply_driven_input(ev) {
-                    Some(DrivenCross::Portal(edge, ratio)) => {
+                    Some(DrivenCross::Portal(edge, ratio, dx, dy)) => {
                         info!("pushed out through our {edge} edge -> handing control back to {name}");
                         self.leave_driven();
-                        self.send_to(&name, Msg::CursorLeft { edge, ratio });
+                        self.returning_peer = Some(name.clone());
+                        self.send_to(&name, Msg::CursorLeftCarry { edge, ratio, dx, dy });
                     }
                     Some(DrivenCross::Shared(fx, fy, dx, dy)) => {
                         let prep = Instant::now();
@@ -925,6 +927,7 @@ impl Router {
             | Msg::Pong(_)
             | Msg::Bye
             | Msg::CursorLeft { .. }
+            | Msg::CursorLeftCarry { .. }
             | Msg::SharedCross { .. }
             | Msg::Monitors { .. }
             | Msg::Builtin { .. }
@@ -1342,14 +1345,14 @@ impl Router {
                     info!("cursor -> {} (onto shared panel)", self.cfg.name);
                 }
             }
-            SessionEvent::CursorLeft { name, edge, ratio } => {
+            SessionEvent::CursorLeft { name, edge, ratio, dx, dy } => {
                 if self.focus.as_deref() != Some(name.as_str()) {
                     return; // stale report from a peer that lost focus already
                 }
                 // Geometry-first: if the cursor left through the shared panel
                 // itself, resolve against real monitor neighbours (physically
                 // correct) instead of the machine-level link.
-                if self.try_shared_edge_return(&name, edge, ratio) {
+                if self.try_shared_edge_return(&name, edge, ratio, dx, dy) {
                     return;
                 }
                 match self.layout_target(&name, edge) {
@@ -1588,7 +1591,7 @@ impl Router {
     ///     the cursor to the far side of this desktop — the "down jumps to the
     ///     top" / "left can't reach A" bugs).
     /// Returns true if it handled the crossing.
-    fn try_shared_edge_return(&mut self, peer: &str, edge: Edge, ratio: f32) -> bool {
+    fn try_shared_edge_return(&mut self, peer: &str, edge: Edge, ratio: f32, dx: i32, dy: i32) -> bool {
         let sm = self.shared.read().unwrap().clone();
         let (Some(local), Some(prect)) = (sm.local_rect, sm.peer_rect) else { return false };
         let Some(shared_peer) = shared_peer_name(&self.cfg, &sm) else { return false };
@@ -1638,10 +1641,14 @@ impl Router {
                 };
                 let x = x.clamp(m.x, m.right() - 1);
                 let y = y.clamp(m.y, m.bottom() - 1);
+                let ctl = self.ctl.clone();
+                let _motion = ctl.motion_gate.lock().unwrap();
                 self.release_all();
                 self.send_to_focus(Msg::Leave);
                 self.focus = None;
+                self.returned_capture_peer = Some(peer.to_string());
                 self.exit_forwarding();
+                let (x, y) = self.return_motion_target(peer, (x, y), dx, dy).unwrap_or((x, y));
                 platform::warp_cursor_settled(x, y);
                 crate::ui::set_cross_flash(edge.opposite());
                 info!("cursor -> {} (shared panel {edge} edge -> host monitor)", self.cfg.name);
@@ -2255,7 +2262,7 @@ async fn run_session(
     let writer_task = tokio::spawn(async move {
         while let Some(m) = out_rx.recv().await {
             #[cfg(feature = "sim")]
-            if matches!(m, Msg::SharedCross { .. }) {
+            if matches!(m, Msg::SharedCross { .. } | Msg::CursorLeftCarry { .. }) {
                 tokio::time::sleep(Duration::from_millis(platform::handoff_delay_ms())).await;
             }
             if writer.send(&m).await.is_err() {
@@ -2271,7 +2278,10 @@ async fn run_session(
             let msg = tokio::time::timeout(SESSION_TIMEOUT, reader.recv()).await??;
             match msg {
                 Msg::CursorLeft { edge, ratio } => {
-                    let _ = evt_tx.send(SessionEvent::CursorLeft { name: name.clone(), edge, ratio });
+                    let _ = evt_tx.send(SessionEvent::CursorLeft { name: name.clone(), edge, ratio, dx: 0, dy: 0 });
+                }
+                Msg::CursorLeftCarry { edge, ratio, dx, dy } => {
+                    let _ = evt_tx.send(SessionEvent::CursorLeft { name: name.clone(), edge, ratio, dx, dy });
                 }
                 Msg::SharedCross { fx, fy, dx, dy } => {
                     let _ = evt_tx.send(SessionEvent::SharedCross { name: name.clone(), fx, fy, dx, dy, received: Instant::now() });

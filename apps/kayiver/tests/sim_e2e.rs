@@ -779,6 +779,41 @@ fn windows_owned_panel_can_return_to_a_and_reenter_without_bouncing() {
 }
 
 #[test]
+fn windows_owned_panel_return_preserves_flick_and_both_motion_queues() {
+    let (mut host, mut client) = desk("portalcarry", 27640);
+    give_panel_to_client(&mut host);
+    host.ctl(serde_json::json!({"op":"warp", "x":2400, "y":700}));
+    std::thread::sleep(Duration::from_millis(40));
+    host.ctl(serde_json::json!({"op":"warp", "x":2568, "y":700}));
+    wait_until("A enters D", Duration::from_secs(5), || client.state()["driven"].as_bool().unwrap());
+    let start = client.state()["cursor"].clone();
+    let sx = start[0].as_i64().unwrap();
+    let sy = start[1].as_i64().unwrap();
+    client.ctl(serde_json::json!({"op":"delay_shared_return", "ms":250}));
+    host.ctl(serde_json::json!({"op":"input_move", "dx":-100, "dy":100}));
+    wait_until("D has exited before A hears back", Duration::from_secs(5), || !client.state()["driven"].as_bool().unwrap());
+    assert!(host.state()["forwarding"].as_bool().unwrap());
+    host.ctl(serde_json::json!({"op":"input_move", "dx":-60, "dy":140}));
+    let expected_x = 2557 + sx - 100 - 60;
+    let expected_y = sy + 100 + 140;
+    wait_until("flick remainder and in-flight tail reach A", Duration::from_secs(5), || {
+        let c = host.state()["cursor"].clone();
+        !host.state()["forwarding"].as_bool().unwrap() &&
+            (c[0].as_i64().unwrap() - expected_x).abs() <= 1 &&
+            (c[1].as_i64().unwrap() - expected_y).abs() <= 2
+    });
+    let before = host.state()["cursor"].clone();
+    host.ctl(serde_json::json!({"op":"queued_move", "dx":-30, "dy":20}));
+    wait_until("captured tail reaches A once", Duration::from_secs(5), || {
+        let c = host.state()["cursor"].clone();
+        c[0].as_i64() == Some(before[0].as_i64().unwrap() - 30) &&
+            c[1].as_i64() == Some(before[1].as_i64().unwrap() + 20)
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(host.state()["cursor"][0].as_i64(), Some(before[0].as_i64().unwrap() - 30));
+}
+
+#[test]
 fn a_shared_entry_after_disconnect_does_not_freeze_capture() {
     let (mut host, client) = desk("offlineentry", 27620);
     give_panel_to_client(&mut host);

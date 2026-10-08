@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 14;
+pub const PROTOCOL_VERSION: u16 = 15;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -158,6 +158,8 @@ pub enum Msg {
     },
     /// Movement already in flight when the receiver handed the cursor back.
     SharedCarry { dx: i32, dy: i32 },
+    /// Portal exit with movement remaining after reaching the desktop edge.
+    CursorLeftCarry { edge: Edge, ratio: f32, dx: i32, dy: i32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +229,8 @@ mod tests {
             Msg::Input(InputEvent::MouseMove { dx: -3, dy: 7 }),
             Msg::Input(InputEvent::Key { key: 0x04, pressed: true }),
             Msg::CursorLeft { edge: Edge::Left, ratio: 0.42 },
+            Msg::CursorLeftCarry { edge: Edge::Left, ratio: 0.42, dx: -90, dy: 12 },
+            Msg::SharedCarry { dx: -60, dy: 140 },
         ];
         for m in msgs {
             let bytes = m.encode().unwrap();
