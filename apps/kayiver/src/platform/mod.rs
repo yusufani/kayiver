@@ -175,6 +175,21 @@ pub fn start_cursor_guard(ctl: Arc<CaptureCtl>, tx: tokio::sync::mpsc::Unbounded
                         // Park just outside the edge we came in through so the
                         // local cursor isn't left sitting on the hidden panel.
                         let park = skip_out(b, x, y, -dx, -dy);
+                        let _motion = ctl.motion_gate.lock().unwrap();
+                        if ctl.forwarding.load(Ordering::SeqCst) || ctl.driven.load(Ordering::SeqCst)
+                            || *ctl.blocked.read().unwrap() != Some(b) {
+                            continue;
+                        }
+                        // The Mac callback must not ship input before the
+                        // SharedEnter reaches the same queue. Freeze here, not
+                        // one async router turn later. Detached Mac motion does
+                        // not need a return warp to an old callback park.
+                        #[cfg(any(target_os = "macos", feature = "sim"))]
+                        {
+                            ctl.forwarding.store(true, Ordering::SeqCst);
+                            set_forwarding_visuals(true);
+                        }
+                        #[cfg(not(all(target_os = "macos", not(feature = "sim"))))]
                         warp_cursor(park.0, park.1);
                         let _ = tx.send(Captured::SharedEnter { fx, fy });
                         prev = park;

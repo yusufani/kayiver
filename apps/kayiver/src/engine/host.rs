@@ -97,7 +97,7 @@ enum SessionEvent {
     CursorLeft { name: String, edge: Edge, ratio: f32 },
     /// The peer's cursor moved onto the shared panel (showing this host), at
     /// relative position (fx, fy) — take control back onto our copy of it.
-    SharedCross { name: String, fx: f32, fy: f32, dx: i32, dy: i32 },
+    SharedCross { name: String, fx: f32, fy: f32, dx: i32, dy: i32, received: Instant },
     /// The peer asked for a shared-panel ownership change (its hotkey, tray,
     /// editor button or `kayiver monitor`). We arbitrate; it just asks.
     SharedRequest { name: String, owner: String },
@@ -743,6 +743,7 @@ impl Router {
                             Edge::Bottom => ny >= bounds.bottom(),
                         };
                         if out {
+                            info!(dx, dy, from_x = pos.0, from_y = pos.1, "cross timing: driven portal exit motion");
                             let cx = nx.clamp(bounds.x, bounds.right() - 1);
                             let cy = ny.clamp(bounds.y, bounds.bottom() - 1);
                             cross = Some(DrivenCross::Portal(edge, ratio_on_edge(bounds, edge, cx, cy)));
@@ -863,10 +864,12 @@ impl Router {
                         self.send_to(&name, Msg::CursorLeft { edge, ratio });
                     }
                     Some(DrivenCross::Shared(fx, fy, dx, dy)) => {
+                        let prep = Instant::now();
                         info!("moved onto the shared panel -> handing control back to {name}");
                         self.leave_driven();
                         self.returning_peer = Some(name.clone());
                         self.send_to(&name, Msg::SharedCross { fx, fy, dx, dy });
+                        info!(prep_us = prep.elapsed().as_micros() as u64, "cross timing: peer return preparation");
                     }
                     None => {}
                 }
@@ -1144,6 +1147,10 @@ impl Router {
                 }
             }
             Captured::SharedEnter { fx, fy } => {
+                if self.driven.is_some() || self.shared_owner == self.cfg.name || self.ctl.blocked.read().unwrap().is_none() {
+                    self.exit_forwarding();
+                    return;
+                }
                 // Local cursor moved onto the shared panel (showing the peer) →
                 // hand control to the peer, onto its copy of the panel.
                 let sm = self.shared.read().unwrap().clone();
@@ -1165,8 +1172,13 @@ impl Router {
                         self.focus = Some(peer);
                         self.send_to_focus(Msg::EnterAt { x, y });
                         info!("cursor -> peer (onto shared panel)");
+                        return;
                     }
                 }
+                // The guard froze capture synchronously. A disconnect racing
+                // entry must return the physical pointer instead of stranding it.
+                self.exit_forwarding();
+                if let Some(rect) = sm.local_rect { self.park_off_hidden_panel(rect); }
             }
         }
     }
@@ -1298,7 +1310,8 @@ impl Router {
                 self.refresh_portals();
                 self.broadcast_state();
             }
-            SessionEvent::SharedCross { name, fx, fy, dx, dy } => {
+            SessionEvent::SharedCross { name, fx, fy, dx, dy, received } => {
+                let routed = Instant::now();
                 if self.focus.as_deref() != Some(name.as_str()) {
                     return; // stale
                 }
@@ -1306,11 +1319,13 @@ impl Router {
                 if let Some(r) = rect {
                     let ctl = self.ctl.clone();
                     let _motion = ctl.motion_gate.lock().unwrap();
+                    let acquired = Instant::now();
                     self.release_all();
                     self.send_to_focus(Msg::Leave);
                     self.focus = None;
                     self.returned_capture_peer = Some(name.clone());
                     self.exit_forwarding();
+                    let resumed = Instant::now();
                     // Leave the return seam itself: a native event may still report
                     // that exact edge after the warp and re-enter the peer.
                     let ix = EDGE_INSET.min((r.w - 1).max(0) / 2);
@@ -1319,6 +1334,11 @@ impl Router {
                     let y = (r.y + (fy * r.h as f32) as i32).clamp(r.y + iy, r.bottom() - 1 - iy);
                     let (x, y) = self.return_motion_target(&name, (x, y), dx, dy).unwrap_or((x, y));
                     platform::warp_cursor_settled(x, y);
+                    info!(queue_us = routed.duration_since(received).as_micros() as u64,
+                        gate_us = acquired.duration_since(routed).as_micros() as u64,
+                        resume_us = resumed.duration_since(acquired).as_micros() as u64,
+                        warp_us = resumed.elapsed().as_micros() as u64,
+                        "cross timing: shared return");
                     info!("cursor -> {} (onto shared panel)", self.cfg.name);
                 }
             }
@@ -2254,7 +2274,7 @@ async fn run_session(
                     let _ = evt_tx.send(SessionEvent::CursorLeft { name: name.clone(), edge, ratio });
                 }
                 Msg::SharedCross { fx, fy, dx, dy } => {
-                    let _ = evt_tx.send(SessionEvent::SharedCross { name: name.clone(), fx, fy, dx, dy });
+                    let _ = evt_tx.send(SessionEvent::SharedCross { name: name.clone(), fx, fy, dx, dy, received: Instant::now() });
                 }
                 Msg::Pong(seq) => {
                     let sent = pending.lock().unwrap().remove(&seq);

@@ -448,14 +448,14 @@ pub fn run(open_browser: bool) -> Result<()> {
         let url = url();
         // If a running `kayiver run` already serves the editor, just open it.
         if TcpStream::connect(("127.0.0.1", UI_PORT)).await.is_ok() {
-            println!("kayiver layout editor (served by the running kayiver): {url}");
+            tracing::info!("kayiver layout editor (served by the running kayiver): {url}");
             if open_browser {
                 open_in_browser(&url);
             }
             return Ok(());
         }
         let server = tokio::spawn(serve_forever());
-        println!("kayiver layout editor: {url}  (Ctrl-C to quit)");
+        tracing::info!("kayiver layout editor: {url}  (Ctrl-C to quit)");
         if open_browser {
             open_in_browser(&url);
         }
@@ -528,6 +528,9 @@ fn try_app_window(url: &str) -> bool {
             return std::process::Command::new(&c)
                 .arg(format!("--app={url}"))
                 .arg("--window-size=980,680")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .spawn()
                 .is_ok();
         }

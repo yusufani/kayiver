@@ -754,6 +754,46 @@ fn d_side_walls_do_not_drift_into_gaps_or_follow_machine_links() {
 }
 
 #[test]
+fn windows_owned_panel_can_return_to_a_and_reenter_without_bouncing() {
+    let (mut host, mut client) = desk("panelroundtrip", 27600);
+    give_panel_to_client(&mut host);
+    for _ in 0..3 {
+        host.ctl(serde_json::json!({"op":"warp", "x":2400, "y":700}));
+        std::thread::sleep(Duration::from_millis(40));
+        host.ctl(serde_json::json!({"op":"warp", "x":2568, "y":700}));
+        wait_until("A enters the Windows-owned panel", Duration::from_secs(5), || {
+            client.state()["driven"].as_bool().unwrap()
+        });
+        host.ctl(serde_json::json!({"op":"input_move", "dx":10, "dy":0}));
+        wait_until("inward motion stays on Windows", Duration::from_secs(5), || {
+            client.state()["cursor"][0].as_i64().is_some_and(|x| x >= 12)
+        });
+        assert!(host.state()["forwarding"].as_bool().unwrap());
+        host.ctl(serde_json::json!({"op":"input_move", "dx":-100, "dy":0}));
+        wait_until("Windows panel exits back onto A", Duration::from_secs(5), || {
+            !host.state()["forwarding"].as_bool().unwrap()
+        });
+        assert!(host.state()["cursor"][0].as_i64().unwrap() < 2560);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+#[test]
+fn a_shared_entry_after_disconnect_does_not_freeze_capture() {
+    let (mut host, client) = desk("offlineentry", 27620);
+    give_panel_to_client(&mut host);
+    drop(client);
+    wait_until("peer disconnect is processed", Duration::from_secs(5), || {
+        host.log_text().contains("client disconnected: simwin")
+    });
+    host.ctl(serde_json::json!({"op":"warp", "x":2400, "y":700}));
+    std::thread::sleep(Duration::from_millis(40));
+    host.ctl(serde_json::json!({"op":"warp", "x":2568, "y":700}));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!host.state()["forwarding"].as_bool().unwrap(), "offline entry stranded physical capture");
+}
+
+#[test]
 fn return_preserves_motion_still_in_the_native_capture_queue() {
     let (mut host, mut client) = primary_windows_desk("capturetail", 27540);
     host.ctl(serde_json::json!({"op":"input_move", "dx":0, "dy":300}));

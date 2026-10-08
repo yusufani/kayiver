@@ -1475,6 +1475,7 @@ pub fn launch_editor_in_user_session() -> Result<()> {
         let _ = DestroyEnvironmentBlock(environment);
         let _ = CloseHandle(token);
         result?;
+        tracing::info!(session, pid = process.dwProcessId, "layout editor started with interactive user token");
         let _ = CloseHandle(process.hProcess);
         let _ = CloseHandle(process.hThread);
         Ok(())

@@ -544,6 +544,8 @@ pub fn cursor_pos() -> (i32, i32) {
     }
 }
 
+static RETURN_MOTION_AT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
 pub fn set_forwarding_visuals(on: bool) {
     // CGDisplayHideCursor/ShowCursor are REFERENCE-COUNTED: two hides need two
     // shows or the cursor stays hidden (and, being app-scoped, only reappears
@@ -558,6 +560,7 @@ pub fn set_forwarding_visuals(on: bool) {
             }
             CGAssociateMouseAndMouseCursorPosition(0);
         } else {
+            *RETURN_MOTION_AT.lock().unwrap() = Some(Instant::now());
             CGAssociateMouseAndMouseCursorPosition(1);
             if HIDDEN.swap(false, Ordering::SeqCst) {
                 CGDisplayShowCursor(CGMainDisplayID());
@@ -679,6 +682,9 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
     if !forwarding {
         // Local mode: watch for portal edge hits on motion, touch nothing else.
         if etype == ET_MOVED || etype == ET_LEFT_DRAG || etype == ET_RIGHT_DRAG || etype == ET_OTHER_DRAG {
+            if let Some(at) = RETURN_MOTION_AT.lock().unwrap().take() {
+                tracing::info!(gap_us = at.elapsed().as_micros() as u64, "cross timing: first native local motion");
+            }
             let p = CGEventGetLocation(event);
             let dx = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_X) as i32;
             let dy = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_Y) as i32;
@@ -701,15 +707,9 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         ET_MOVED | ET_LEFT_DRAG | ET_RIGHT_DRAG | ET_OTHER_DRAG => {
             let dx = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_X) as i32;
             let dy = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_Y) as i32;
-            // The cursor is already detached. Repeated warps here create a
-            // fresh native suppression window on every physical movement and
-            // can overwrite the router's return warp. Only rescue real drift
-            // if another application re-associated the cursor underneath us.
-            let p = CGEventGetLocation(event);
-            if (p.x - state.park.x).abs() > 1.0 || (p.y - state.park.y).abs() > 1.0 {
-                CGAssociateMouseAndMouseCursorPosition(0);
-                CGWarpMouseCursorPosition(state.park);
-            }
+            // Association is already disabled. Shared-panel entry can originate
+            // in the cursor guard, which never sets this callback's portal park.
+            // Recentring to that stale park (often 0,0) corrupts the handoff.
             Some(InputEvent::MouseMove { dx, dy })
         }
         ET_LEFT_DOWN => Some(InputEvent::MouseButton { button: MouseButton::Left, pressed: true }),

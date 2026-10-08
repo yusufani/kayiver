@@ -42,6 +42,8 @@ engine injected, with coordinates).
 | `no_nonce_desync_under_load_and_geometry_churn` | timer racing a half-read frame → Noise nonce desync → `decrypt error` loop |
 | `return_preserves_movement_already_in_flight` | delayed return notification must carry movement already sent over the network |
 | `return_preserves_motion_still_in_the_native_capture_queue` | return notification overtakes swallowed native motion waiting in the router queue |
+| `windows_owned_panel_can_return_to_a_and_reenter_without_bouncing` | repeated A → Windows-owned panel → A crossings must keep inward motion on the panel |
+| `a_shared_entry_after_disconnect_does_not_freeze_capture` | disconnect racing synchronous shared entry must restore local capture |
 
 The simulator cannot verify macOS cursor association, event suppression, or
 physical pointer acceleration. After changing native capture, test a fast
