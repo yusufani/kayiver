@@ -417,6 +417,7 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
         }
         "state" => {
             let w = world().lock().unwrap();
+            let navigation = w.capture.as_ref().map(|(ctl,_)| { let nav=ctl.navigation.lock().unwrap(); serde_json::json!({"revision":nav.topology.revision,"surfaces":nav.topology.surfaces.len(),"seams":nav.topology.seams.len()}) });
             let capture_bounds = w.capture.as_ref().map(|(ctl,_)| { let r=ctl.bounds(); [r.x,r.y,r.w,r.h] });
             let (forwarding, driven, portals, blocked) = match &w.capture {
                 Some((ctl, _)) => (
@@ -438,6 +439,7 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
                 "passive_notice": w.passive_notice.map(|r| [r.x, r.y, r.w, r.h]),
                 "injected_len": w.injected.len(),
                 "capture_bounds": capture_bounds,
+                "navigation": navigation,
             })
         }
         "injected" => {

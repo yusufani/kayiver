@@ -274,6 +274,33 @@ fn iface_for_ip(ip: std::net::IpAddr) -> Option<String> {
 /// All local IPv4 addresses a client could dial for this host, labeled by
 /// interface — the editor's path picker. Excludes loopback.
 pub fn host_candidate_addrs(port: u16) -> Vec<(String, String)> {
+    #[derive(Default)]
+    struct Cache {
+        port: u16,
+        updated: Option<std::time::Instant>,
+        refreshing: bool,
+        addresses: Vec<(String,String)>,
+    }
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Cache>> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let mut state = cache.lock().unwrap();
+    let refresh = !state.refreshing && (state.port != port || state.updated.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(30)));
+    let addresses = if state.port == port {state.addresses.clone()} else {Vec::new()};
+    if refresh {state.refreshing=true;}
+    drop(state);
+    if refresh {
+        // UI polling shares the engine runtime. Never execute ifconfig and
+        // networksetup there: they can stall every motion/network message.
+        if std::thread::Builder::new().name("kayiver-link-labels".into()).spawn(move || {
+            let addresses=scan_host_candidate_addrs(port);
+            let mut state=cache.lock().unwrap();
+            state.port=port;state.addresses=addresses;state.updated=Some(std::time::Instant::now());state.refreshing=false;
+        }).is_err() {cache.lock().unwrap().refreshing=false;}
+    }
+    addresses
+}
+
+fn scan_host_candidate_addrs(port: u16) -> Vec<(String, String)> {
     #[cfg(target_os = "macos")]
     {
         let Some(out) = std::process::Command::new("ifconfig").arg("-a").output().ok() else {

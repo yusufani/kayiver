@@ -27,6 +27,11 @@ jobs:
       - run: cargo test -p kayiver-core
       - run: cargo test -p kayiver --features sim --bin kayiver
       - run: cargo test -p kayiver --features sim --test sim_e2e -- --test-threads=1
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: simulated-desk-failure-logs
+          path: /tmp/kayiver-sim-*/kayiver.log
       - run: cargo build --release -p kayiver --target x86_64-pc-windows-gnu
       - run: cp target/x86_64-pc-windows-gnu/release/kayiver.exe kayiver-windows-x64.exe
       - uses: actions/upload-artifact@v4

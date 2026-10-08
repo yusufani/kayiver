@@ -236,11 +236,17 @@ h = 1440
 fn desk(scenario: &'static str, base: u16) -> (Machine, Machine) {
     let port = base;
     let mut host = Machine::spawn("host", &host_cfg(port), HOST_MONS, base + 1, scenario);
-    let client = Machine::spawn("client", &client_cfg(port), CLIENT_MONS, base + 2, scenario);
+    let mut client = Machine::spawn("client", &client_cfg(port), CLIENT_MONS, base + 2, scenario);
     // (The right edge is legitimately a WALL on this desk — the panel fills
     // it and C is above, not beyond — so probe the session, not the portals.)
     wait_until("host sees the client", Duration::from_secs(15), || {
         host.log_text().contains("client connected: simwin")
+    });
+    wait_until("both desks installed the same identified topology", Duration::from_secs(10), || {
+        let h=host.state();let c=client.state();
+        h["navigation"]["surfaces"].as_u64().is_some_and(|n|n>=3) &&
+            h["navigation"]["revision"] == c["navigation"]["revision"] &&
+            h["navigation"]["surfaces"] == c["navigation"]["surfaces"]
     });
     // The host pushes its editor view on connect; the client's /api/state
     // must mirror it (machines by name, links, shared panel) — that is what
@@ -263,7 +269,7 @@ fn cross_diagonally(host: &mut Machine, client: &mut Machine) -> (i64, i64) {
     client.injected(); // drain anything stale
     for (x, y) in [(2300, 700), (2480, 700), (2550, 700), (2565, 760)] {
         host.ctl(serde_json::json!({ "op": "warp", "x": x, "y": y }));
-        std::thread::sleep(Duration::from_millis(40)); // guard polls every 8ms
+        std::thread::sleep(Duration::from_millis(40)); // let the ordered receiver apply each sample
     }
     let mut landing = None;
     wait_until("client receives the EnterAt warp", Duration::from_secs(10), || {
@@ -765,7 +771,11 @@ fn primary_windows_desk(scenario: &str, port: u16) -> (Machine, Machine) {
     let mut client = Machine::spawn("client", &client_cfg,
         "0,0,1920,1080;-163,1080,2560,1440", port + 2, scenario);
     wait_until("Windows adopts its real panel", Duration::from_secs(10), || {
-        client.state()["blocked"] == serde_json::json!([-163,1080,2560,1440])
+        let h=host.state();let c=client.state();
+        c["blocked"] == serde_json::json!([-163,1080,2560,1440]) &&
+            h["portals"].as_array().unwrap().iter().any(|e|e=="Top") &&
+            h["navigation"]["surfaces"].as_u64().is_some_and(|n|n>=3) &&
+            h["navigation"]["revision"] == c["navigation"]["revision"]
     });
     host.ctl(serde_json::json!({"op":"edge", "edge":"top", "ratio":3600.0/5120.0}));
     wait_until("Windows is driven on D", Duration::from_secs(5), || {
