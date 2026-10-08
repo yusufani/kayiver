@@ -145,6 +145,15 @@ fn main() -> Result<()> {
     platform::init();
 
     let cli = Cli::parse();
+    // A Start-menu/double-click launch should present the existing editor,
+    // rather than silently losing the engine's single-instance race.
+    #[cfg(target_os = "windows")]
+    if cli.command.is_none() && std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], ui::UI_PORT)),
+        std::time::Duration::from_millis(200),
+    ).is_ok() {
+        return ui::run(true);
+    }
     match cli.command.unwrap_or(Command::Run { no_gui: false }) {
         Command::Run { no_gui } => run(no_gui),
         Command::Pair => engine::pairing::pair_as_display(),

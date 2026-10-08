@@ -469,7 +469,14 @@ pub fn run(open_browser: bool) -> Result<()> {
 /// native panel with no address bar / tabs. Falls back to a normal browser
 /// open if none is found. This keeps kayiver a single dependency-free binary
 /// (no bundled webview runtime) while still presenting an app-like window.
-fn open_in_browser(url: &str) {
+pub(crate) fn open_in_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    if std::env::var("USERNAME").is_ok_and(|name| name.eq_ignore_ascii_case("SYSTEM")) {
+        if let Err(e) = crate::platform::launch_editor_in_user_session() {
+            warn!("could not open layout in the signed-in user's session: {e:#}");
+        }
+        return;
+    }
     if try_app_window(url) {
         return;
     }

@@ -1439,6 +1439,48 @@ pub fn open_url(url: &str) {
     }
 }
 
+/// The input engine may run as SYSTEM to reach UAC's secure desktop. Its
+/// editor must run as the signed-in user, with that user's browser profile.
+pub fn launch_editor_in_user_session() -> Result<()> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
+    use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQueryUserToken};
+    use windows::Win32::System::Threading::{
+        CreateProcessAsUserW, CREATE_UNICODE_ENVIRONMENT, NORMAL_PRIORITY_CLASS,
+        PROCESS_INFORMATION, STARTUPINFOW,
+    };
+    let exe = std::env::current_exe()?;
+    unsafe {
+        let session = WTSGetActiveConsoleSessionId();
+        anyhow::ensure!(session != u32::MAX, "no signed-in console session for the layout editor");
+        let mut token = HANDLE::default();
+        WTSQueryUserToken(session, &mut token)?;
+        let mut environment = std::ptr::null_mut();
+        if let Err(e) = CreateEnvironmentBlock(&mut environment, Some(token), false) {
+            let _ = CloseHandle(token);
+            return Err(e.into());
+        }
+        let mut command: Vec<u16> = format!("\"{}\" ui", exe.display()).encode_utf16().chain(Some(0)).collect();
+        let mut desktop: Vec<u16> = "winsta0\\default\0".encode_utf16().collect();
+        let startup = STARTUPINFOW {
+            cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+            lpDesktop: PWSTR(desktop.as_mut_ptr()),
+            ..Default::default()
+        };
+        let mut process = PROCESS_INFORMATION::default();
+        let result = CreateProcessAsUserW(Some(token), None, Some(PWSTR(command.as_mut_ptr())),
+            None, None, false, CREATE_UNICODE_ENVIRONMENT | NORMAL_PRIORITY_CLASS,
+            Some(environment), None, &startup, &mut process);
+        let _ = DestroyEnvironmentBlock(environment);
+        let _ = CloseHandle(token);
+        result?;
+        let _ = CloseHandle(process.hProcess);
+        let _ = CloseHandle(process.hThread);
+        Ok(())
+    }
+}
+
 /// Highlight / reveal a file in File Explorer.
 pub fn reveal_path(path: &str) {
     let _ = std::process::Command::new("explorer.exe")
