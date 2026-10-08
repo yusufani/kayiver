@@ -25,6 +25,7 @@ jobs:
         with:
           targets: x86_64-pc-windows-gnu
       - run: cargo test -p kayiver-core
+      - run: cargo test -p kayiver --features sim --bin kayiver
       - run: cargo test -p kayiver --features sim --test sim_e2e -- --test-threads=1
       - run: cargo build --release -p kayiver --target x86_64-pc-windows-gnu
       - run: cp target/x86_64-pc-windows-gnu/release/kayiver.exe kayiver-windows-x64.exe

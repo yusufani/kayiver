@@ -61,6 +61,7 @@ draw();
 
 #[derive(Debug)]
 enum UserEvent {
+    OpenEditor,
     Menu(MenuEvent),
     /// Periodic status summary from the local API for the tray.
     Status { line: String, warn: bool },
@@ -124,7 +125,8 @@ pub fn run_host(cfg: Config) -> Result<()> {
     // permissions are granted and the host comes up.
     std::thread::Builder::new().name("kayiver-engine".into()).spawn(move || {
         if let Err(e) = crate::platform::wait_for_gui_permissions().and_then(|_| crate::engine::host::run(cfg)) {
-            eprintln!("kayiver engine exited: {e:#}");
+            tracing::error!("kayiver engine exited: {e:#}");
+            crate::ui::set_link_error(Some(format!("Engine could not start: {e:#}")));
             // Keep the GUI alive so the user can read the error / retry.
         }
     })?;
@@ -155,6 +157,8 @@ fn run_shell(open_window_now: bool) -> Result<()> {
     // Stay a menu-bar app even while the editor is open.
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
 
+    let editor_proxy=event_loop.create_proxy();
+    crate::ui::register_editor_notifier(move || editor_proxy.send_event(UserEvent::OpenEditor).is_ok());
     let proxy = event_loop.create_proxy();
     MenuEvent::set_event_handler(Some(move |e| {
         let _ = proxy.send_event(UserEvent::Menu(e));
@@ -164,6 +168,7 @@ fn run_shell(open_window_now: bool) -> Result<()> {
     // latency, warnings) so problems are visible without opening the editor.
     let status_proxy = event_loop.create_proxy();
     std::thread::Builder::new().name("kayiver-tray-status".into()).spawn(move || loop {
+        if crate::ui::take_editor_request() {let _=status_proxy.send_event(UserEvent::OpenEditor);}
         let (line, warn) = status_summary();
         if status_proxy.send_event(UserEvent::Status { line, warn }).is_err() {
             return;
@@ -196,12 +201,21 @@ fn run_shell(open_window_now: bool) -> Result<()> {
     let mut editor: Option<(Window, WebView)> = None;
     let mut overlay: Option<(Window, WebView, (i32, i32))> = None;
     let mut quick_share: Option<(Window, WebView)> = None;
+    #[cfg(not(feature = "sim"))]
+    let mut passive_notice = None;
+    #[cfg(not(feature = "sim"))]
+    let mut rescue_tick = std::time::Instant::now();
     let mut open_pending = open_window_now;
 
     event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
 
-        if open_pending {
+        let ui_ready=!open_pending || std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127,0,0,1],crate::ui::UI_PORT)),std::time::Duration::from_millis(25)).is_ok();
+        if open_pending && !ui_ready {
+            *control_flow=ControlFlow::WaitUntil(std::time::Instant::now()+std::time::Duration::from_millis(100));
+        }
+        if open_pending && ui_ready {
             open_pending = false;
             match open_editor_window(target) {
                 Ok(w) => {
@@ -219,8 +233,18 @@ fn run_shell(open_window_now: bool) -> Result<()> {
         }
 
         match event {
-            Event::Reopen { .. } => present_editor(target, &mut editor),
+            Event::Reopen { .. } | Event::UserEvent(UserEvent::OpenEditor) => present_editor(target, &mut editor),
             Event::UserEvent(UserEvent::Overlay { x, y, flash }) => {
+                #[cfg(not(feature = "sim"))]
+                {
+                    crate::platform::passive_macos::Notice::update(&mut passive_notice);
+                    if rescue_tick.elapsed() >= std::time::Duration::from_secs(1) {
+                        rescue_tick = std::time::Instant::now();
+                        if let (Some(notice), Some((window, _))) = (&passive_notice, &editor) {
+                            notice.rescue_editor(window);
+                        }
+                    }
+                }
                 if let Some((_, wv, origin)) = &overlay {
                     let _ = wv.evaluate_script(&format!(
                         "window.tick&&tick({},{},{flash})",
@@ -354,7 +378,7 @@ fn open_editor_window(target: &tao::event_loop::EventLoopWindowTarget<UserEvent>
     let window = WindowBuilder::new()
         .with_title("Kayıver")
         .with_inner_size(tao::dpi::LogicalSize::new(1060.0, 720.0))
-        .with_min_inner_size(tao::dpi::LogicalSize::new(720.0, 520.0))
+        .with_min_inner_size(tao::dpi::LogicalSize::new(600.0, 400.0))
         .build(target)?;
     let webview = wry::WebViewBuilder::new()
         .with_url(crate::ui::url())

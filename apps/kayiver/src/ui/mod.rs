@@ -469,6 +469,12 @@ pub fn run(open_browser: bool) -> Result<()> {
 /// native panel with no address bar / tabs. Falls back to a normal browser
 /// open if none is found. This keeps kayiver a single dependency-free binary
 /// (no bundled webview runtime) while still presenting an app-like window.
+static EDITOR_NOTIFY:std::sync::OnceLock<Box<dyn Fn()->bool+Send+Sync>>=std::sync::OnceLock::new();
+#[cfg(target_os="macos")]
+pub fn register_editor_notifier(callback:impl Fn()->bool+Send+Sync+'static) {let _=EDITOR_NOTIFY.set(Box::new(callback));}
+static EDITOR_REQUEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn take_editor_request() -> bool { EDITOR_REQUEST.swap(false,std::sync::atomic::Ordering::SeqCst) }
+
 pub(crate) fn open_in_browser(url: &str) {
     #[cfg(target_os = "windows")]
     if std::env::var("USERNAME").is_ok_and(|name| name.eq_ignore_ascii_case("SYSTEM")) {
@@ -477,6 +483,8 @@ pub(crate) fn open_in_browser(url: &str) {
         }
         return;
     }
+    #[cfg(all(target_os="windows",not(feature="sim")))]
+    if crate::platform::raise_editor_if_present() {return;}
     if try_app_window(url) {
         return;
     }
@@ -523,11 +531,21 @@ fn try_app_window(url: &str) -> bool {
         format!(r"{pf}\Microsoft\Edge\Application\msedge.exe"),
         format!(r"{local}\Google\Chrome\Application\chrome.exe"),
     ];
+    // An isolated app profile prevents normal Edge sessions/extensions from
+    // swallowing app-mode launches or restoring the editor off-screen.
+    let profile=std::path::PathBuf::from(&local).join("kayiver").join("ui-browser");
+    let screen=crate::platform::monitors().into_iter().next().unwrap_or(kayiver_core::proto::Rect{x:0,y:0,w:1280,h:800});
+    let width=(screen.w-32).clamp(600,980);let height=(screen.h-64).clamp(400,680);
+    let position=format!("--window-position={},{}",screen.x+(screen.w-width)/2,screen.y+(screen.h-height)/2);
     for c in candidates {
         if Path::new(&c).exists() {
             return std::process::Command::new(&c)
                 .arg(format!("--app={url}"))
-                .arg("--window-size=980,680")
+                .arg(format!("--user-data-dir={}",profile.display()))
+                .arg("--no-first-run")
+                .arg("--no-default-browser-check")
+                .arg(format!("--window-size={width},{height}"))
+                .arg(&position)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -633,7 +651,7 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
     let path = parts.next().unwrap_or_default();
 
     match (method, path) {
-        ("GET", "/") => ("200 OK", "text/html; charset=utf-8", INDEX_HTML.as_bytes().to_vec()),
+        ("GET", "/") => ("200 OK", "text/html; charset=utf-8", INDEX_HTML.replace("__KAYIVER_VERSION__",env!("CARGO_PKG_VERSION")).into_bytes()),
         ("GET", "/api/state") => match api_state() {
             Ok(json) => ("200 OK", "application/json", json.into_bytes()),
             Err(e) => ("500 Internal Server Error", "text/plain", e.to_string().into_bytes()),
@@ -642,6 +660,13 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
         ("POST", "/api/permissions") => match api_permissions(body) {
             Ok(()) => ("200 OK", "text/plain", b"ok".to_vec()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+        },
+        ("POST", "/api/editor/open") => {
+            #[cfg(all(target_os="windows",not(feature="sim")))]
+            if let Err(e)=crate::platform::launch_editor_in_user_session() {return ("500 Internal Server Error","text/plain",format!("editor launch failed: {e}").into_bytes());}
+            #[cfg(not(all(target_os="windows",not(feature="sim"))))]
+            if !EDITOR_NOTIFY.get().is_some_and(|notify|notify()) {EDITOR_REQUEST.store(true,std::sync::atomic::Ordering::SeqCst);}
+            ("200 OK", "text/plain", b"ok".to_vec())
         },
         ("GET", "/api/status") => ("200 OK", "application/json", api_status().into_bytes()),
         ("GET", "/api/cursor") => ("200 OK", "application/json", api_cursor().into_bytes()),
@@ -1006,6 +1031,11 @@ fn api_status() -> String {
     // Never hold the UI mutex while acquiring capture locks.
     let capture = live().lock().unwrap().capture.clone();
     let capture = capture.as_ref().map(|ctl| serde_json::json!({
+            "navigation": ({
+                let nav=ctl.navigation.lock().unwrap();
+                let control=match &nav.control {crate::platform::navigation::Control::Local=>"local",crate::platform::navigation::Control::Remote(_)=>"remote",crate::platform::navigation::Control::Driven(_)=>"driven",crate::platform::navigation::Control::Recovering=>"recovering"};
+                serde_json::json!({"revision":nav.topology.revision,"generation":nav.generation,"sequence":nav.sequence,"control":control,"location":nav.location,"surfaces":nav.topology.surfaces.len(),"seams":nav.topology.seams.len()})
+            }),
             "bounds": ctl.bounds(),
             "blocked": *ctl.blocked.read().unwrap(),
             "forwarding": ctl.forwarding.load(std::sync::atomic::Ordering::SeqCst),
@@ -1033,6 +1063,11 @@ fn api_status() -> String {
         .map(|(addr, label)| serde_json::json!({ "addr": addr, "label": label }))
         .collect();
     serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "editor": ({
+            #[cfg(all(target_os="windows",not(feature="sim")))] {crate::platform::editor_status()}
+            #[cfg(not(all(target_os="windows",not(feature="sim"))))] {serde_json::Value::Null}
+        }),
         "permissions": crate::platform::permissions_status(),
         "capture": capture,
         "running": s.running,

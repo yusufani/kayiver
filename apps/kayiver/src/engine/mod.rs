@@ -8,9 +8,11 @@ use kayiver_core::layout::Edge;
 use kayiver_core::proto::InputEvent;
 
 /// Events flowing from the platform capture thread to the host router.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Captured {
     Input(InputEvent),
+    OrderedInput {stamp:kayiver_core::motion::Stamp,target:Option<String>,event:InputEvent},
+    Motion(crate::platform::navigation::Frame),
     /// The local cursor hit a portal edge. The capture layer has already
     /// flipped itself into forwarding (swallow) mode synchronously, so not a
     /// single event leaks to the local desktop while the router catches up.
@@ -23,7 +25,4 @@ pub enum Captured {
     /// Tablet-control hotkey (Cmd/Ctrl+Alt+T): toggle handing input to the
     /// Android tablet. The keystroke is swallowed.
     TabletHotkey,
-    /// The local cursor moved onto the shared panel (which is showing the
-    /// peer), at relative position (fx, fy). Hand control to the peer.
-    SharedEnter { fx: f32, fy: f32 },
 }

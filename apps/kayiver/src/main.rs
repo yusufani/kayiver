@@ -60,6 +60,8 @@ enum Command {
     },
     /// Check permissions, config and screen geometry.
     Doctor,
+    /// Replay a motion recording without moving any real cursor.
+    ReplayMotion {path:std::path::PathBuf},
     /// Start kayiver automatically at login.
     Autostart {
         #[arg(value_parser = ["enable", "disable"])]
@@ -145,6 +147,8 @@ fn main() -> Result<()> {
     platform::init();
 
     let cli = Cli::parse();
+    #[cfg(target_os = "macos")]
+    if cli.command.is_none() && ui::local_api("POST","/api/editor/open",Some("{}")).is_ok() {return Ok(());}
     // A Start-menu/double-click launch should present the existing editor,
     // rather than silently losing the engine's single-instance race.
     #[cfg(target_os = "windows")]
@@ -161,11 +165,23 @@ fn main() -> Result<()> {
         Command::Ui { no_open } => {
             #[cfg(target_os = "macos")]
             if !no_open {
+                if ui::local_api("POST","/api/editor/open",Some("{}")).is_ok() {return Ok(());}
                 return gui::run_editor();
             }
             ui::run(!no_open)
         }
         Command::Doctor => doctor(),
+        Command::ReplayMotion {path} => {
+            use std::io::BufRead;
+            let reader=std::io::BufReader::new(std::fs::File::open(path)?);
+            let mut count=0;
+            for line in reader.lines() {
+                let sample:kayiver_core::motion::ReplaySample=serde_json::from_str(&line?)?;
+                count+=1;anyhow::ensure!(sample.matches_replay(),"motion replay diverged at sample {count}");
+            }
+            anyhow::ensure!(count>0,"recording contains no motion samples");
+            println!("{count} motion samples replayed; all paths, walls and positions match");Ok(())
+        },
         Command::Autostart { action } => autostart::apply(action == "enable"),
         Command::Display { action } => display_cmd(action),
         Command::Monitor { target } => monitor_cmd(target),
@@ -224,6 +240,8 @@ fn run(no_gui: bool) -> Result<()> {
             }
         }
         if !acquired {
+            #[cfg(target_os = "macos")]
+            if !no_gui {let _=ui::local_api("POST","/api/editor/open",Some("{}"));}
             tracing::info!("another kayiver instance is already running — exiting");
             return Ok(());
         }

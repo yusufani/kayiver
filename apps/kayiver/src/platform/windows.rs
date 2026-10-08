@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
-use kayiver_core::layout::{point_in, ratio_on_edge, touches_edge, Edge};
+
 use kayiver_core::proto::{InputEvent, MouseButton, Rect};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -52,7 +52,6 @@ const LLMHF_INJECTED: u32 = 0x1;
 const LLKHF_INJECTED: u32 = 0x10;
 /// Park the cursor this far inside the portal edge while forwarding, so
 /// proposed positions in the hook are never clamped by the desktop bounds.
-const PARK_INSET: i32 = 8;
 
 pub fn desktop_bounds() -> Rect {
     unsafe {
@@ -421,6 +420,19 @@ fn attached_displays() -> Vec<(String, Rect)> {
         }
     }
     out
+}
+
+/// Monitor interface path survives display-order/primary changes; adapters do not.
+pub fn identified_monitors() -> Vec<(Option<String>,Rect)> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Graphics::Gdi::{EnumDisplayDevicesW,DISPLAY_DEVICEW};
+    attached_displays().into_iter().map(|(name,r)| {
+        let wide=to_wide(&name);
+        let mut device=DISPLAY_DEVICEW {cb:std::mem::size_of::<DISPLAY_DEVICEW>() as u32,..Default::default()};
+        let ok=unsafe {EnumDisplayDevicesW(PCWSTR(wide.as_ptr()),0,&mut device,1)};
+        let id=String::from_utf16_lossy(&device.DeviceID).trim_end_matches('\0').to_string();
+        (if ok.as_bool() && !id.is_empty() {Some(id)}else{None},r)
+    }).collect()
 }
 
 /// Every physical display, in virtual-screen coordinates, in the same order as
@@ -871,17 +883,15 @@ struct CapState {
     /// Where the physical cursor is parked while forwarding; deltas are
     /// computed against this point.
     park: Mutex<(i32, i32)>,
+    last_native: Mutex<Option<(i32,i32)>>,
     esc_downs: Mutex<[Option<Instant>; 2]>,
-    /// Portal edge the cursor is currently resting against + since when, for
-    /// the optional crossing dwell. Cleared when it leaves the edge.
-    edge_pending: Mutex<Option<(Edge, Instant)>>,
 }
 
 static STATE: OnceLock<CapState> = OnceLock::new();
 
 pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Result<()> {
     if STATE
-        .set(CapState { ctl, tx, park: Mutex::new((0, 0)), esc_downs: Mutex::new([None, None]), edge_pending: Mutex::new(None) })
+        .set(CapState { ctl, tx, park: Mutex::new((0, 0)), last_native:Mutex::new(None), esc_downs: Mutex::new([None, None]) })
         .is_err()
     {
         bail!("capture already started");
@@ -924,25 +934,33 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         return CallNextHookEx(None, code, wparam, lparam);
     }
 
+    let _motion=state.ctl.motion_gate.lock().unwrap();
     let forwarding = state.ctl.forwarding.load(Ordering::SeqCst);
-
-    if !forwarding {
-        if msg == WM_MOUSEMOVE {
-            let prev_pt = (info.pt.x, info.pt.y);
-            if maybe_enter_portal(state, info.pt.x, info.pt.y) {
-                // We crossed into forwarding: compute delta against the park point
-                // and forward initial momentum so the transition doesn't stall.
-                let park = *state.park.lock().unwrap();
-                let dx = prev_pt.0 - park.0;
-                let dy = prev_pt.1 - park.1;
-                if dx != 0 || dy != 0 {
-                    let _ = state.tx.send(Captured::Input(InputEvent::MouseMove { dx, dy }));
+    if msg==WM_MOUSEMOVE {
+        if state.ctl.driven.load(Ordering::SeqCst) {return LRESULT(1);}
+        let point=(info.pt.x,info.pt.y);
+        let previous=state.last_native.lock().unwrap().unwrap_or(point);
+        let origin=if forwarding {*state.park.lock().unwrap()}else{previous};
+        let (dx,dy)=(point.0-origin.0,point.1-origin.1);
+        *state.last_native.lock().unwrap()=Some(point);
+        if super::route_motion(&state.ctl,&state.tx,point,dx,dy) {
+            if state.ctl.forwarding.load(Ordering::SeqCst) {
+                if !forwarding {
+                    let blocked=*state.ctl.blocked.read().unwrap();
+                    let screens=monitors();
+                    let r=screens.iter().find(|r|Some(**r)!=blocked).copied().unwrap_or(state.ctl.bounds());
+                    *state.park.lock().unwrap()=(r.x+r.w/2,r.y+r.h/2);
                 }
-                return LRESULT(1); // swallow the transition event
+                let park=*state.park.lock().unwrap();
+                let _=SetCursorPos(park.0,park.1);
+            } else {
+                *state.last_native.lock().unwrap()=Some(cursor_pos());
             }
+            return LRESULT(1);
         }
-        return CallNextHookEx(None, code, wparam, lparam);
+        return CallNextHookEx(None,code,wparam,lparam);
     }
+    if state.ctl.driven.load(Ordering::SeqCst) {return LRESULT(1);}
 
     let park = *state.park.lock().unwrap();
     let captured = match msg {
@@ -975,9 +993,9 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
     };
 
     if let Some(ev) = captured {
-        let _ = state.tx.send(Captured::Input(ev));
+        super::capture_input(&state.ctl,&state.tx,ev);
     }
-    LRESULT(1) // swallow
+    if forwarding {LRESULT(1)}else{CallNextHookEx(None,code,wparam,lparam)} // swallow only remote
 }
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -1017,9 +1035,8 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         }
     }
 
-    if !state.ctl.forwarding.load(Ordering::SeqCst) {
-        return CallNextHookEx(None, code, wparam, lparam);
-    }
+    let _gate=state.ctl.motion_gate.lock().unwrap();
+    let forwarding=state.ctl.forwarding.load(Ordering::SeqCst);
 
     let pressed = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
     let released = msg == WM_KEYUP || msg == WM_SYSKEYUP;
@@ -1032,66 +1049,16 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         return LRESULT(1);
     }
 
+    if state.ctl.driven.load(Ordering::SeqCst) {return LRESULT(1);}
     if let Some(key) = keymap::native_to_hid(info.vkCode as u16) {
-        let _ = state.tx.send(Captured::Input(InputEvent::Key { key, pressed }));
+        super::capture_input(&state.ctl,&state.tx,InputEvent::Key {key,pressed});
     }
-    LRESULT(1) // swallow
+    if forwarding {LRESULT(1)}else{CallNextHookEx(None,code,wparam,lparam)}
 }
 
-unsafe fn maybe_enter_portal(state: &CapState, x: i32, y: i32) -> bool {
-    if Instant::now() < *state.ctl.cooldown_until.lock().unwrap() {
-        return false;
-    }
-    let bounds = state.ctl.bounds();
-    let portals = state.ctl.portals.read().unwrap().clone();
-    let dwell = state.ctl.edge_dwell_ms.load(Ordering::Relaxed);
-    for edge in portals {
-        if touches_edge(bounds, edge, x, y) {
-            // Optional dwell: hold at the edge for `dwell` ms before crossing.
-            if dwell > 0 {
-                let mut pending = state.edge_pending.lock().unwrap();
-                match *pending {
-                    Some((e, since)) if e == edge => {
-                        if since.elapsed() < Duration::from_millis(dwell) {
-                            return false; // still charging up
-                        }
-                    }
-                    _ => {
-                        *pending = Some((edge, Instant::now()));
-                        return false; // just arrived; start the timer
-                    }
-                }
-            }
-            *state.edge_pending.lock().unwrap() = None;
-            state.ctl.forwarding.store(true, Ordering::SeqCst);
-            // Park the cursor away from the edge so blocked-event positions
-            // never clamp (which would eat outward motion).
-            let (px, py) = park_point(bounds, edge, x, y);
-            let _ = SetCursorPos(px, py);
-            *state.park.lock().unwrap() = (px, py);
-            let ratio = ratio_on_edge(bounds, edge, x, y);
-            let _ = state.tx.send(Captured::EdgeHit { edge, ratio });
-            return true;
-        }
-    }
-    // Not touching any portal edge — reset the dwell timer.
-    *state.edge_pending.lock().unwrap() = None;
-    false
-}
 
-fn park_point(bounds: Rect, edge: Edge, x: i32, y: i32) -> (i32, i32) {
-    // Find the monitor containing (x, y) so parking never jumps across screens.
-    let m = monitors()
-        .into_iter()
-        .find(|m| point_in(*m, x, y))
-        .unwrap_or(bounds);
-    match edge {
-        Edge::Left => ((m.x + PARK_INSET).min(m.right() - 1), y.clamp(m.y, m.bottom() - 1)),
-        Edge::Right => ((m.right() - 1 - PARK_INSET).max(m.x), y.clamp(m.y, m.bottom() - 1)),
-        Edge::Top => (x.clamp(m.x, m.right() - 1), (m.y + PARK_INSET).min(m.bottom() - 1)),
-        Edge::Bottom => (x.clamp(m.x, m.right() - 1), (m.bottom() - 1 - PARK_INSET).max(m.y)),
-    }
-}
+
+
 
 fn check_panic(state: &CapState) -> bool {
     let now = Instant::now();
@@ -1220,13 +1187,14 @@ impl Injector {
     /// they verify the landing with GetCursorPos and re-attach the input
     /// desktop + retry once if the cursor didn't actually move (lock screen /
     /// UAC switched desktops, or a fullscreen app clips the cursor).
-    pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) {
+    pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) -> bool {
         self.wake_display();
         if dx != 0 || dy != 0 {
             self.send_mouse(MOUSEEVENTF_MOVE, dx, dy, 0);
         }
         unsafe {
             let warp = SetCursorPos(x, y);
+            if warp.is_err() {return false;}
             if dx == 0 && dy == 0 {
                 let mut p = POINT::default();
                 let _ = GetCursorPos(&mut p);
@@ -1242,9 +1210,11 @@ impl Injector {
                          reattach={reattached} retry_ok={} now=({},{})]",
                         p.x, p.y, warp.is_ok(), clip, retried.is_ok(), q.x, q.y
                     ));
+                    return retried.is_ok() && (q.x-x).abs()<=4 && (q.y-y).abs()<=4;
                 }
             }
         }
+        true
     }
 
     fn log_issue(&mut self, msg: String) {
@@ -1498,4 +1468,45 @@ pub fn get_clipboard_file() -> Option<String> {
 pub fn clipboard_seq() -> u64 {
     use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
     unsafe { GetClipboardSequenceNumber() as u64 }
+}
+
+/// Find only Kayiver editor windows, never expose other application titles.
+fn editor_window() -> Option<windows::Win32::Foundation::HWND> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows,GetClassNameW,GetWindowTextW};
+    unsafe extern "system" fn each(hwnd:HWND,data:LPARAM)->windows::core::BOOL {
+        let mut class=[0u16;64];let n=GetClassNameW(hwnd,&mut class);
+        if !String::from_utf16_lossy(&class[..n.max(0) as usize]).starts_with("Chrome_WidgetWin_") {return true.into();}
+        let mut title=[0u16;128];let n=GetWindowTextW(hwnd,&mut title);
+        if String::from_utf16_lossy(&title[..n.max(0) as usize]).contains("Kayıver") {
+            *(data.0 as *mut Option<HWND>)=Some(hwnd);return false.into();
+        }
+        true.into()
+    }
+    let mut found=None;unsafe{let _=EnumWindows(Some(each),LPARAM(&mut found as *mut Option<HWND> as isize));}found
+}
+pub fn editor_status()->serde_json::Value {
+    use windows::Win32::UI::WindowsAndMessaging::{IsWindowVisible,IsIconic,GetWindowRect};
+    let Some(hwnd)=editor_window() else {return serde_json::json!({"visible":false});};
+    let mut r=windows::Win32::Foundation::RECT::default();
+    unsafe {let _=GetWindowRect(hwnd,&mut r);serde_json::json!({"visible":IsWindowVisible(hwnd).as_bool(),"minimized":IsIconic(hwnd).as_bool(),"rect":{"x":r.left,"y":r.top,"w":r.right-r.left,"h":r.bottom-r.top}})}
+}
+pub fn raise_editor_if_present()->bool {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow,SetForegroundWindow,IsIconic,GetWindowRect,SetWindowPos,SW_RESTORE,SW_SHOW,SWP_NOZORDER,SWP_NOACTIVATE};
+    let Some(hwnd)=editor_window() else {return false;};
+    let cfg=kayiver_core::config::Config::load_or_init().ok();
+    let blocked=cfg.as_ref().and_then(|c|if c.shared_monitor.last_owner.as_deref().is_some_and(|owner|owner!=c.name) {c.shared_monitor.local_rect}else{None});
+    let screens:Vec<_>=monitors().into_iter().filter(|r|Some(*r)!=blocked).collect();
+    unsafe {
+        let _=ShowWindow(hwnd,if IsIconic(hwnd).as_bool(){SW_RESTORE}else{SW_SHOW});
+        let mut r=windows::Win32::Foundation::RECT::default();
+        if GetWindowRect(hwnd,&mut r).is_ok() && !screens.iter().any(|m|r.left>=m.x && r.top>=m.y && r.right<=m.right() && r.bottom<=m.bottom()) {
+            if let Some(m)=screens.first() {
+                let w=(r.right-r.left).min(m.w-32).max(400);let h=(r.bottom-r.top).min(m.h-64).max(300);
+                let _=SetWindowPos(hwnd,None,m.x+(m.w-w)/2,m.y+(m.h-h)/2,w,h,SWP_NOZORDER|SWP_NOACTIVATE);
+            }
+        }
+        let _=SetForegroundWindow(hwnd);
+    }
+    true
 }

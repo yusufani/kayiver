@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
-use kayiver_core::layout::{ratio_on_edge, touches_edge, Edge};
+
 use kayiver_core::proto::{InputEvent, MouseButton, Rect};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -198,10 +198,9 @@ pub fn apply_arrangement(_desired: &[Rect]) -> Result<bool> {
     Ok(false)
 }
 
-/// Windows-only: rescuing windows off a hidden monitor is a Win32 window
-/// manager job. Elsewhere the OS keeps its own arrangement, so nothing to do.
-pub fn rescue_windows_off(_blocked: Rect) -> usize {
-    0
+/// Rescue standard windows off the locally hidden shared panel using AX.
+pub fn rescue_windows_off(blocked: Rect) -> usize {
+    super::window_rescue_macos::rescue(blocked)
 }
 
 #[repr(C)]
@@ -544,7 +543,6 @@ pub fn cursor_pos() -> (i32, i32) {
     }
 }
 
-static RETURN_MOTION_AT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 
 pub fn set_forwarding_visuals(on: bool) {
     // CGDisplayHideCursor/ShowCursor are REFERENCE-COUNTED: two hides need two
@@ -560,7 +558,6 @@ pub fn set_forwarding_visuals(on: bool) {
             }
             CGAssociateMouseAndMouseCursorPosition(0);
         } else {
-            *RETURN_MOTION_AT.lock().unwrap() = Some(Instant::now());
             CGAssociateMouseAndMouseCursorPosition(1);
             if HIDDEN.swap(false, Ordering::SeqCst) {
                 CGDisplayShowCursor(CGMainDisplayID());
@@ -578,13 +575,7 @@ struct CaptureState {
     /// Modifier keycodes currently held (for flagsChanged press/release).
     mods_down: Vec<u16>,
     esc_downs: [Option<Instant>; 2],
-    /// While a dwell is configured: which portal edge the cursor is currently
-    /// resting against, and since when. Cleared when it leaves the edge.
-    edge_pending: Option<(Edge, Instant)>,
-    /// Where the local cursor is pinned while forwarding. Every swallowed
-    /// pointer event warps back here, so the local pointer is rock-solid even
-    /// if the OS re-associates the mouse under us.
-    park: CGPoint,
+
 }
 
 pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Result<()> {
@@ -599,8 +590,6 @@ pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Res
                 tap: std::ptr::null_mut(),
                 mods_down: Vec::new(),
                 esc_downs: [None, None],
-                edge_pending: None,
-                park: CGPoint { x: 0.0, y: 0.0 },
             }));
 
             let mask: u64 = [
@@ -678,29 +667,20 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
     let ctl = state.ctl.clone();
     let _motion = ctl.motion_gate.lock().unwrap();
     let forwarding = ctl.forwarding.load(Ordering::SeqCst);
+    if ctl.driven.load(Ordering::SeqCst) {
+        if etype==ET_KEY_DOWN {let vk=CGEventGetIntegerValueField(event,F_KEYCODE) as u16;check_panic(state,vk);}
+        return std::ptr::null_mut();
+    }
 
-    if !forwarding {
-        // Local mode: watch for portal edge hits on motion, touch nothing else.
-        if etype == ET_MOVED || etype == ET_LEFT_DRAG || etype == ET_RIGHT_DRAG || etype == ET_OTHER_DRAG {
-            if let Some(at) = RETURN_MOTION_AT.lock().unwrap().take() {
-                tracing::info!(gap_us = at.elapsed().as_micros() as u64, "cross timing: first native local motion");
-            }
-            let p = CGEventGetLocation(event);
-            let dx = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_X) as i32;
-            let dy = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_Y) as i32;
-            if maybe_enter_portal(state, p.x as i32, p.y as i32, dx, dy) {
-                // We just crossed into forwarding! Forward the initial momentum
-                // delta so motion glides seamlessly across the boundary.
-                let dx = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_X) as i32;
-                let dy = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_Y) as i32;
-                if dx != 0 || dy != 0 {
-                    let _ = state.tx.send(Captured::Input(InputEvent::MouseMove { dx, dy }));
-                }
-                return std::ptr::null_mut(); // swallow the transition event
-            }
-        }
+    if etype == ET_MOVED || etype == ET_LEFT_DRAG || etype == ET_RIGHT_DRAG || etype == ET_OTHER_DRAG {
+        if ctl.driven.load(Ordering::SeqCst) {return std::ptr::null_mut();}
+        let p=CGEventGetLocation(event);
+        let dx=CGEventGetIntegerValueField(event,F_MOUSE_DELTA_X) as i32;
+        let dy=CGEventGetIntegerValueField(event,F_MOUSE_DELTA_Y) as i32;
+        if super::route_motion(&ctl,&state.tx,(p.x as i32,p.y as i32),dx,dy) {return std::ptr::null_mut();}
         return event;
     }
+
 
     // Forwarding mode: translate, ship, swallow.
     let captured = match etype {
@@ -749,7 +729,7 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
                     // then alternated press/release across separate presses,
                     // and Windows (which toggles on key-down only) reacted to
                     // every OTHER press. Send a full pair per event instead.
-                    let _ = state.tx.send(Captured::Input(InputEvent::Key { key, pressed: true }));
+                    super::capture_input(&ctl,&state.tx,InputEvent::Key {key,pressed:true});
                     Some(InputEvent::Key { key, pressed: false })
                 } else {
                     let pressed = if let Some(i) = state.mods_down.iter().position(|&m| m == vk) {
@@ -769,55 +749,12 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
     };
 
     if let Some(ev) = captured {
-        let _ = state.tx.send(Captured::Input(ev));
+        super::capture_input(&ctl,&state.tx,ev);
     }
-    std::ptr::null_mut() // swallow
+    if forwarding {std::ptr::null_mut()}else{event} // swallow only remote control
 }
 
-unsafe fn maybe_enter_portal(state: &mut CaptureState, x: i32, y: i32, dx: i32, dy: i32) -> bool {
-    if Instant::now() < *state.ctl.cooldown_until.lock().unwrap() {
-        return false;
-    }
-    let bounds = state.ctl.bounds();
-    let portals = state.ctl.portals.read().unwrap().clone();
-    let dwell = state.ctl.edge_dwell_ms.load(Ordering::Relaxed);
-    for edge in portals {
-        if touches_edge(bounds, edge, x, y) && super::motion_towards_edge(edge, dx, dy) {
-            // Optional dwell: require the cursor to rest against this edge for
-            // `dwell` ms before crossing, so a quick brush doesn't jump screens.
-            if dwell > 0 {
-                match state.edge_pending {
-                    Some((e, since)) if e == edge => {
-                        if since.elapsed() < Duration::from_millis(dwell) {
-                            return false; // still charging up at this edge
-                        }
-                    }
-                    _ => {
-                        state.edge_pending = Some((edge, Instant::now()));
-                        return false; // just arrived at the edge; start the timer
-                    }
-                }
-            }
-            state.edge_pending = None;
-            // Flip into forwarding *now*, inside the callback: the very next
-            // event is already swallowed. Then tell the router.
-            // Park a little inside the edge we're leaving through, so the
-            // pinned pointer is off the boundary (won't re-trigger on return).
-            let park_x = (x as f64).clamp(bounds.x as f64 + 4.0, bounds.right() as f64 - 5.0);
-            let park_y = (y as f64).clamp(bounds.y as f64 + 4.0, bounds.bottom() as f64 - 5.0);
-            state.park = CGPoint { x: park_x, y: park_y };
-            state.ctl.forwarding.store(true, Ordering::SeqCst);
-            set_forwarding_visuals(true);
-            CGWarpMouseCursorPosition(state.park);
-            let ratio = ratio_on_edge(bounds, edge, x, y);
-            let _ = state.tx.send(Captured::EdgeHit { edge, ratio });
-            return true;
-        }
-    }
-    // Not touching any portal edge — reset the dwell timer.
-    state.edge_pending = None;
-    false
-}
+
 
 /// Triple-Esc within 900ms yanks input back to the host even if the remote
 /// side is wedged.
@@ -894,7 +831,7 @@ impl Injector {
         }
     }
 
-    pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) {
+    pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) -> bool {
         let pos = CGPoint { x: x as f64, y: y as f64 };
         self.last_pos = pos;
         let (ty, button) = if self.left_down {
@@ -908,11 +845,13 @@ impl Injector {
         };
         unsafe {
             let e = CGEventCreateMouseEvent(self.source, ty, pos, button);
-            // Preserve raw deltas for apps that read them (games, 3D tools).
+            if e.is_null() {return false;}
+            // Preserve deltas for apps that read them (games, 3D tools).
             CGEventSetIntegerValueField(e, F_MOUSE_DELTA_X, dx as i64);
             CGEventSetIntegerValueField(e, F_MOUSE_DELTA_Y, dy as i64);
             self.post(e);
         }
+        true
     }
 
     pub fn button(&mut self, b: MouseButton, pressed: bool) {

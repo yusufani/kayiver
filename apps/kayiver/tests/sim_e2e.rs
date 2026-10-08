@@ -288,8 +288,8 @@ fn diagonal_cross_lands_at_entry_height() {
     let (mut host, mut client) = desk("cross", 27200);
     give_panel_to_client(&mut host);
     let (x, y) = cross_diagonally(&mut host, &mut client);
-    assert_eq!(x, 2, "must land just inside the panel's LEFT edge, got x={x}");
-    assert!((735..=745).contains(&y), "must land at the entry height (~740), got y={y}");
+    assert_eq!(x, 5, "crossing must preserve the 5px remainder, got x={x}");
+    assert_eq!(y,760,"diagonal remainder must preserve the final height");
     assert!(
         host.state()["forwarding"].as_bool().unwrap(),
         "host must be forwarding after the handover"
@@ -333,8 +333,8 @@ fn primary_display_switch_rederives_peer_rect() {
     });
     give_panel_to_client(&mut host);
     let (x, y) = cross_diagonally(&mut host, &mut client);
-    assert_eq!(x, -636, "left inset of the MOVED panel, got x={x}");
-    assert!((1815..=1825).contains(&y), "entry height inside the moved panel (~1820), got y={y}");
+    assert_eq!(x, -633, "5px remainder on the moved panel, got x={x}");
+    assert!((1835..=1845).contains(&y), "entry height inside the moved panel (~1820), got y={y}");
 }
 
 /// Bug class #3: when the panel disappears from the host's own display list
@@ -372,11 +372,16 @@ fn vanished_panel_never_reanchors_to_same_size_screen() {
 /// (and its fullscreen game) with the notice overlay.
 #[test]
 fn owner_survives_host_restart() {
-    let (mut host, _client) = desk("owner", 27230);
+    let (mut host, mut client) = desk("owner", 27230);
     give_panel_to_client(&mut host);
     wait_until("owner persisted", Duration::from_secs(5), || {
         host.config_text().contains(r#"last_owner = "simwin""#)
     });
+    wait_until("local ownership change shows notice on the resolved panel", Duration::from_secs(5), || {
+        let state = host.state();
+        !state["blocked"].is_null() && state["passive_notice"] == state["blocked"]
+    });
+    assert!(client.state()["passive_notice"].is_null(), "active peer must not be covered");
     // Kill and restart the host on the SAME config dir — the deploy flow.
     let dir = host.cfg_dir.clone();
     drop(host);
@@ -387,7 +392,37 @@ fn owner_survives_host_restart() {
     wait_until("restored owner blocks the host's panel copy", Duration::from_secs(5), || {
         !host.state()["blocked"].is_null()
     });
-    assert!(host.config_text().contains(r#"last_owner = "simwin""#));
+    wait_until("restart restores notice before a new ownership request", Duration::from_secs(5), || {
+        let state = host.state();
+        state["passive_notice"] == state["blocked"] && !state["passive_notice"].is_null()
+    });
+    host.ctl(serde_json::json!({ "op": "hotkey" }));
+    wait_until("active host clears notice and passive peer shows its own geometry", Duration::from_secs(5), || {
+        let h = host.state();
+        let c = client.state();
+        h["blocked"].is_null() && h["passive_notice"].is_null()
+            && !c["blocked"].is_null() && c["passive_notice"] == c["blocked"]
+    });
+}
+
+/// Dial failures cannot clear a notice while the locally saved owner still
+/// makes this panel passive (including when no peer is reachable at startup).
+#[test]
+fn passive_notice_survives_failed_dials() {
+    let cfg = host_cfg(27620)
+        .replace("mode = \"host\"", "mode = \"client\"")
+        .replace("hotkey = true", "hotkey = true\nlast_owner = \"simwin\"")
+        .replace("os = \"windows\"", "os = \"windows\"\naddr = \"127.0.0.1:27622\"");
+    let mut host = Machine::spawn("host", &cfg, HOST_MONS, 27621, "passivenotice");
+    wait_until("offline owner restores the passive panel", Duration::from_secs(5), || {
+        !host.state()["blocked"].is_null()
+    });
+    // Cover multiple connection failures and the reconnect backoff.
+    std::thread::sleep(Duration::from_secs(6));
+    assert!(host.log_text().contains("connection failed"), "must exercise the failed dial path");
+    let state = host.state();
+    assert_eq!(state["passive_notice"], state["blocked"], "failed dial hid a still-passive panel");
+    assert!(!state["passive_notice"].is_null());
 }
 
 /// The headline of the symmetric engine: the machine that used to be a
@@ -403,7 +438,7 @@ fn client_can_take_control_of_the_host() {
     });
     host.injected(); // drain anything stale
 
-    assert!(client.ctl(serde_json::json!({ "op": "edge", "edge": "left", "ratio": 0.5 }))["ok"]
+    assert!(client.ctl(serde_json::json!({ "op": "warp", "x": 1500, "y": 2 }))["ok"]
         .as_bool()
         .unwrap());
     wait_until("client takes control", Duration::from_secs(5), || {
@@ -608,7 +643,7 @@ fn shared_panel_arms_the_edge_to_a_beyond_monitor_without_a_link() {
 }
 
 #[test]
-fn moving_a_local_monitor_refreshes_the_shared_crossing_boundary() {
+fn moving_a_local_monitor_keeps_real_shared_edge_segments_available() {
     let port = 27420;
     let mut host = Machine::spawn("host", &host_cfg(port),
         "0,0,2560,1440;2560,0,2560,1440;0,-982,1512,982", port + 1, "boundsrefresh");
@@ -617,13 +652,19 @@ fn moving_a_local_monitor_refreshes_the_shared_crossing_boundary() {
     wait_until("client connects", Duration::from_secs(15), || {
         host.log_text().contains("client connected: simwin")
     });
-    assert!(!host.state()["portals"].as_array().unwrap().iter().any(|e| e == "Top"));
-    // Moving the laptop down makes the shared panel reach the desktop's top.
+    // A separate laptop above the desktop must not hide the actual shared
+    // panel top edge. Only real edge segments govern a crossing.
+    wait_until("real panel top edge is available before laptop moves", Duration::from_secs(10), || {
+        host.state()["portals"].as_array().unwrap().iter().any(|e| e == "Top")
+    });
+    // Moving the laptop changes the desktop bounds, but not the panel seam.
     host.ctl(serde_json::json!({"op":"set_monitors", "monitors":[
         [0,0,2560,1440], [2560,0,2560,1440], [-1512,273,1512,982]
     ]}));
     wait_until("top crossing follows the new desktop bounds", Duration::from_secs(10), || {
-        host.state()["portals"].as_array().unwrap().iter().any(|e| e == "Top")
+        let state=host.state();
+        state["capture_bounds"][0] == -1512 && state["capture_bounds"][1] == 0 &&
+            state["portals"].as_array().unwrap().iter().any(|e| e == "Top")
     });
     client.injected();
     let ratio = (3800.0 + 1512.0) / (5120.0 + 1512.0);
@@ -673,7 +714,7 @@ fn crossing_to_the_windows_screen_above_survives_a_primary_switch() {
     });
     let cursor = host.state()["cursor"].clone();
     assert!(cursor[0].as_i64().is_some_and(|x| (3500..3700).contains(&x)), "must return at the same horizontal position: {cursor}");
-    assert!(cursor[1].as_i64().is_some_and(|y| (140..170).contains(&y)), "must keep movement remaining after the top seam: {cursor}");
+    assert!(cursor[1].as_i64().is_some_and(|y| (195..=200).contains(&y)), "must keep movement remaining after the top seam: {cursor}");
 }
 
 #[test]
@@ -709,8 +750,8 @@ fn stale_client_panel_pair_is_repaired_before_crossing_back() {
     });
     let cursor = host.state()["cursor"].clone();
     assert!(cursor[0].as_i64().is_some_and(|x| (3500..3700).contains(&x)), "wrong return x: {cursor}");
-    assert!(cursor[1].as_i64().is_some_and(|y| (240..270).contains(&y)), "must preserve the remaining movement onto C: {cursor}");
-    assert!(!client.state()["driven"].as_bool().unwrap());
+    assert!(cursor[1].as_i64().is_some_and(|y| (295..=300).contains(&y)), "must preserve the remaining movement onto C: {cursor}");
+    wait_until("peer has released driven input",Duration::from_secs(5),|| !client.state()["driven"].as_bool().unwrap());
 }
 
 fn primary_windows_desk(scenario: &str, port: u16) -> (Machine, Machine) {
@@ -789,12 +830,12 @@ fn windows_owned_panel_return_preserves_flick_and_both_motion_queues() {
     let start = client.state()["cursor"].clone();
     let sx = start[0].as_i64().unwrap();
     let sy = start[1].as_i64().unwrap();
-    client.ctl(serde_json::json!({"op":"delay_shared_return", "ms":250}));
+    host.ctl(serde_json::json!({"op":"delay_shared_return", "ms":250}));
     host.ctl(serde_json::json!({"op":"input_move", "dx":-100, "dy":100}));
     wait_until("D has exited before A hears back", Duration::from_secs(5), || !client.state()["driven"].as_bool().unwrap());
-    assert!(host.state()["forwarding"].as_bool().unwrap());
+    assert!(!host.state()["forwarding"].as_bool().unwrap(),"return must not wait for peer acknowledgement");
     host.ctl(serde_json::json!({"op":"input_move", "dx":-60, "dy":140}));
-    let expected_x = 2557 + sx - 100 - 60;
+    let expected_x = 2560 + sx - 100 - 60;
     let expected_y = sy + 100 + 140;
     wait_until("flick remainder and in-flight tail reach A", Duration::from_secs(5), || {
         let c = host.state()["cursor"].clone();
@@ -842,7 +883,7 @@ fn return_preserves_motion_still_in_the_native_capture_queue() {
         c[0].as_i64() == Some(before[0].as_i64().unwrap() - 60) &&
             c[1].as_i64() == Some(before[1].as_i64().unwrap() + 140)
     });
-    assert!(!client.state()["driven"].as_bool().unwrap());
+    wait_until("peer has released driven input",Duration::from_secs(5),|| !client.state()["driven"].as_bool().unwrap());
     std::thread::sleep(Duration::from_millis(100));
     let after = host.state()["cursor"].clone();
     assert_eq!(after[1].as_i64(), Some(before[1].as_i64().unwrap() + 140));
@@ -851,18 +892,18 @@ fn return_preserves_motion_still_in_the_native_capture_queue() {
 #[test]
 fn return_preserves_movement_already_in_flight() {
     let (mut host, mut client) = primary_windows_desk("carry", 27500);
-    client.ctl(serde_json::json!({"op":"delay_shared_return", "ms":250}));
+    host.ctl(serde_json::json!({"op":"delay_shared_return", "ms":250}));
     host.ctl(serde_json::json!({"op":"input_move", "dx":0, "dy":300}));
     wait_until("receiver has crossed before driver hears back", Duration::from_secs(5), || {
         !client.state()["driven"].as_bool().unwrap()
     });
-    assert!(host.state()["forwarding"].as_bool().unwrap());
+    assert!(!host.state()["forwarding"].as_bool().unwrap(),"return must not wait for peer acknowledgement");
     host.ctl(serde_json::json!({"op":"input_move", "dx":-60, "dy":140}));
     wait_until("both crossing remainder and in-flight movement reach C", Duration::from_secs(5), || {
         let c = host.state()["cursor"].clone();
         !host.state()["forwarding"].as_bool().unwrap() &&
             c[0].as_i64().is_some_and(|x| (3536..3545).contains(&x)) &&
-            c[1].as_i64().is_some_and(|y| (390..397).contains(&y))
+            c[1].as_i64().is_some_and(|y| (432..=442).contains(&y))
     });
 }
 
@@ -873,7 +914,7 @@ fn a_large_flick_crosses_the_panel_even_if_it_ends_beyond_it() {
     wait_until("a coalesced flick crosses the seam", Duration::from_secs(5), || {
         !host.state()["forwarding"].as_bool().unwrap()
     });
-    assert!(!client.state()["driven"].as_bool().unwrap());
+    wait_until("peer has released driven input",Duration::from_secs(5),|| !client.state()["driven"].as_bool().unwrap());
     assert_eq!(host.state()["cursor"][1], 1439, "remaining movement stops at C's real bottom wall");
 }
 
@@ -890,15 +931,16 @@ fn taskbar_seam_return_does_not_reenter_on_inward_motion() {
     });
     let c = host.state()["cursor"].clone();
     assert!(c[1].as_i64().unwrap() >= 2, "returned onto an armed edge: {c}");
-    // After the cooldown, native position can still report the seam
+    // Native position can still report the seam
     // while the RAW movement is inward.
     std::thread::sleep(Duration::from_millis(350));
     host.ctl(serde_json::json!({"op":"capture_motion", "x":c[0], "y":0, "dx":20, "dy":2}));
     std::thread::sleep(Duration::from_millis(100));
     assert!(!host.state()["forwarding"].as_bool().unwrap(), "inward return bounced back into Windows");
-    assert!(!client.state()["driven"].as_bool().unwrap());
-    // Deliberately pushing OUT again still crosses normally.
-    host.ctl(serde_json::json!({"op":"capture_motion", "x":c[0], "y":0, "dx":0, "dy":-2}));
+    wait_until("peer has released driven input",Duration::from_secs(5),|| !client.state()["driven"].as_bool().unwrap());
+    // Reach the seam with real ordered movement, then push outward. A stale
+    // native coordinate alone must not teleport a logical cursor 300px.
+    host.ctl(serde_json::json!({"op":"input_move", "dx":0, "dy":-400}));
     wait_until("outward motion can re-enter Windows", Duration::from_secs(5), || {
         client.state()["driven"].as_bool().unwrap()
     });
@@ -1001,7 +1043,7 @@ addr = "127.0.0.1:{port}"
         "should land on the panel, got ({x},{y})"
     );
     assert!(
-        (830..880).contains(&y),
+        (895..=900).contains(&y),
         "must carry only the movement AFTER the seam, got y={y}"
     );
 }
@@ -1288,10 +1330,10 @@ addr = "127.0.0.1:{port}"
     // C starts at x=1200 on the peer; the landing must clear it by a full,
     // UNSCALED EDGE_INSET — not the ~0px that dividing the inset by a 4x
     // scale leaves. The old code landed exactly AT x=1200.
-    assert!(x >= 1202, "must clear C's left edge by a real margin, got x={x} (was landing AT the boundary)");
+    assert_eq!(x,1200,"a seam crossing must not add an artificial inset");
     assert!((70..=80).contains(&y), "must keep the entry height (~75), got y={y}");
     assert!(
-        host.log_text().contains("shared geometry: right edge -> peer monitor"),
+        host.log_text().contains("cursor control changed"),
         "must have crossed via shared geometry, not a wall or a stale link:\n{}",
         host.log_text()
     );
@@ -1403,7 +1445,7 @@ addr = "127.0.0.1:{port}"
     wait_until("dip onto the panel brings control home", Duration::from_secs(5), || {
         !host.state()["forwarding"].as_bool().unwrap()
     });
-    assert!(host.log_text().contains("onto shared panel"), "must come home through the panel seam:\n{}", host.log_text());
+    assert!(host.log_text().contains("cursor control changed"), "must come home through the panel seam:\n{}", host.log_text());
     assert!(!client.state()["blocked"].is_null(), "still the host's panel afterwards");
 }
 
@@ -1472,7 +1514,7 @@ fn straight_push_onto_the_panel_hands_over() {
         landing.is_some()
     });
     let (x, y) = landing.unwrap();
-    assert_eq!(x, 2, "must land just inside the panel's LEFT edge, got x={x}");
+    assert_eq!(x, 40, "40px remainder must reach the panel, got x={x}");
     assert!((695..=705).contains(&y), "must keep the entry height (~700), got y={y}");
     assert!(
         host.state()["forwarding"].as_bool().unwrap(),
@@ -1585,10 +1627,70 @@ addr = "127.0.0.1:{port}"
     let (x, y) = landing.unwrap();
     // Entered through the panel's RIGHT side, so it must land just inside it —
     // near 3440, nowhere near the other desk's 2560.
-    assert!((3430..3440).contains(&x), "must land just inside the panel's RIGHT edge, got x={x}");
+    assert!((3395..3405).contains(&x), "must land just inside the panel's RIGHT edge, got x={x}");
     assert!((595..=605).contains(&y), "must keep the entry height (~600), got y={y}");
     assert!(
         host.state()["forwarding"].as_bool().unwrap(),
         "host must be forwarding after the handover"
     );
+}
+
+#[test]
+fn a_hundred_immediate_roundtrips_keep_order_and_release_the_receiver() {
+    let (mut host,mut client)=desk("rapid-contract",27900);
+    give_panel_to_client(&mut host);
+    host.ctl(serde_json::json!({"op":"warp","x":2550,"y":700}));
+    for _ in 0..100 {
+        host.ctl(serde_json::json!({"op":"input_move","dx":100,"dy":0}));
+        host.ctl(serde_json::json!({"op":"input_move","dx":-100,"dy":0}));
+    }
+    wait_until("all ordered handoffs reach the router",Duration::from_secs(10),|| host.log_text().matches("cursor control changed").count()>=200);
+    wait_until("ordered releases catch up",Duration::from_secs(10),|| !client.state()["driven"].as_bool().unwrap());
+    assert!(!host.state()["forwarding"].as_bool().unwrap());
+    assert_eq!(host.state()["cursor"],serde_json::json!([2550,700]));
+    assert!(host.log_text().matches("cursor control changed").count()>=200);
+}
+
+#[test]
+fn drag_and_modifier_holds_follow_both_handoffs() {
+    let (mut host,mut client)=desk("held-contract",27920);
+    give_panel_to_client(&mut host);
+    host.ctl(serde_json::json!({"op":"warp","x":2550,"y":700}));
+    host.ctl(serde_json::json!({"op":"input_key","key":0xe1,"pressed":true}));
+    host.ctl(serde_json::json!({"op":"input_button","pressed":true}));
+    host.ctl(serde_json::json!({"op":"input_move","dx":100,"dy":0}));
+    wait_until("held input reaches peer",Duration::from_secs(5),||client.state()["driven"].as_bool().unwrap());
+    let remote=client.injected();
+    assert!(remote.iter().any(|e|e["kind"]=="key" && e["key"]==0xe1 && e["pressed"]==true),"{remote:?}");
+    assert!(remote.iter().any(|e|e["kind"]=="button" && e["pressed"]==true),"{remote:?}");
+    host.injected();
+    host.ctl(serde_json::json!({"op":"input_move","dx":-100,"dy":0}));
+    wait_until("peer releases held state",Duration::from_secs(5),||!client.state()["driven"].as_bool().unwrap());
+    let local=host.injected();
+    assert!(local.iter().any(|e|e["kind"]=="key" && e["pressed"]==true),"{local:?}");
+    assert!(local.iter().any(|e|e["kind"]=="button" && e["pressed"]==true),"{local:?}");
+    assert!(client.injected().iter().any(|e|e["kind"]=="release_all"));
+}
+
+#[test]
+fn injection_failure_restores_a_visible_local_cursor() {
+    let (mut host,mut client)=desk("injection-contract",27940);
+    give_panel_to_client(&mut host);
+    client.ctl(serde_json::json!({"op":"reject_injection","enabled":true}));
+    host.ctl(serde_json::json!({"op":"warp","x":2550,"y":700}));
+    host.ctl(serde_json::json!({"op":"input_move","dx":100,"dy":0}));
+    wait_until("failed injection returns home",Duration::from_secs(5),||host.log_text().contains("cursor injection failed"));
+    assert!(!host.state()["forwarding"].as_bool().unwrap());
+    assert!(!client.state()["driven"].as_bool().unwrap());
+    assert!(host.state()["cursor"][0].as_i64().unwrap()<2560);
+}
+
+#[test]
+fn programmatic_warp_cannot_start_a_crossing() {
+    let (mut host,mut client)=desk("warp-contract",27960);
+    give_panel_to_client(&mut host);
+    host.ctl(serde_json::json!({"op":"programmatic_move","x":3000,"y":700}));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!host.state()["forwarding"].as_bool().unwrap());
+    assert!(!client.state()["driven"].as_bool().unwrap());
 }

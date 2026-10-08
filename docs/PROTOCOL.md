@@ -1,79 +1,48 @@
-# Wire protocol (version 14)
+# Wire protocol (version 16)
 
-Transport: TCP, `TCP_NODELAY`, default port **24817**. All frames are
-`u16 big-endian length` + payload, max 65535 bytes. Payloads are
-[postcard](https://docs.rs/postcard)-serialized Rust enums (varint-based,
-so a mouse move is ~6 bytes).
+Version 16 ships with 0.3.0. Both peers must be upgraded together; older protocol
+versions are rejected during Hello/Welcome. Downgrades must also replace both
+peers together. Pairing keys/configuration remain unchanged.
 
-## Connection phases
+Transport is TCP with TCP_NODELAY, port 24817 by default. Frames have a u16
+big-endian length followed by a postcard-serialized payload, maximum 65535 bytes.
+Intro selects a known pairing identity, then Noise NNpsk0 authenticates/encrypts
+all session messages. Nonces follow one ordered reader/writer per connection.
 
-1. **Intro** (plaintext, client → host, one frame):
-   `Intro::Session { name }` — lets the host select the right PSK.
-   `Intro::Pair` — only valid against `kayiver pair`, rejected by a running host.
-2. **Handshake**: Noise `NNpsk0_25519_ChaChaPoly_BLAKE2s`, client initiates.
-   Two frames (`-> psk, e` / `<- e, ee`). Both sides must hold the PSK from
-   pairing; a mismatch fails AEAD verification and the connection drops.
-3. **Session**: every frame is one encrypted `Msg`. Nonces are the frame
-   counters (independent per direction).
+## Navigation messages
 
-## Messages
+| Message | Purpose |
+| --- | --- |
+| MonitorIdentity | Stable monitor ID/native rectangle snapshot from each peer. |
+| Navigation | Whole canonical topology, including revision, surfaces, edge seams. |
+| CursorFrame | Source stamp, destination surface, absolute x/y, held HID keys/buttons. |
+| ControlledInput | Source stamp plus a key, button, or wheel event. |
+| CursorRelease | Ordered release at the processed movement boundary. |
+| NavigationRejected | Stamp of an invalid target/layout, competing controller, or failed injection; source recovers locally. |
 
-| Msg | Direction | Purpose |
-|---|---|---|
-| `Hello { version, name, os, screen: Rect, monitors: [Rect] }` | C → H | First encrypted message. Version mismatch = disconnect. |
-| `Welcome { version, name, portal_edges: [Edge] }` | H → C | Which of the client's own desktop edges must report `CursorLeft`. |
-| `Enter { edge, ratio }` | H → C | Cursor enters client's screen through `edge` at `ratio` (0..1 along that edge). Client warps its cursor there and starts applying input. |
-| `EnterAt { x, y }` | H → C | Warp to an absolute point and take input (crossing onto the shared panel). |
-| `Leave` | H → C | Stop applying input; release everything held. |
-| `Input(InputEvent)` | H → C | See below. |
-| `CursorLeft { edge, ratio }` | C → H | Client cursor pushed through a portal edge; client stops applying input immediately. |
-| `Monitors { screen, monitors }` | C → H | The client's desktop geometry changed (display attached/detached, primary switched). |
-| `SharedBlock { rect }` | H → C | Treat `rect` as the shared panel showing the OTHER machine: don't rest the cursor on it. `None` clears it. No display is ever detached. |
-| `SharedCross { fx, fy, dx, dy }` | C → H | First seam hit (relative 0..1), plus unconsumed motion in the sender's pixels. Receiver scales that remainder to its own panel. |
-| `SharedCarry { dx, dy }` | C → H | Motion already in flight before the driver received SharedCross. Accepted while the driver is local; Leave ends the sender's carry phase. |
-| `SharedRequest { owner }` | both | Please make `owner` the machine the panel shows (`"toggle"` flips). Lets the hotkey, tray, editor button and `kayiver monitor` work on EITHER machine — the sender asks, the router arbitrates. |
-| `StateSync { state, shared_configured, owner }` | H → C | The host's whole editor view as JSON, so both machines draw the same map. |
-| `UseAddr { addr }` | H → C | Reconnect to me here (the user picked Wi-Fi vs cable in the editor). |
-| `Clipboard { text }` | both | The sender's clipboard changed; mirror it. Echo-guarded on both ends. |
-| `OpenUrl { url }` | both | Open this URL — a link was dragged across the boundary. |
-| `Ping(u64)` / `Pong(u64)` | H → C / C → H | Liveness + RTT. Cadence is variable and NOT a compatibility surface: 1 s idle, up to 125 Hz while input flows (Wi-Fi radio keepalive). Timeouts 15–20 s. |
-| `Bye` | both | Graceful close. |
+A stamp contains session, generation, sequence, and topology revision as u64.
+Sequence is shared across movement and input. Generation changes when a driver
+is reset or its topology changes. Each receiver rejects duplicates and older
+generations/sequences, and the router fences messages from superseded transport
+connections. Normal return has no acknowledgement round-trip dependency.
 
-Directions above describe today's roles, not a protocol constraint: the session
-is full duplex and the roles are set at pairing time, not negotiated.
+The sender solves geometry. The receiver validates its destination surface and
+revision, injects absolute coordinates, and never solves an independent boundary.
+Physical OS positions are rounded/clamped only at the adapter boundary. Logical
+coordinates remain fractional. Held state is transferred on entry and released
+on exit/disconnection. HID keyboard-page usages preserve platform key mappings;
+wheel units remain the existing 1/120-notch convention.
 
-## InputEvent
+## Other messages
 
-| Event | Fields | Notes |
-|---|---|---|
-| `MouseMove` | `dx, dy: i32` | Relative, raw OS deltas. Receiver accumulates and clamps to real monitor rectangles, preserving shared-seam remainder. |
-| `MouseButton` | `button, pressed` | `Left \| Right \| Middle \| X1 \| X2` |
-| `Wheel` | `dx, dy: i32` | 1/120-notch units (Windows convention). Positive = up / right. |
-| `Key` | `key: u16, pressed` | **USB HID usage ID, keyboard page (0x07)** — e.g. `A` = 0x04, `LeftShift` = 0xE1. Platform backends translate to native codes. Auto-repeat is transmitted as repeated presses. |
+Hello/Welcome, Ping/Pong, Monitors, StateSync, SharedRequest/SharedBlock, Arrange,
+UseAddr, Clipboard/OpenUrl, and QuickShare offer/accept/chunk/status retain their
+existing responsibilities. The arbiter publishes shared-panel ownership and the
+canonical editor view. Shared clipboard remains echo guarded. File chunks remain
+at most 32 KiB. Recovery Leave/Input releases are serialized in the same stream.
 
-Coordinates & ratios: each machine's `Rect` is the bounding box of all its
-monitors, top-left origin (macOS coordinates are already top-left in the CG
-global space; nothing else is normalized). `ratio` positions map
-proportionally between machines of different sizes.
-
-## Pairing exchange (plaintext TCP, one-shot)
-
-After `Intro::Pair`:
-
-| # | Frame | Notes |
-|---|---|---|
-| 1 | SPAKE2 message (both directions) | group Ed25519, identity `kayiver-kvm-pairing-v1`, password = 6-digit PIN |
-| 2 | `SHA256(key ‖ role-tag)` (both) | key confirmation, direction-tagged (display/input) to kill reflection |
-| 3 | `PairInfo { name, port }` (both) | exchanged after confirmation |
-
-Session PSK = `SHA256(key ‖ "kayiver-session-psk-v1")`, stored base64 in the
-config of both machines.
-
-## Versioning
-
-Release 0.2.2 uses protocol 14. Update both machines together; older wire
-versions are rejected before input begins. SharedCarry is appended to the enum.
-
-`PROTOCOL_VERSION` is checked in `Hello`/`Welcome`. Incompatible changes
-bump it; the enums are postcard-encoded by variant index, so **append new
-variants at the end** and never reorder existing ones within a version.
+Legacy Enter/EnterAt, CursorLeft/Carry and SharedCross/Carry enum slots remain
+reserved to avoid shifting serialization ordinals; they do not run the monitor
+transition algorithm in version 16. Legacy relative MouseMove is not applied by
+the monitor receiver. Absolute desktop movement is the current contract;
+raw-input games require separate platform acceptance testing.

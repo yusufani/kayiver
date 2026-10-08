@@ -70,7 +70,7 @@ impl Injector {
     pub fn new() -> Result<Self> {
         bail!("input injection is not implemented on this platform")
     }
-    pub fn mouse_to(&mut self, _x: i32, _y: i32, _dx: i32, _dy: i32) {}
+    pub fn mouse_to(&mut self, _x: i32, _y: i32, _dx: i32, _dy: i32) -> bool {false}
     pub fn button(&mut self, _b: MouseButton, _pressed: bool) {}
     pub fn wheel(&mut self, _dx: i32, _dy: i32) {}
     pub fn key(&mut self, _hid: u16, _pressed: bool) {}

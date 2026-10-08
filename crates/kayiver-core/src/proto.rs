@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 15;
+pub const PROTOCOL_VERSION: u16 = 16;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -160,6 +160,12 @@ pub enum Msg {
     SharedCarry { dx: i32, dy: i32 },
     /// Portal exit with movement remaining after reaching the desktop edge.
     CursorLeftCarry { edge: Edge, ratio: f32, dx: i32, dy: i32 },
+    Navigation { topology: crate::motion::Topology },
+    CursorFrame { stamp: crate::motion::Stamp, surface: String, x: i32, y: i32, keys:Vec<u16>, buttons:Vec<MouseButton> },
+    CursorRelease { stamp: crate::motion::Stamp },
+    ControlledInput {stamp:crate::motion::Stamp,event:InputEvent},
+    NavigationRejected {stamp:crate::motion::Stamp, reason:String},
+    MonitorIdentity { monitors: Vec<(String, Rect)> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,6 +237,12 @@ mod tests {
             Msg::CursorLeft { edge: Edge::Left, ratio: 0.42 },
             Msg::CursorLeftCarry { edge: Edge::Left, ratio: 0.42, dx: -90, dy: 12 },
             Msg::SharedCarry { dx: -60, dy: 140 },
+            Msg::Navigation {topology:crate::motion::Topology::default()},
+            Msg::CursorFrame {stamp:crate::motion::Stamp {session:8,generation:3,sequence:99,revision:6},surface:"windows:stable-monitor".into(),x:-400,y:1080,keys:vec![0xe0],buttons:vec![MouseButton::Left]},
+            Msg::CursorRelease {stamp:crate::motion::Stamp::default()},
+            Msg::ControlledInput {stamp:crate::motion::Stamp::default(),event:InputEvent::Key{key:0x04,pressed:false}},
+            Msg::NavigationRejected {stamp:crate::motion::Stamp::default(),reason:"display gone".into()},
+            Msg::MonitorIdentity {monitors:vec![("stable-id".into(),Rect{x:-100,y:0,w:100,h:100})]},
         ];
         for m in msgs {
             let bytes = m.encode().unwrap();

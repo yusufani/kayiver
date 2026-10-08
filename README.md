@@ -21,17 +21,13 @@ cursor.
   and back to the direct cable, settling at ~1&nbsp;ms.</sub>
 </p>
 
-- **Native feel, no lag** — a single ~2.5 MB Rust binary per machine, raw OS
-  input APIs (CGEventTap / low-level hooks), relative mouse deltas over
-  TCP+`TCP_NODELAY` on your LAN. No Electron, no runtime, no daemon zoo.
-  Measured macOS↔Windows over Wi-Fi: **~5 ms round-trip median (~2.6 ms
-  one-way)**. On a quiet Wi-Fi link expect occasional spikes from adapter
-  power-saving — wired Ethernet or disabling the Wi-Fi adapter's power
-  management flattens them.
-- **No cursor lock-ups** — the machine that owns the physical mouse flips
-  into forwarding mode *inside the OS input callback*, so not one event
-  leaks or double-applies during a crossing. A triple-tap of `Esc` always
-  yanks the cursor home, even if the remote machine hangs.
+- **One movement engine** — ordered movement samples cross actual monitor
+  edge segments; remaining distance continues on the destination, including
+  an immediate reversal. Floating-point position is rounded only when applied
+  to the operating system. Protocol 16 requires both desktops to run 0.3.0.
+- **Recoverable control** — triple-tap `Esc` returns control to a visible local
+  screen. Disconnects and failed cursor injection release held input and
+  recover locally. Old-session and duplicate movement frames are rejected.
 - **VPN-proof** — connections try a static address before mDNS discovery,
   so a corporate VPN that blocks multicast doesn't break anything.
 - **Secure by default** — one-time PIN pairing (SPAKE2), then every session
@@ -43,11 +39,10 @@ cursor.
   over its copy so it can never strand itself on a screen nobody can see,
   crossings through the panel resolve by real monitor geometry, and the
   ownership survives restarts.
-- **Fullscreen-game safe** — raw-input games receive true relative mouse
-  deltas while the visible cursor is pinned with exact warps (immune to
-  pointer acceleration); lock-screen/UAC desktop switches are detected and
-  healed, and a game's `ClipCursor` shows up in the log instead of as a
-  mystery.
+- **Desktop input** — the source supplies accelerated desktop movement and
+  the destination applies the calculated cursor position. Raw-input games,
+  secure desktops and physical acceleration feel need platform acceptance
+  checks; 0.3.0 does not claim universal game compatibility.
 - **Real apps** — a menu-bar app with a native editor window on macOS
   (`packaging/macos/build-app.sh --install` → `Kayiver.app`), tray icon +
   embedded-icon exe on Windows, and an Android companion
@@ -71,6 +66,13 @@ Grab the latest build from **[Releases](https://github.com/yusufani/kayiver/rele
   self-signed, not notarized).
 - **Windows 10/11 (x64):** `kayiver-windows-x64.exe` — put it anywhere and run
   it; if SmartScreen appears, choose "More info → Run anyway".
+
+The 0.3.0 engine rewrite is available as a **prerelease** on the releases
+page. Upgrade both computers together: protocol 16 does not connect to older
+versions. Keep both previous binaries and configuration backups for a paired
+rollback. The simulated geometry, control and failure suites are automated;
+physical mouse acceleration and held-input handoff still need hands-on
+acceptance. See [testing](docs/TESTING.md).
 
 Or build from source:
 

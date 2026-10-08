@@ -13,25 +13,17 @@
 //! latency trick: no round trip to the router before events are swallowed,
 //! so nothing ever double-applies locally and remotely.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, RwLock};
+#[cfg(all(target_os = "macos",not(feature = "sim")))]
+use std::time::Duration;
 
-use kayiver_core::layout::{entry_on_rect, point_in, skip_out, Edge};
+use kayiver_core::layout::{point_in, Edge};
+#[cfg(test)]
+use kayiver_core::layout::entry_on_rect;
 use kayiver_core::proto::Rect;
 
 use crate::engine::Captured;
-
-/// A cursor parked on a seam must only cross when pushed OUT of the desk.
-/// macOS can report the previous edge position briefly after a return warp.
-pub fn motion_towards_edge(edge: Edge, dx: i32, dy: i32) -> bool {
-    match edge {
-        Edge::Left => dx < 0,
-        Edge::Right => dx > 0,
-        Edge::Top => dy < 0,
-        Edge::Bottom => dy > 0,
-    }
-}
 
 /// Match the native cursor: desktop-union gaps are walls, not screens.
 pub fn clamp_monitor_move(monitors: &[Rect], from: (i32, i32), to: (i32, i32)) -> (i32, i32) {
@@ -46,31 +38,24 @@ pub fn clamp_monitor_move(monitors: &[Rect], from: (i32, i32), to: (i32, i32)) -
     }).map(clamp).unwrap_or(from)
 }
 
+pub mod navigation;
+mod motion_trace;
+
 pub struct CaptureCtl {
+    pub navigation: Mutex<navigation::Navigation>,
     /// Serialize native capture with a return warp. A callback that already
     /// read forwarding must finish before the router restores the local cursor.
     pub motion_gate: Mutex<()>,
     /// True while input is being forwarded to a remote machine.
     pub forwarding: AtomicBool,
-    /// True while a PEER is driving this machine. Local hooks deliberately keep
-    /// passing input through (a dying session must never leave this desk with a
-    /// frozen mouse), so this is what stops the cursor guard and the portal
-    /// edges from also reacting and starting a control fight.
+    pub tablet_forwarding: AtomicBool,
+    /// Compatibility projection of Navigation::Driven for native suppression.
     pub driven: AtomicBool,
-    /// Edges that currently lead to a *connected* peer. The capture thread
-    /// only triggers on these, so the cursor never disappears into a dead
-    /// screen whose machine is offline.
+    /// Derived status/prewarming data, never a crossing decision source.
     pub portals: RwLock<Vec<Edge>>,
-    /// Portal triggers are ignored until this instant (set when the cursor
-    /// returns, to stop instant re-triggering on the same edge).
-    pub cooldown_until: Mutex<Instant>,
     /// When set, Cmd/Ctrl+Alt+M is swallowed and reported as
     /// `Captured::SharedHotkey` (shared-monitor ownership toggle).
     pub shared_hotkey: AtomicBool,
-    /// Milliseconds the cursor must rest against a portal edge before it
-    /// crosses. 0 = cross instantly (the default). A dwell guards against
-    /// accidental crossings from brushing the edge.
-    pub edge_dwell_ms: AtomicU64,
     /// Shared monitor this machine must NOT show right now: the cursor skips
     /// over this rect (never rests on it) so it can't sit on a screen that's
     /// physically displaying the other machine. None = no block.
@@ -95,14 +80,15 @@ impl CaptureCtl {
     }
 
     pub fn new(bounds: Rect) -> Self {
+        motion_trace::initialize();
         CaptureCtl {
+            navigation: Mutex::new(navigation::Navigation::default()),
             motion_gate: Mutex::new(()),
             forwarding: AtomicBool::new(false),
+            tablet_forwarding: AtomicBool::new(false),
             driven: AtomicBool::new(false),
             portals: RwLock::new(Vec::new()),
-            cooldown_until: Mutex::new(Instant::now()),
             shared_hotkey: AtomicBool::new(false),
-            edge_dwell_ms: AtomicU64::new(0),
             blocked: RwLock::new(None),
             tablet_edge: RwLock::new(None),
             mac_shortcuts: AtomicBool::new(true),
@@ -112,95 +98,85 @@ impl CaptureCtl {
     }
 }
 
-/// Watch the local cursor and, when it moves onto the "blocked" shared-monitor
-/// rect (which is showing the peer), hand control to the peer: emit
-/// `SharedEnter` with the relative hit position and park the cursor just off the
-/// panel so it doesn't sit on an invisible screen. Cheap busy-poll on its own
-/// thread; a no-op while nothing is blocked or while input is already
-/// forwarding. `tx` is the same channel the capture thread feeds the router.
-pub fn start_cursor_guard(ctl: Arc<CaptureCtl>, tx: tokio::sync::mpsc::UnboundedSender<Captured>) {
-    std::thread::Builder::new()
-        .name("kayiver-cursor-guard".into())
-        .spawn(move || {
-            let mut prev = cursor_pos();
-            let mut inside = false;
-            let mut last_block: Option<Rect> = None;
-            loop {
-                std::thread::sleep(Duration::from_millis(8));
-                if ctl.forwarding.load(Ordering::SeqCst) || ctl.driven.load(Ordering::SeqCst) {
-                    prev = cursor_pos();
-                    // Treat wherever the cursor is when we resume as "already
-                    // inside": only a real outside->inside move hands over.
-                    // While driven, the cursor is the PEER's proxy, and the
-                    // peer routinely reclaims the panel (hotkey / physical
-                    // switch) with that proxy still resting on it — the
-                    // SharedBlock lands, then the Leave clears `driven`, and
-                    // reading that as a fresh entry bounced control straight
-                    // back to a peer nobody is sitting at, leaving the peer
-                    // "driven" with its own guard disabled (stuck desk).
-                    inside = true;
-                    continue;
-                }
-                let Some(b) = *ctl.blocked.read().unwrap() else {
-                    prev = cursor_pos();
-                    inside = false;
-                    last_block = None;
-                    continue;
-                };
-                let (x, y) = cursor_pos();
-                if last_block != Some(b) {
-                    // The block just appeared (or moved). Wherever the cursor
-                    // is right now, it did not MOVE there: only a genuine
-                    // outside->inside motion is a request to cross. A cursor
-                    // that happened to rest on the panel when the peer took
-                    // it must stay put (parking is attempted elsewhere, and
-                    // is best-effort — a failed warp used to end here as a
-                    // handover to a desk nobody was sitting at).
-                    last_block = Some(b);
-                    inside = point_in(b, x, y);
-                    prev = (x, y);
-                    continue;
-                }
-                if point_in(b, x, y) {
-                    if !inside {
-                        inside = true;
-                        let (dx, dy) = (x - prev.0, y - prev.1);
-                        // Hand over at the edge we ENTERED through, at the point
-                        // where the prev→cur segment actually crosses the panel
-                        // boundary — not wherever the 8 ms poll caught the cursor
-                        // inside, and not a guess from the dominant travel axis
-                        // (which reads a slightly diagonal left-entry as a TOP
-                        // entry and dumps the cursor in the peer's top corner).
-                        let (fx, fy) = entry_on_rect(b, prev, (x, y));
-                        // Park just outside the edge we came in through so the
-                        // local cursor isn't left sitting on the hidden panel.
-                        let park = skip_out(b, x, y, -dx, -dy);
-                        let _motion = ctl.motion_gate.lock().unwrap();
-                        if ctl.forwarding.load(Ordering::SeqCst) || ctl.driven.load(Ordering::SeqCst)
-                            || *ctl.blocked.read().unwrap() != Some(b) {
-                            continue;
-                        }
-                        // The Mac callback must not ship input before the
-                        // SharedEnter reaches the same queue. Freeze here, not
-                        // one async router turn later. Detached Mac motion does
-                        // not need a return warp to an old callback park.
-                        #[cfg(any(target_os = "macos", feature = "sim"))]
-                        {
-                            ctl.forwarding.store(true, Ordering::SeqCst);
-                            set_forwarding_visuals(true);
-                        }
-                        #[cfg(not(all(target_os = "macos", not(feature = "sim"))))]
-                        warp_cursor(park.0, park.1);
-                        let _ = tx.send(Captured::SharedEnter { fx, fy });
-                        prev = park;
-                    }
-                } else {
-                    inside = false;
-                    prev = (x, y);
-                }
+pub fn capture_input(ctl:&CaptureCtl,tx:&tokio::sync::mpsc::UnboundedSender<Captured>,event:kayiver_core::proto::InputEvent) {
+    let (stamp,target)=ctl.navigation.lock().unwrap().input(event);
+    let _=tx.send(Captured::OrderedInput {stamp,target,event});
+}
+
+// Source-side native state must follow the handoff in the capture callback,
+// before a following physical button/key release can overtake it in the router.
+thread_local! {static SOURCE_HOLDS: std::cell::RefCell<Option<Injector>> = const {std::cell::RefCell::new(None)};}
+fn handoff_source_holds(frame:&navigation::Frame, returning:bool) -> bool {
+    SOURCE_HOLDS.with(|slot| {
+        let mut slot=slot.borrow_mut();
+        if slot.is_none() {match Injector::new() {Ok(i)=>*slot=Some(i),Err(_)=>return false}}
+        let injector=slot.as_mut().unwrap();
+        injector.release_all();
+        if returning {
+            if !injector.mouse_to(frame.x,frame.y,0,0) {return false;}
+            for &key in &frame.keys {injector.key(key,true);}
+            for &button in &frame.buttons {injector.button(button,true);}
+        } else {
+            let (x,y)=cursor_pos();if !injector.mouse_to(x,y,0,0) {return false;}
+            for &key in &frame.keys {injector.key(key,false);}
+            for &button in &frame.buttons {injector.button(button,false);}
+        }
+        true
+    })
+}
+
+/// One synchronous decision for all native backends. Call while holding motion_gate.
+/// Native warps/association happen after the navigation lock is released.
+pub fn route_motion(ctl: &CaptureCtl, tx: &tokio::sync::mpsc::UnboundedSender<Captured>, native:(i32,i32), dx:i32, dy:i32) -> bool {
+    if ctl.tablet_forwarding.load(Ordering::SeqCst) {
+        let _=tx.send(Captured::Input(kayiver_core::proto::InputEvent::MouseMove {dx,dy}));
+        return true;
+    }
+    let frame=ctl.navigation.lock().unwrap().sample(native,dx,dy);
+    let Some(frame)=frame else {
+        if matches!(ctl.navigation.lock().unwrap().control,navigation::Control::Recovering) {
+            ctl.forwarding.store(false,Ordering::SeqCst);set_forwarding_visuals(false);
+            let _=tx.send(Captured::Panic);return true;
+        }
+        return false;
+    };
+    let local=frame.machine==ctl.navigation.lock().unwrap().machine;
+    // Android remains a peripheral adapter. Its edge is considered only after
+    // the shared geometry engine has established a real local outer wall.
+    if local && frame.wall {
+        let edge=*ctl.tablet_edge.read().unwrap();let b=ctl.bounds();
+        let hit=match edge {
+            Some(Edge::Left)=>dx<0 && frame.x==b.x,
+            Some(Edge::Right)=>dx>0 && frame.x==b.right()-1,
+            Some(Edge::Top)=>dy<0 && frame.y==b.y,
+            Some(Edge::Bottom)=>dy>0 && frame.y==b.bottom()-1,
+            None=>false,
+        };
+        if hit {
+            let edge=edge.unwrap();
+            let ratio=match edge {Edge::Left|Edge::Right=>(frame.y-b.y) as f32/b.h.max(1) as f32,_=>(frame.x-b.x) as f32/b.w.max(1) as f32};
+            if crate::android::is_connected() {
+                ctl.tablet_forwarding.store(true,Ordering::SeqCst);
+                ctl.forwarding.store(true,Ordering::SeqCst);set_forwarding_visuals(true);
             }
-        })
-        .ok();
+            let _=tx.send(Captured::EdgeHit {edge,ratio});
+            return true;
+        }
+    }
+    let was=ctl.forwarding.swap(!local,Ordering::SeqCst);
+    if was != !local {
+        set_forwarding_visuals(!local);
+        if (!frame.keys.is_empty() || !frame.buttons.is_empty() || local) && !handoff_source_holds(&frame,local) {
+            ctl.navigation.lock().unwrap().control=navigation::Control::Recovering;
+            let _=tx.send(Captured::Panic);return true;
+        }
+    }
+    if local {warp_cursor_settled(frame.x,frame.y);}
+    if tx.send(Captured::Motion(frame)).is_err() {
+        ctl.navigation.lock().unwrap().drive(None);
+        ctl.forwarding.store(false,Ordering::SeqCst);set_forwarding_visuals(false);
+    }
+    true
 }
 
 // The `sim` feature swaps the whole OS backend for a scriptable virtual
@@ -214,6 +190,8 @@ pub use sim::*;
 
 #[cfg(all(target_os = "macos", not(feature = "sim")))]
 mod macos;
+#[cfg(all(target_os = "macos", not(feature = "sim")))]
+mod window_rescue_macos;
 #[cfg(all(target_os = "macos", not(feature = "sim")))]
 pub use macos::*;
 
@@ -236,12 +214,19 @@ pub mod quickshare_windows;
 
 /// A full-screen notice drawn on the shared monitor while it's showing the
 /// OTHER machine (this machine's copy is passive). `show(None)` clears it.
-/// Implemented on Windows; a no-op elsewhere for now.
+/// Implemented on macOS and Windows.
+#[cfg(all(target_os = "macos", not(feature = "sim")))]
+pub(crate) mod passive_macos;
+
 pub mod passive {
     use kayiver_core::proto::Rect;
     pub fn show(_state: Option<(Rect, String)>) {
         #[cfg(all(target_os = "windows", not(feature = "sim")))]
         super::passive_windows::show(_state);
+        #[cfg(all(target_os = "macos", not(feature = "sim")))]
+        super::passive_macos::show(_state);
+        #[cfg(feature = "sim")]
+        super::sim::show_passive_notice(_state);
     }
 }
 
@@ -310,7 +295,7 @@ mod tests {
 }
 
 /// Backends without persistent identities use conservative geometry matching.
-#[cfg(any(feature = "sim", not(target_os = "macos")))]
+#[cfg(any(feature = "sim", not(any(target_os = "macos", target_os = "windows"))))]
 pub fn identified_monitors() -> Vec<(Option<String>, Rect)> {
     monitors().into_iter().map(|r| (None, r)).collect()
 }

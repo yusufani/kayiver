@@ -41,6 +41,8 @@ struct SimWorld {
     clipboard: Option<String>,
     clip_seq: u64,
     handoff_delay_ms: u64,
+    passive_notice: Option<Rect>,
+    reject_injection: bool,
 }
 
 static WORLD: OnceLock<Mutex<SimWorld>> = OnceLock::new();
@@ -60,8 +62,14 @@ fn world() -> &'static Mutex<SimWorld> {
             clipboard: None,
             clip_seq: 0,
             handoff_delay_ms: 0,
+            passive_notice: None,
+            reject_injection: false,
         })
     })
+}
+
+pub fn show_passive_notice(state: Option<(Rect, String)>) {
+    world().lock().unwrap().passive_notice = state.map(|(rect, _)| rect);
 }
 
 fn parse_monitors(s: &str) -> Vec<Rect> {
@@ -179,9 +187,11 @@ impl Injector {
     pub fn new() -> Result<Self> {
         Ok(Injector)
     }
-    pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) {
+    pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) -> bool {
+        if world().lock().unwrap().reject_injection {return false;}
         world().lock().unwrap().cursor = (x, y);
         record("mouse_to", serde_json::json!({ "x": x, "y": y, "dx": dx, "dy": dy }));
+        true
     }
     pub fn button(&mut self, b: MouseButton, pressed: bool) {
         record("button", serde_json::json!({ "button": format!("{b:?}"), "pressed": pressed }));
@@ -281,7 +291,12 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
                 cmd["x"].as_i64().unwrap_or(0) as i32,
                 cmd["y"].as_i64().unwrap_or(0) as i32,
             );
-            world().lock().unwrap().cursor = (x, y);
+            let previous=world().lock().unwrap().cursor;
+            world().lock().unwrap().cursor=(x,y);
+            if let Some((ctl,tx))=capture_handles() {
+                let _gate=ctl.motion_gate.lock().unwrap();
+                super::route_motion(&ctl,&tx,(x,y),x-previous.0,y-previous.1);
+            }
             ok
         }
         "arrange" => {
@@ -331,21 +346,16 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             ok
         }
         "edge" => {
-            // Faithful to the real capture layer: only armed portal edges
-            // fire, and forwarding flips synchronously before the router
-            // hears about it.
-            let Some(edge) = cmd["edge"].as_str().and_then(parse_edge) else {
-                return serde_json::json!({ "ok": false, "error": "bad edge" });
-            };
-            let ratio = cmd["ratio"].as_f64().unwrap_or(0.5) as f32;
-            let Some((ctl, tx)) = capture_handles() else {
-                return serde_json::json!({ "ok": false, "error": "no capture (client?)" });
-            };
-            if !ctl.portals.read().unwrap().contains(&edge) {
-                return serde_json::json!({ "ok": false, "error": "edge not armed" });
-            }
-            ctl.forwarding.store(true, Ordering::SeqCst);
-            let _ = tx.send(Captured::EdgeHit { edge, ratio });
+            let Some(edge)=cmd["edge"].as_str().and_then(parse_edge) else {return serde_json::json!({"ok":false});};
+            let ratio=cmd["ratio"].as_f64().unwrap_or(0.5) as f32;
+            let Some((ctl,tx))=capture_handles() else {return serde_json::json!({"ok":false});};
+            let (x,y)=kayiver_core::layout::point_on_edge(ctl.bounds(),edge,ratio,0);
+            let (dx,dy)=match edge {Edge::Left=>(-2,0),Edge::Right=>(2,0),Edge::Top=>(0,-2),Edge::Bottom=>(0,2)};
+            let previous=world().lock().unwrap().cursor;
+            let _gate=ctl.motion_gate.lock().unwrap();
+            world().lock().unwrap().cursor=(x,y);
+            super::route_motion(&ctl,&tx,(x,y),x-previous.0,y-previous.1);
+            super::route_motion(&ctl,&tx,(x+dx,y+dy),dx,dy);
             ok
         }
         "delay_shared_return" => {
@@ -362,19 +372,8 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             let y = cmd["y"].as_i64().unwrap_or(0) as i32;
             let dx = cmd["dx"].as_i64().unwrap_or(0) as i32;
             let dy = cmd["dy"].as_i64().unwrap_or(0) as i32;
-            if std::time::Instant::now() >= *ctl.cooldown_until.lock().unwrap() {
-                let bounds = ctl.bounds();
-                let portals = ctl.portals.read().unwrap().clone();
-                for edge in portals {
-                    if kayiver_core::layout::touches_edge(bounds, edge, x, y)
-                        && super::motion_towards_edge(edge, dx, dy) {
-                        ctl.forwarding.store(true, Ordering::SeqCst);
-                        let ratio = kayiver_core::layout::ratio_on_edge(bounds, edge, x, y);
-                        let _ = tx.send(Captured::EdgeHit { edge, ratio });
-                        break;
-                    }
-                }
-            }
+            let _gate=ctl.motion_gate.lock().unwrap();
+            super::route_motion(&ctl,&tx,(x,y),dx,dy);
             ok
         }
         "input_move" | "queued_move" => {
@@ -385,12 +384,12 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             let Some((ctl, tx)) = capture_handles() else {
                 return serde_json::json!({ "ok": false, "error": "no capture" });
             };
-            // queued_move models an event swallowed by native capture before
-            // the return but delivered to the async router after it.
-            if cmd["op"] != "queued_move" && !ctl.forwarding.load(Ordering::SeqCst) {
-                return serde_json::json!({ "ok": false, "error": "not forwarding" });
+            let current=world().lock().unwrap().cursor;
+            let _gate=ctl.motion_gate.lock().unwrap();
+            if !super::route_motion(&ctl,&tx,(current.0+dx,current.1+dy),dx,dy) {
+                let mut w=world().lock().unwrap();
+                w.cursor=super::clamp_monitor_move(&w.monitors,current,(current.0+dx,current.1+dy));
             }
-            let _ = tx.send(Captured::Input(InputEvent::MouseMove { dx, dy }));
             ok
         }
         "input_key" => {
@@ -399,10 +398,14 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             let Some((ctl, tx)) = capture_handles() else {
                 return serde_json::json!({ "ok": false, "error": "no capture" });
             };
-            if !ctl.forwarding.load(Ordering::SeqCst) {
-                return serde_json::json!({ "ok": false, "error": "not forwarding" });
-            }
-            let _ = tx.send(Captured::Input(InputEvent::Key { key, pressed }));
+            let _gate=ctl.motion_gate.lock().unwrap();
+            super::capture_input(&ctl,&tx,InputEvent::Key {key,pressed});
+            ok
+        }
+        "reject_injection" => {world().lock().unwrap().reject_injection=cmd["enabled"].as_bool().unwrap_or(true);ok}
+        "programmatic_move" => {warp_cursor_settled(cmd["x"].as_i64().unwrap_or(0) as i32,cmd["y"].as_i64().unwrap_or(0) as i32);ok}
+        "input_button" => {
+            if let Some((ctl,tx))=capture_handles() {let _gate=ctl.motion_gate.lock().unwrap();super::capture_input(&ctl,&tx,InputEvent::MouseButton {button:MouseButton::Left,pressed:cmd["pressed"].as_bool().unwrap_or(false)});}
             ok
         }
         "hotkey" => {
@@ -414,6 +417,7 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
         }
         "state" => {
             let w = world().lock().unwrap();
+            let capture_bounds = w.capture.as_ref().map(|(ctl,_)| { let r=ctl.bounds(); [r.x,r.y,r.w,r.h] });
             let (forwarding, driven, portals, blocked) = match &w.capture {
                 Some((ctl, _)) => (
                     ctl.forwarding.load(Ordering::SeqCst),
@@ -431,7 +435,9 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
                 "driven": driven,
                 "portals": portals,
                 "blocked": blocked,
+                "passive_notice": w.passive_notice.map(|r| [r.x, r.y, r.w, r.h]),
                 "injected_len": w.injected.len(),
+                "capture_bounds": capture_bounds,
             })
         }
         "injected" => {

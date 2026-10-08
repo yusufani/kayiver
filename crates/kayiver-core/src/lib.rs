@@ -12,6 +12,7 @@
 pub mod config;
 pub mod discovery;
 pub mod layout;
+pub mod motion;
 pub mod pairing;
 pub mod proto;
 pub mod secure;

@@ -24,7 +24,7 @@ KAYIVER_CONFIG_DIR=/tmp/simhost                         isolated config
 ```
 
 Control ops (one JSON object per line): `warp` (move the "physical" cursor —
-the real cursor guard reacts), `set_monitors` (unplug / re-anchor displays at
+the common capture engine reacts), `set_monitors` (unplug / re-anchor displays at
 runtime), `edge` (hit an armed portal edge), `input_move`/`input_key`
 (forwarded traffic), `hotkey`, `state`, `injected` (drain everything the
 engine injected, with coordinates).
@@ -67,5 +67,41 @@ config dirs), so they parallelize under plain `cargo test`.
 cargo test            # geometry/logic unit tests (fast, no processes)
 ```
 
-`entry_on_rect` (the crossing-point solver) and friends live next to the code
-in `platform/mod.rs`.
+The current crossing solver is `Topology::advance` in `kayiver-core::motion`.
+Legacy geometry helpers retain regression coverage.
+
+## Unified motion contract (0.3.0)
+
+Run all three gates before packaging:
+
+```sh
+cargo test -p kayiver-core
+cargo test -p kayiver --features sim --bin kayiver
+cargo test -p kayiver --features sim --test sim_e2e -- --test-threads=1
+```
+
+Core tests cover 2,000 generated three-surface layouts, 10,000 fractional
+roundtrips, gaps, corners, ambiguity, monitor order, and stale generations.
+Navigation tests cover clipped native endpoints, held state, immediate reversal,
+and passive physical input. Real TCP/Noise simulations include 100 immediate
+roundtrips, two-way drag/modifier transfer, failed injection recovery, and a
+programmatic warp that cannot start a crossing.
+
+Native recordings are opt-in: launch the app with `KAYIVER_MOTION_TRACE` set to
+an absolute JSONL path. At most 10,000 self-contained movement samples are
+recorded, with a bounded background writer; full queues omit samples and log a
+warning instead of delaying input. No key/button values, clipboard, pairing
+secrets, or wall-clock timestamps are recorded. Monitor identities/geometry are
+included; treat the recording as local diagnostic data. Unix files are created
+with mode 0600.
+
+```sh
+kayiver replay-motion /absolute/path/motion.jsonl
+```
+
+Replay computes every recorded report again and checks path, wall decision,
+destination, and fractional coordinates. It never injects real input. A replay
+pass confirms determinism for the captured reports; it does not prove physical
+pointer acceleration or real application drag behavior. Perform native desktop,
+taskbar, rescue, startup/reopen, and source-mouse acceptance separately on both
+platforms. Secure desktop and raw-input games are separate platform gates.
