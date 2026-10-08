@@ -295,6 +295,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         focus: None,
         driven: None,
         returning_peer: None,
+        returned_capture_peer: None,
         local_screens: platform::monitors(),
         injector: None,
         arbiter: cfg.mode == Mode::Host,
@@ -439,6 +440,9 @@ struct Router {
     driven: Option<Driven>,
     /// Tail movement remains valid until the driver acknowledges Leave.
     returning_peer: Option<String>,
+    /// Captured motion is swallowed before it reaches this async router. A
+    /// shared return can overtake that queue; those deltas still belong locally.
+    returned_capture_peer: Option<String>,
     local_screens: Vec<kayiver_core::proto::Rect>,
     /// Built on first use — a machine that is never driven never needs it.
     injector: Option<Injector>,
@@ -566,6 +570,7 @@ impl Router {
 
     /// A peer took control of this desk: start injecting what it sends.
     fn enter_driven(&mut self, peer: &str, pos: (i32, i32)) {
+        self.returned_capture_peer = None;
         self.returning_peer = None;
         if self.injector.is_none() {
             match Injector::new() {
@@ -681,16 +686,23 @@ impl Router {
     /// Carry the unconsumed movement over the seam, including packets sent
     /// before the driver learned about the handoff. Never inject into a new focus.
     fn apply_return_motion(&self, peer: &str, dx: i32, dy: i32) {
-        if self.focus.is_some() || self.driven.is_some() || self.shared_owner != self.cfg.name { return; }
-        let sm = self.shared.read().unwrap().clone();
-        if shared_peer_name(&self.cfg, &sm).as_deref() != Some(peer) { return; }
-        let (Some(local), Some(remote)) = (sm.local_rect, sm.peer_rect) else { return };
         if dx == 0 && dy == 0 { return; }
+        if self.focus.is_some() || self.driven.is_some() || self.shared_owner != self.cfg.name { return; }
+        let _motion = self.ctl.motion_gate.lock().unwrap();
         let from = platform::cursor_pos();
+        if let Some(to) = self.return_motion_target(peer, from, dx, dy) {
+            platform::warp_cursor_settled(to.0, to.1);
+        }
+    }
+
+    fn return_motion_target(&self, peer: &str, from: (i32, i32), dx: i32, dy: i32) -> Option<(i32, i32)> {
+        let sm = self.shared.read().unwrap().clone();
+        if shared_peer_name(&self.cfg, &sm).as_deref() != Some(peer) { return None; }
+        let (Some(local), Some(remote)) = (sm.local_rect, sm.peer_rect) else { return None };
+        if dx == 0 && dy == 0 { return Some(from); }
         let x = from.0.saturating_add((dx as f64 * local.w as f64 / remote.w.max(1) as f64).round() as i32);
         let y = from.1.saturating_add((dy as f64 * local.h as f64 / remote.h.max(1) as f64).round() as i32);
-        let to = platform::clamp_monitor_move(&self.local_screens, from, (x, y));
-        platform::warp_cursor_settled(to.0, to.1);
+        Some(platform::clamp_monitor_move(&self.local_screens, from, (x, y)))
     }
 
     /// Apply one input event from the driving peer, dead-reckoning our own
@@ -1012,6 +1024,9 @@ impl Router {
     }
 
     fn on_captured(&mut self, ev: Captured, cap_rx: &mut UnboundedReceiver<Captured>) {
+        if matches!(ev, Captured::EdgeHit { .. } | Captured::SharedEnter { .. } | Captured::Panic | Captured::TabletHotkey) {
+            self.returned_capture_peer = None;
+        }
         match ev {
             Captured::Input(InputEvent::MouseMove { mut dx, mut dy }) => {
                 // Coalesce a burst of queued moves into one event so a slow
@@ -1019,8 +1034,8 @@ impl Router {
                 let mut trailing = None;
                 while let Ok(next) = cap_rx.try_recv() {
                     if let Captured::Input(InputEvent::MouseMove { dx: x, dy: y }) = next {
-                        dx += x;
-                        dy += y;
+                        dx = dx.saturating_add(x);
+                        dy = dy.saturating_add(y);
                     } else {
                         trailing = Some(next);
                         break;
@@ -1028,6 +1043,10 @@ impl Router {
                 }
                 if self.tablet_active {
                     self.tablet_track(dx, dy);
+                } else if self.focus.is_none() {
+                    if let Some(peer) = &self.returned_capture_peer {
+                        self.apply_return_motion(peer, dx, dy);
+                    }
                 } else {
                     self.send_to_focus(Msg::Input(InputEvent::MouseMove { dx, dy }));
                 }
@@ -1246,6 +1265,7 @@ impl Router {
             }
             SessionEvent::Disconnected { name } => {
                 if self.returning_peer.as_deref() == Some(name.as_str()) { self.returning_peer = None; }
+                if self.returned_capture_peer.as_deref() == Some(name.as_str()) { self.returned_capture_peer = None; }
                 info!("client disconnected: {name}");
                 // If it was driving us, take our own desk back: portals re-arm
                 // and any key it left held is released.
@@ -1284,9 +1304,12 @@ impl Router {
                 }
                 let rect = self.shared.read().unwrap().local_rect;
                 if let Some(r) = rect {
+                    let ctl = self.ctl.clone();
+                    let _motion = ctl.motion_gate.lock().unwrap();
                     self.release_all();
                     self.send_to_focus(Msg::Leave);
                     self.focus = None;
+                    self.returned_capture_peer = Some(name.clone());
                     self.exit_forwarding();
                     // Leave the return seam itself: a native event may still report
                     // that exact edge after the warp and re-enter the peer.
@@ -1294,8 +1317,8 @@ impl Router {
                     let iy = EDGE_INSET.min((r.h - 1).max(0) / 2);
                     let x = (r.x + (fx * r.w as f32) as i32).clamp(r.x + ix, r.right() - 1 - ix);
                     let y = (r.y + (fy * r.h as f32) as i32).clamp(r.y + iy, r.bottom() - 1 - iy);
+                    let (x, y) = self.return_motion_target(&name, (x, y), dx, dy).unwrap_or((x, y));
                     platform::warp_cursor_settled(x, y);
-                    self.apply_return_motion(&name, dx, dy);
                     info!("cursor -> {} (onto shared panel)", self.cfg.name);
                 }
             }

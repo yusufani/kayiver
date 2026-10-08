@@ -377,7 +377,7 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             }
             ok
         }
-        "input_move" => {
+        "input_move" | "queued_move" => {
             let (dx, dy) = (
                 cmd["dx"].as_i64().unwrap_or(0) as i32,
                 cmd["dy"].as_i64().unwrap_or(0) as i32,
@@ -385,7 +385,9 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             let Some((ctl, tx)) = capture_handles() else {
                 return serde_json::json!({ "ok": false, "error": "no capture" });
             };
-            if !ctl.forwarding.load(Ordering::SeqCst) {
+            // queued_move models an event swallowed by native capture before
+            // the return but delivered to the async router after it.
+            if cmd["op"] != "queued_move" && !ctl.forwarding.load(Ordering::SeqCst) {
                 return serde_json::json!({ "ok": false, "error": "not forwarding" });
             }
             let _ = tx.send(Captured::Input(InputEvent::MouseMove { dx, dy }));

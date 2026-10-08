@@ -672,7 +672,9 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         }
     }
 
-    let forwarding = state.ctl.forwarding.load(Ordering::SeqCst);
+    let ctl = state.ctl.clone();
+    let _motion = ctl.motion_gate.lock().unwrap();
+    let forwarding = ctl.forwarding.load(Ordering::SeqCst);
 
     if !forwarding {
         // Local mode: watch for portal edge hits on motion, touch nothing else.
@@ -699,10 +701,15 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         ET_MOVED | ET_LEFT_DRAG | ET_RIGHT_DRAG | ET_OTHER_DRAG => {
             let dx = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_X) as i32;
             let dy = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_Y) as i32;
-            // Pin the local pointer: warp it back to the park spot every move.
-            // Belt-and-braces on top of the association disconnect, so the
-            // local cursor never wanders while you're driving the other screen.
-            CGWarpMouseCursorPosition(state.park);
+            // The cursor is already detached. Repeated warps here create a
+            // fresh native suppression window on every physical movement and
+            // can overwrite the router's return warp. Only rescue real drift
+            // if another application re-associated the cursor underneath us.
+            let p = CGEventGetLocation(event);
+            if (p.x - state.park.x).abs() > 1.0 || (p.y - state.park.y).abs() > 1.0 {
+                CGAssociateMouseAndMouseCursorPosition(0);
+                CGWarpMouseCursorPosition(state.park);
+            }
             Some(InputEvent::MouseMove { dx, dy })
         }
         ET_LEFT_DOWN => Some(InputEvent::MouseButton { button: MouseButton::Left, pressed: true }),

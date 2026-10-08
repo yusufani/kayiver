@@ -40,6 +40,12 @@ engine injected, with coordinates).
 | `vanished_panel_never_reanchors_to_same_size_screen` | panel input switched away → size-match glued the peer's screens onto A |
 | `owner_survives_host_restart` | deploy reset ownership → notice overlay covered the client's fullscreen game |
 | `no_nonce_desync_under_load_and_geometry_churn` | timer racing a half-read frame → Noise nonce desync → `decrypt error` loop |
+| `return_preserves_movement_already_in_flight` | delayed return notification must carry movement already sent over the network |
+| `return_preserves_motion_still_in_the_native_capture_queue` | return notification overtakes swallowed native motion waiting in the router queue |
+
+The simulator cannot verify macOS cursor association, event suppression, or
+physical pointer acceleration. After changing native capture, test a fast
+shared-panel round trip with the same physical mouse in both directions.
 
 The suite runs in seconds and the scenarios are independent (unique ports and
 config dirs), so they parallelize under plain `cargo test`.

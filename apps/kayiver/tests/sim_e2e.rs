@@ -754,6 +754,26 @@ fn d_side_walls_do_not_drift_into_gaps_or_follow_machine_links() {
 }
 
 #[test]
+fn return_preserves_motion_still_in_the_native_capture_queue() {
+    let (mut host, mut client) = primary_windows_desk("capturetail", 27540);
+    host.ctl(serde_json::json!({"op":"input_move", "dx":0, "dy":300}));
+    wait_until("local control returned", Duration::from_secs(5), || {
+        !host.state()["forwarding"].as_bool().unwrap()
+    });
+    let before = host.state()["cursor"].clone();
+    host.ctl(serde_json::json!({"op":"queued_move", "dx":-60, "dy":140}));
+    wait_until("swallowed capture tail reaches C exactly once", Duration::from_secs(5), || {
+        let c = host.state()["cursor"].clone();
+        c[0].as_i64() == Some(before[0].as_i64().unwrap() - 60) &&
+            c[1].as_i64() == Some(before[1].as_i64().unwrap() + 140)
+    });
+    assert!(!client.state()["driven"].as_bool().unwrap());
+    std::thread::sleep(Duration::from_millis(100));
+    let after = host.state()["cursor"].clone();
+    assert_eq!(after[1].as_i64(), Some(before[1].as_i64().unwrap() + 140));
+}
+
+#[test]
 fn return_preserves_movement_already_in_flight() {
     let (mut host, mut client) = primary_windows_desk("carry", 27500);
     client.ctl(serde_json::json!({"op":"delay_shared_return", "ms":250}));

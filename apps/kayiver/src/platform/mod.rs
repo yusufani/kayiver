@@ -47,6 +47,9 @@ pub fn clamp_monitor_move(monitors: &[Rect], from: (i32, i32), to: (i32, i32)) -
 }
 
 pub struct CaptureCtl {
+    /// Serialize native capture with a return warp. A callback that already
+    /// read forwarding must finish before the router restores the local cursor.
+    pub motion_gate: Mutex<()>,
     /// True while input is being forwarded to a remote machine.
     pub forwarding: AtomicBool,
     /// True while a PEER is driving this machine. Local hooks deliberately keep
@@ -93,6 +96,7 @@ impl CaptureCtl {
 
     pub fn new(bounds: Rect) -> Self {
         CaptureCtl {
+            motion_gate: Mutex::new(()),
             forwarding: AtomicBool::new(false),
             driven: AtomicBool::new(false),
             portals: RwLock::new(Vec::new()),
