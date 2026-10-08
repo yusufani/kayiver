@@ -24,7 +24,7 @@ cursor.
 - **One movement engine** — ordered movement samples cross actual monitor
   edge segments; remaining distance continues on the destination, including
   an immediate reversal. Floating-point position is rounded only when applied
-  to the operating system. Protocol 16 requires both desktops to run 0.3.0.
+  to the operating system. Protocol 16 requires both desktops to run 0.3.1.
 - **Recoverable control** — triple-tap `Esc` returns control to a visible local
   screen. Disconnects and failed cursor injection release held input and
   recover locally. Old-session and duplicate movement frames are rejected.
@@ -42,7 +42,7 @@ cursor.
 - **Desktop input** — the source supplies accelerated desktop movement and
   the destination applies the calculated cursor position. Raw-input games,
   secure desktops and physical acceleration feel need platform acceptance
-  checks; 0.3.0 does not claim universal game compatibility.
+  checks; 0.3.1 does not claim universal game compatibility.
 - **Real apps** — a menu-bar app with a native editor window on macOS
   (`packaging/macos/build-app.sh --install` → `Kayiver.app`), tray icon +
   embedded-icon exe on Windows, and an Android companion
@@ -67,7 +67,7 @@ Grab the latest build from **[Releases](https://github.com/yusufani/kayiver/rele
 - **Windows 10/11 (x64):** `kayiver-windows-x64.exe` — put it anywhere and run
   it; if SmartScreen appears, choose "More info → Run anyway".
 
-The 0.3.0 engine rewrite is available as a **prerelease** on the releases
+The 0.3.1 engine rewrite is available as a **prerelease** on the releases
 page. Upgrade both computers together: protocol 16 does not connect to older
 versions. Keep both previous binaries and configuration backups for a paired
 rollback. The simulated geometry, control and failure suites are automated;

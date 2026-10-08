@@ -684,14 +684,6 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
 
     // Forwarding mode: translate, ship, swallow.
     let captured = match etype {
-        ET_MOVED | ET_LEFT_DRAG | ET_RIGHT_DRAG | ET_OTHER_DRAG => {
-            let dx = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_X) as i32;
-            let dy = CGEventGetIntegerValueField(event, F_MOUSE_DELTA_Y) as i32;
-            // Association is already disabled. Shared-panel entry can originate
-            // in the cursor guard, which never sets this callback's portal park.
-            // Recentring to that stale park (often 0,0) corrupts the handoff.
-            Some(InputEvent::MouseMove { dx, dy })
-        }
         ET_LEFT_DOWN => Some(InputEvent::MouseButton { button: MouseButton::Left, pressed: true }),
         ET_LEFT_UP => Some(InputEvent::MouseButton { button: MouseButton::Left, pressed: false }),
         ET_RIGHT_DOWN => Some(InputEvent::MouseButton { button: MouseButton::Right, pressed: true }),

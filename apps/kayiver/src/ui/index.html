@@ -793,7 +793,8 @@ function makeTile(t) {
     // screen — everything hangs off it). Grabbing any other monitor moves just
     // that one, with a live snap guide toward neighbouring edges.
     const isPanel = sp && t === sp.a;
-    const group = isPanel ? mons.filter(g => g.el.style.display !== 'none') : [t];
+    const panOnly = isPanel || settings.mode === 'client';
+    const group = panOnly ? mons.filter(g => g.el.style.display !== 'none') : [t];
     const start = group.map(g => ({ g, x: g.x, y: g.y }));
     const a0 = { x: t.x, y: t.y };
     const sx = e.clientX, sy = e.clientY;
@@ -802,7 +803,7 @@ function makeTile(t) {
     const move = ev => {
       const ddx = ev.clientX - sx, ddy = ev.clientY - sy;
       if (Math.abs(ddx) > 4 || Math.abs(ddy) > 4) moved = true;
-      if (isPanel) {
+      if (panOnly) {
         // clamp by the panel tile, shift everyone by the same corrected delta
         let nx = a0.x + ddx, ny = a0.y + ddy;
         nx = Math.max(0, Math.min(canvas.clientWidth - t.w, nx));
@@ -1467,7 +1468,12 @@ function renderLink(st) {
     ? ` · max ${p.rtt_max_ms.toFixed(0)}` : '';
   const rtt = p.rtt_ms != null ? `${p.rtt_ms.toFixed(1)} ms${max}` : '';
   const label = p.link_label || 'link';
-  document.getElementById('linkTxt').textContent = rtt || label;
+  const paths = st.host_addrs || [];
+  // Some clients cannot author a route change. Do not render an empty picker
+  // and a switch button that has no valid action. The active link stays visible.
+  document.getElementById('linkSel').style.display = paths.length ? '' : 'none';
+  document.getElementById('linkGo').style.display = paths.length ? '' : 'none';
+  document.getElementById('linkTxt').textContent = paths.length ? (rtt || label) : [label, rtt].filter(Boolean).join(' · ');
   document.getElementById('linkTxt').title =
     `${label} · ${p.local_addr || '?'} ↔ ${p.remote_addr || '?'}`;
   const sel = document.getElementById('linkSel');

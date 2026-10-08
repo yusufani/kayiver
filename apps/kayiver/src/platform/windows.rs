@@ -962,20 +962,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
     }
     if state.ctl.driven.load(Ordering::SeqCst) {return LRESULT(1);}
 
-    let park = *state.park.lock().unwrap();
     let captured = match msg {
-        WM_MOUSEMOVE => {
-            let dx = info.pt.x - park.0;
-            let dy = info.pt.y - park.1;
-            // Pin the physical cursor back to the park position so it does not drift,
-            // wander into other monitors, or trigger Windows taskbar gestures while forwarding.
-            let _ = SetCursorPos(park.0, park.1);
-            if dx == 0 && dy == 0 {
-                None
-            } else {
-                Some(InputEvent::MouseMove { dx, dy })
-            }
-        }
         WM_LBUTTONDOWN => Some(InputEvent::MouseButton { button: MouseButton::Left, pressed: true }),
         WM_LBUTTONUP => Some(InputEvent::MouseButton { button: MouseButton::Left, pressed: false }),
         WM_RBUTTONDOWN => Some(InputEvent::MouseButton { button: MouseButton::Right, pressed: true }),
