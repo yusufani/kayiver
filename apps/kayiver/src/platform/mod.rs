@@ -213,6 +213,11 @@ pub fn route_motion_precise(ctl:&CaptureCtl,tx:&tokio::sync::mpsc::UnboundedSend
     RoutedMotion {handled:true,resume}
 }
 
+/// Position-only Windows capture must forget injection distance before local
+/// control resumes. macOS rebases its callback reference on navigation generation.
+#[cfg(not(all(target_os="windows",not(feature="sim"))))]
+pub fn rebase_native_capture() {}
+
 // The `sim` feature swaps the whole OS backend for a scriptable virtual
 // machine (virtual monitors/cursor, recorded injection, a JSON control
 // socket). `cargo test --features sim` runs real host↔client sessions —

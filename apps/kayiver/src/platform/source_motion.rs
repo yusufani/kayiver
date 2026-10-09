@@ -34,9 +34,44 @@ pub(super) fn after_local_warp(native:Point, previous:Option<Point>, event_delta
     else {(expected,delta,false)}
 }
 
+/// Position-only native hooks must explicitly rebase after a programmatic
+/// move. A parked remote source uses the parking origin for every report.
+#[cfg(any(target_os="windows",test))]
+#[derive(Default)]
+pub(super) struct PositionReference { previous: Option<(i32,i32)> }
+#[cfg(any(target_os="windows",test))]
+impl PositionReference {
+    pub fn rebase(&mut self, native:(i32,i32)) {self.previous=Some(native);}
+    pub fn consume(&mut self, native:(i32,i32), parked:Option<(i32,i32)>) -> (i32,i32) {
+        let origin=parked.or(self.previous).unwrap_or(native);
+        self.previous=Some(native);
+        (native.0-origin.0,native.1-origin.1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn programmatic_receiver_positions_do_not_become_source_motion() {
+        let mut reference=PositionReference::default();reference.rebase((100,100));
+        assert_eq!(reference.consume((102,99),None),(2,-1));
+        // Peer control, negative-origin desktop and hidden-panel parking.
+        for destination in [(900,-500),(-1500,270),(3840,720)] {
+            reference.rebase(destination);
+            assert_eq!(reference.consume((destination.0+2,destination.1-1),None),(2,-1));
+            assert_eq!(reference.consume(destination,None),(-2,1));
+        }
+    }
+    #[test]
+    fn parked_reports_preserve_immediate_direction_changes() {
+        let mut reference=PositionReference::default();reference.rebase((5,5));
+        for delta in [(100,-20),(-100,20),(1,0),(-1,0)] {
+            assert_eq!(reference.consume((3840+delta.0,720+delta.1),Some((3840,720))),delta);
+        }
+        reference.rebase((2700,140));
+        assert_eq!(reference.consume((2701,140),None),(1,0));
+    }
     #[test]
     fn programmatic_position_changes_are_not_physical_motion() {
         assert!(!physical_motion(Point::default(),Point::default()));

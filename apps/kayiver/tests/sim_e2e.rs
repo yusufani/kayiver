@@ -1877,3 +1877,19 @@ fn an_incoming_frame_cannot_steal_a_source_whose_router_notification_is_queued()
     wait_until("original source returns normally", Duration::from_secs(5), || client.state()["driven"]==false);
     assert_eq!(host.state()["cursor"], serde_json::json!([3800,10]));
 }
+
+#[test]
+fn receiver_parking_finishes_before_physical_capture_is_reenabled() {
+    let (mut host,mut client)=primary_windows_desk("protected-release",28100);
+    wait_until("receiver is driven",Duration::from_secs(5),||client.state()["driven"]==true);
+    // An external programmatic position must not authorize receiver geometry.
+    // On release its hidden-panel parking must still be capture-protected.
+    client.ctl(serde_json::json!({"op":"programmatic_move","x":100,"y":1200}));
+    host.ctl(serde_json::json!({"op":"input_move","dx":0,"dy":100}));
+    wait_until("receiver releases control",Duration::from_secs(5),||client.state()["driven"]==false);
+    let state=client.state();
+    assert_eq!(state["cursor"],serde_json::json!([960,540]));
+    assert_eq!(state["last_warp_driven"],true,"parking exposed an intermediate local cursor state: {state}");
+    assert_eq!(state["navigation"]["control"],"local");
+    assert_eq!(state["forwarding"],false);
+}

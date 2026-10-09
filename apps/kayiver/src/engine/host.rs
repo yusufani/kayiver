@@ -568,21 +568,15 @@ impl Router {
     /// Control left this desk again (handed back, or the session died).
     fn leave_driven(&mut self) {
         if self.driven.take().is_none() {return;}
+        // Release held input while the source remains protected. Publish Local
+        // only after native parking and its movement reference are settled.
+        if let Some(inj)=self.injector.as_mut() {inj.release_all();}
         {
             let _gate=self.ctl.motion_gate.lock().unwrap();
+            if let Some(b)=*self.ctl.blocked.read().unwrap() {self.park_off_hidden_panel(b);}
+            platform::rebase_native_capture();
             self.ctl.navigation.lock().unwrap().drive(None);
             self.ctl.driven.store(false,Ordering::SeqCst);
-        }
-        // The driver may have left our cursor on our copy of the shared panel
-        // just as the panel was flipped away from us (it is blocked by now):
-        // an invisible cursor, and one the guard would otherwise treat as a
-        // fresh entry. Park it BEFORE the guard resumes.
-        if let Some(b) = *self.ctl.blocked.read().unwrap() {
-            self.park_off_hidden_panel(b);
-        }
-        self.ctl.driven.store(false, Ordering::SeqCst);
-        if let Some(inj) = self.injector.as_mut() {
-            inj.release_all();
         }
         self.refresh_portals();
         platform::indicator::set_state(true, false);

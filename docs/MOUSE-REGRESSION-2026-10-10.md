@@ -73,14 +73,37 @@ The installed 0.3.11-dev pair then passed another 100 native scripted
 roundtrips with no remote marker delivery, stable sampled parking and restored
 local association. No physical hardware acceptance is inferred.
 
-All 40 paired simulated transport tests passed in the release workflow's
+All 41 paired simulated transport tests passed in the release workflow's
 serial configuration, including a source containment failure that sends no
 cursor frame to the peer and a subsequent successful crossing. The core
-geometry implementation and protocol 16 are unchanged. All 37 native app unit
+geometry implementation and protocol 16 are unchanged. All 39 native app unit
 tests passed. Both release targets built successfully; Windows runs in console
 session 1, Mac permissions remain granted, and both report 0.3.11-dev with a
 live paired connection. The primary-switch fixture now waits for matching
 installed topology snapshots, not merely the earlier config-file write.
+
+## Windows source reference and protected release
+
+A passive WH_MOUSE_LL observer was launched with the interactive user's token
+and environment in session 1. During an overlap with scripted peer cursor
+updates it observed six injected movement notifications and zero unflagged
+movement notifications. A prior session-0 run was discarded. The observer
+never consumed events, logged only counters/session ID, and was removed after
+measurement. This confirms the observed SetCursorPos path is skipped by the
+physical capture hook; it does not establish physical Windows motion behavior.
+
+Code inspection found that this skipped path also left the physical capture
+position reference at its pre-control location. Windows capture now explicitly
+rebases after native injection, warping and before local capture is enabled.
+Parking references use the actual native readback. Shared adapter tests assert
+that negative-origin peer positioning and hidden-panel parking never become
+the next physical movement, and that parked reports preserve immediate reversals.
+
+Receiver release now keeps capture protected through held-input release and
+hidden-panel parking, then rebases the adapter and publishes Local under the
+motion gate. A paired regression records protection at the parking call and
+asserts it completes before capture is re-enabled. OS calls inside this gate
+are bounded cursor read/warp operations; there is no network wait or timer.
 
 ## Acceptance limits
 

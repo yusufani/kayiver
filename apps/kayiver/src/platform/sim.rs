@@ -46,6 +46,7 @@ struct SimWorld {
     reject_injection: bool,
     reject_containment: bool,
     pending_capture: Vec<Captured>,
+    last_warp_driven: bool,
 }
 
 static WORLD: OnceLock<Mutex<SimWorld>> = OnceLock::new();
@@ -70,6 +71,7 @@ fn world() -> &'static Mutex<SimWorld> {
             reject_injection: false,
             reject_containment: false,
             pending_capture: Vec::new(),
+            last_warp_driven: false,
         })
     })
 }
@@ -180,7 +182,9 @@ pub fn set_forwarding_visuals(on: bool) -> bool {
 }
 
 pub fn warp_cursor(x: i32, y: i32) {
-    world().lock().unwrap().cursor = (x, y);
+    let mut w=world().lock().unwrap();
+    w.last_warp_driven=w.capture.as_ref().is_some_and(|(ctl,_)|ctl.driven.load(Ordering::SeqCst));
+    w.cursor = (x, y);
 }
 
 pub fn warp_cursor_settled(x: i32, y: i32) {
@@ -482,6 +486,7 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
                 "blocked": blocked,
                 "passive_notice": w.passive_notice.map(|r| [r.x, r.y, r.w, r.h]),
                 "injected_len": w.injected.len(),
+                "last_warp_driven": w.last_warp_driven,
                 "capture_bounds": capture_bounds,
                 "navigation": navigation,
             })
