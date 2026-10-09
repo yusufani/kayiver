@@ -21,6 +21,17 @@ pub(super) fn screen_delta(native:Point, reference:Option<Point>, event_delta:Po
     delta
 }
 
+/// Normalize a report captured before the return warp took effect. Native
+/// coordinates may still belong to the parking center; its movement does not.
+pub(super) fn after_local_warp(native:Point, previous:Option<Point>, event_delta:Point, destination:Point) -> (Point,Point,bool) {
+    let delta=screen_delta(native,previous,event_delta,true);
+    let expected=Point::new(destination.x+delta.x,destination.y+delta.y);
+    // An integer delta's quantization is at most one pixel per component.
+    let settled=(native.x-expected.x).abs()<=1.0 && (native.y-expected.y).abs()<=1.0;
+    if settled {(native,screen_delta(native,Some(destination),event_delta,false),true)}
+    else {(expected,delta,false)}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,4 +70,20 @@ mod tests {
         let edge=Point::new(2559.0,700.0);
         assert_eq!(screen_delta(edge,Some(edge),Point::new(10.0,0.0),false),Point::new(10.0,0.0));
     }
+    #[test]
+    fn queued_remote_reports_preserve_distance_after_return_without_teleporting() {
+        let mut destination=Point::new(2700.25,140.25);
+        let mut previous=Point::new(3840.25,920.25);
+        for n in 1..100 {
+            let old_basis=Point::new(3840.25+n as f64,920.25);
+            let (point,delta,settled)=after_local_warp(old_basis,Some(previous),Point::new(1.0,0.0),destination);
+            assert!(!settled);assert_eq!(delta,Point::new(1.0,0.0));
+            assert_eq!(point.x,2700.25+n as f64);
+            destination=point;previous=old_basis;
+        }
+        let native=Point::new(destination.x+1.0,destination.y);
+        let (point,delta,settled)=after_local_warp(native,Some(previous),Point::new(1.0,0.0),destination);
+        assert!(settled);assert_eq!(point,native);assert_eq!(delta,Point::new(1.0,0.0));
+    }
+
 }

@@ -589,6 +589,8 @@ struct CaptureState {
     mods_down: Vec<u16>,
     esc_downs: [Option<Instant>; 2],
     motion_position: Option<CGPoint>,
+    motion_generation: u64,
+    local_warp_reference: Option<kayiver_core::motion::Point>,
 
 }
 
@@ -606,6 +608,8 @@ pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Res
                 mods_down: Vec::new(),
                 esc_downs: [None, None],
                 motion_position: None,
+                motion_generation: 0,
+                local_warp_reference: None,
             }));
 
             let mask: u64 = [
@@ -691,6 +695,12 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
 
     if etype == ET_MOVED || etype == ET_LEFT_DRAG || etype == ET_RIGHT_DRAG || etype == ET_OTHER_DRAG {
         if ctl.driven.load(Ordering::SeqCst) {return std::ptr::null_mut();}
+        let generation=ctl.navigation.lock().unwrap().generation;
+        if generation!=state.motion_generation {
+            state.motion_generation=generation;
+            state.motion_position=None;
+            state.local_warp_reference=None;
+        }
         let p=CGEventGetLocation(event);
         let raw=kayiver_core::motion::Point::new(CGEventGetIntegerValueField(event,F_MOUSE_DELTA_X) as f64,CGEventGetIntegerValueField(event,F_MOUSE_DELTA_Y) as f64);
         let unaccelerated=kayiver_core::motion::Point::new(CGEventGetDoubleValueField(event,170),CGEventGetDoubleValueField(event,171));
@@ -702,7 +712,7 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
                     CGEventSetLocation(event,parked);
                     CGEventSetIntegerValueField(event,F_SOURCE_USER_DATA,TAG_OURS);
                 }
-            } else {
+            } else if state.local_warp_reference.is_none() {
                 state.motion_position=Some(p);
                 ctl.navigation.lock().unwrap().native_reposition(kayiver_core::motion::Point::new(p.x,p.y));
             }
@@ -710,9 +720,13 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         }
         let previous=state.motion_position;
         let native=kayiver_core::motion::Point::new(p.x,p.y);
+        let rebasing=!forwarding && state.local_warp_reference.is_some();
         // Association remains enabled, so these are accelerated OS deltas.
         // The previous report retains fractional phase across native parking.
-        let delta=super::source_motion::screen_delta(native,previous.map(|o|kayiver_core::motion::Point::new(o.x,o.y)),raw,forwarding);
+        let reference=previous.map(|o|kayiver_core::motion::Point::new(o.x,o.y));
+        let (native,delta,settled)=if let Some(destination)=state.local_warp_reference.filter(|_|!forwarding) {
+            super::source_motion::after_local_warp(native,reference,raw,destination)
+        } else {(native,super::source_motion::screen_delta(native,reference,raw,forwarding),true)};
         if super::motion_trace::native_enabled() && (delta.x!=0.0 || delta.y!=0.0) {
             super::motion_trace::record_native(super::motion_trace::NativeSample {
                 timestamp:CGEventGetTimestamp(event),source_pid:CGEventGetIntegerValueField(event,41),remote:forwarding,position:(p.x,p.y),
@@ -732,6 +746,7 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
                 CGEventSetIntegerValueField(event,F_MOUSE_DELTA_X,0);
                 CGEventSetIntegerValueField(event,F_MOUSE_DELTA_Y,0);
                 state.motion_position=Some(p);
+                state.local_warp_reference=None;
                 return event;
             }
             return std::ptr::null_mut();
@@ -742,8 +757,17 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
             CGEventSetLocation(event,point);
             CGEventSetIntegerValueField(event,F_MOUSE_DELTA_X,remainder.x.round() as i64);
             CGEventSetIntegerValueField(event,F_MOUSE_DELTA_Y,remainder.y.round() as i64);
-            state.motion_position=Some(point);
+            state.motion_position=Some(p);
+            state.local_warp_reference=Some(position);
             return event;
+        }
+        if rebasing {
+            let position=ctl.navigation.lock().unwrap().location.as_ref().map(|l|l.point);
+            if let Some(position)=position {
+                let point=CGPoint{x:position.x,y:position.y};
+                if !settled {CGWarpMouseCursorPosition(point);CGEventSetLocation(event,point);}
+                state.local_warp_reference=if settled {None} else {Some(position)};
+            } else {state.local_warp_reference=None;}
         }
         state.motion_position=Some(p);
         if result.handled {return std::ptr::null_mut();}
