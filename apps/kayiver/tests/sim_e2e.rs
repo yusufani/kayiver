@@ -1727,3 +1727,20 @@ port = 27850
         assert!(!host.injected().iter().any(|e|e["kind"]=="mouse_to"),"empty edge injected a cursor warp");
     }
 }
+
+/// A source return may warp synchronously, but must not also enqueue a zero
+/// mouse event that can arrive after (and overwrite) fresh physical movement.
+#[test]
+fn return_does_not_enqueue_a_second_pointer_position() {
+    let (mut host, mut client) = primary_windows_desk("return-no-post", 27870);
+    host.injected();
+    host.ctl(serde_json::json!({"op":"input_move", "dx":0, "dy":300}));
+    wait_until("source returned",Duration::from_secs(5),||!host.state()["forwarding"].as_bool().unwrap());
+    assert!(!host.injected().iter().any(|e|e["kind"]=="mouse_to"),"source return enqueued a synthetic pointer position");
+    let before=host.state()["cursor"].clone();
+    host.ctl(serde_json::json!({"op":"queued_move","dx":-60,"dy":140}));
+    let after=host.state()["cursor"].clone();
+    assert_eq!(after[0].as_i64(),Some(before[0].as_i64().unwrap()-60));
+    assert_eq!(after[1].as_i64(),Some(before[1].as_i64().unwrap()+140));
+    wait_until("peer released",Duration::from_secs(5),||!client.state()["driven"].as_bool().unwrap());
+}

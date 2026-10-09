@@ -111,13 +111,15 @@ fn handoff_source_holds(frame:&navigation::Frame, returning:bool) -> bool {
         let mut slot=slot.borrow_mut();
         if slot.is_none() {match Injector::new() {Ok(i)=>*slot=Some(i),Err(_)=>return false}}
         let injector=slot.as_mut().unwrap();
+        // Set coordinates before any release/press can be posted. Native
+        // local movement does not update this injector's cached position.
+        let (x,y)=if returning {(frame.x,frame.y)}else{cursor_pos()};
+        injector.rebase_position(x,y);
         injector.release_all();
         if returning {
-            if !injector.mouse_to(frame.x,frame.y,0,0) {return false;}
             for &key in &frame.keys {injector.key(key,true);}
             for &button in &frame.buttons {injector.button(button,true);}
         } else {
-            let (x,y)=cursor_pos();if !injector.mouse_to(x,y,0,0) {return false;}
             for &key in &frame.keys {injector.key(key,false);}
             for &button in &frame.buttons {injector.button(button,false);}
         }

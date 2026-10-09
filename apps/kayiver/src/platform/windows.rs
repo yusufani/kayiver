@@ -1174,6 +1174,8 @@ impl Injector {
     /// they verify the landing with GetCursorPos and re-attach the input
     /// desktop + retry once if the cursor didn't actually move (lock screen /
     /// UAC switched desktops, or a fullscreen app clips the cursor).
+    // Buttons use the current native cursor on this backend.
+    pub fn rebase_position(&mut self, _x: i32, _y: i32) {}
     pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) -> bool {
         self.wake_display();
         if dx != 0 || dy != 0 {

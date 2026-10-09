@@ -77,6 +77,8 @@ extern "C" {
     fn CGEventCreateScrollWheelEvent2(source: CGEventSourceRef, units: u32, wheel_count: u32, w1: i32, w2: i32, w3: i32) -> CGEventRef;
     fn CGEventPost(tap: u32, e: CGEventRef);
     fn CGEventSourceCreate(state: i32) -> CGEventSourceRef;
+    fn CGEventSourceSetLocalEventsSuppressionInterval(source: CGEventSourceRef, seconds: f64);
+    fn CGEventSourceSetLocalEventsFilterDuringSuppressionState(source: CGEventSourceRef, filter: u32, state: u32);
     fn CGWarpMouseCursorPosition(p: CGPoint) -> i32;
     fn CGAssociateMouseAndMouseCursorPosition(connected: u32) -> i32;
     fn CGDisplayHideCursor(display: u32) -> i32;
@@ -796,6 +798,13 @@ impl Injector {
         if source.is_null() {
             bail!("CGEventSourceCreate failed — check Accessibility permission (`kayiver doctor`)");
         }
+        // Our tap owns control arbitration. Synthetic handoff/button events
+        // must never suppress the next physical report (including a drag).
+        unsafe {
+            CGEventSourceSetLocalEventsSuppressionInterval(source, 0.0);
+            CGEventSourceSetLocalEventsFilterDuringSuppressionState(source, 7, 0);
+            CGEventSourceSetLocalEventsFilterDuringSuppressionState(source, 7, 1);
+        }
         Ok(Injector {
             source,
             left_down: false,
@@ -821,6 +830,11 @@ impl Injector {
                 CFRelease(e);
             }
         }
+    }
+
+    /// Update button-event coordinates without posting a delayed mouse move.
+    pub fn rebase_position(&mut self, x: i32, y: i32) {
+        self.last_pos = CGPoint { x: x as f64, y: y as f64 };
     }
 
     pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) -> bool {

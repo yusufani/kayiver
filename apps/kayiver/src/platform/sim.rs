@@ -187,6 +187,8 @@ impl Injector {
     pub fn new() -> Result<Self> {
         Ok(Injector)
     }
+    // Buttons use the current native cursor on this backend.
+    pub fn rebase_position(&mut self, _x: i32, _y: i32) {}
     pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) -> bool {
         if world().lock().unwrap().reject_injection {return false;}
         world().lock().unwrap().cursor = (x, y);
