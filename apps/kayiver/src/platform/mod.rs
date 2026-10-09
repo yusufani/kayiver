@@ -39,6 +39,7 @@ pub fn clamp_monitor_move(monitors: &[Rect], from: (i32, i32), to: (i32, i32)) -
 }
 
 pub mod navigation;
+mod cursor_parking;
 mod motion_trace;
 
 pub struct CaptureCtl {

@@ -1744,3 +1744,28 @@ fn return_does_not_enqueue_a_second_pointer_position() {
     assert_eq!(after[1].as_i64(),Some(before[1].as_i64().unwrap()+140));
     wait_until("peer released",Duration::from_secs(5),||!client.state()["driven"].as_bool().unwrap());
 }
+
+#[test]
+fn native_source_drift_is_contained_without_losing_remote_motion_or_return() {
+    let (mut host,mut client)=primary_windows_desk("native-drift",27890);
+    let anchor=host.state()["cursor"].clone();
+    wait_until("remote landing is applied",Duration::from_secs(5),||client.state()["cursor"][1].as_i64().is_some_and(|y|y>700));
+    let remote_before=client.state()["cursor"].clone();
+    client.injected();
+    for i in 1..101 {
+        host.ctl(serde_json::json!({"op":"native_drift","x":3000+i,"y":500+i,"dx":1,"dy":-1}));
+        assert_eq!(host.state()["cursor"],anchor,"source cursor escaped while remotely controlling Windows");
+        assert!(host.state()["forwarding"].as_bool().unwrap());
+    }
+    wait_until("remote consumes every report despite native drift",Duration::from_secs(5),|| {
+        let p=client.state()["cursor"].clone();
+        p[0].as_i64()==Some(remote_before[0].as_i64().unwrap()+100) && p[1].as_i64()==Some(remote_before[1].as_i64().unwrap()-100)
+    });
+    host.ctl(serde_json::json!({"op":"input_move","dx":0,"dy":600}));
+    wait_until("local control returns",Duration::from_secs(5),||!host.state()["forwarding"].as_bool().unwrap());
+    let before=host.state()["cursor"].clone();
+    host.ctl(serde_json::json!({"op":"input_move","dx":30,"dy":60}));
+    let after=host.state()["cursor"].clone();
+    assert_eq!(after[0].as_i64(),Some(before[0].as_i64().unwrap()+30));
+    assert_eq!(after[1].as_i64(),Some(before[1].as_i64().unwrap()+60));
+}

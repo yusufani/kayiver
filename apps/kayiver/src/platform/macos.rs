@@ -546,7 +546,11 @@ pub fn cursor_pos() -> (i32, i32) {
 }
 
 
+static CURSOR_PARKING: std::sync::Mutex<super::cursor_parking::CursorParking> =
+    std::sync::Mutex::new(super::cursor_parking::CursorParking::new());
+
 pub fn set_forwarding_visuals(on: bool) {
+    CURSOR_PARKING.lock().unwrap().set_remote(on, cursor_pos());
     // CGDisplayHideCursor/ShowCursor are REFERENCE-COUNTED: two hides need two
     // shows or the cursor stays hidden (and, being app-scoped, only reappears
     // when kayiver isn't frontmost). Crossing onto the tablet used to hide twice
@@ -679,7 +683,19 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         let p=CGEventGetLocation(event);
         let dx=CGEventGetIntegerValueField(event,F_MOUSE_DELTA_X) as i32;
         let dy=CGEventGetIntegerValueField(event,F_MOUSE_DELTA_Y) as i32;
-        if super::route_motion(&ctl,&state.tx,(p.x as i32,p.y as i32),dx,dy) {return std::ptr::null_mut();}
+        let handled=super::route_motion(&ctl,&state.tx,(p.x as i32,p.y as i32),dx,dy);
+        if ctl.forwarding.load(Ordering::SeqCst) {
+            // Association is best-effort (notably when this menu-bar app is
+            // not frontmost). Enforce the source anchor if native input leaks
+            // through, without ever replacing the remote logical position.
+            let correction=CURSOR_PARKING.lock().unwrap().correction((p.x as i32,p.y as i32));
+            if let Some((x,y))=correction {
+                CGWarpMouseCursorPosition(CGPoint {x:x as f64,y:y as f64});
+                CGAssociateMouseAndMouseCursorPosition(0);
+            }
+            return std::ptr::null_mut();
+        }
+        if handled {return std::ptr::null_mut();}
         return event;
     }
 

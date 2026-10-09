@@ -35,6 +35,7 @@ use crate::platform::CaptureCtl;
 struct SimWorld {
     monitors: Vec<Rect>,
     cursor: (i32, i32),
+    parking: super::cursor_parking::CursorParking,
     /// Every injection the engine performed, as JSON for the harness.
     injected: Vec<serde_json::Value>,
     capture: Option<(Arc<CaptureCtl>, UnboundedSender<Captured>)>,
@@ -57,6 +58,7 @@ fn world() -> &'static Mutex<SimWorld> {
         Mutex::new(SimWorld {
             monitors,
             cursor: (100, 100),
+            parking: super::cursor_parking::CursorParking::new(),
             injected: Vec::new(),
             capture: None,
             clipboard: None,
@@ -167,7 +169,9 @@ pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Res
     Ok(())
 }
 
-pub fn set_forwarding_visuals(_on: bool) {}
+pub fn set_forwarding_visuals(on: bool) {
+    let mut w=world().lock().unwrap();let native=w.cursor;w.parking.set_remote(on,native);
+}
 
 pub fn warp_cursor(x: i32, y: i32) {
     world().lock().unwrap().cursor = (x, y);
@@ -298,6 +302,18 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             if let Some((ctl,tx))=capture_handles() {
                 let _gate=ctl.motion_gate.lock().unwrap();
                 super::route_motion(&ctl,&tx,(x,y),x-previous.0,y-previous.1);
+            }
+            ok
+        }
+        "native_drift" => {
+            let native=(cmd["x"].as_i64().unwrap() as i32,cmd["y"].as_i64().unwrap() as i32);
+            let (dx,dy)=(cmd["dx"].as_i64().unwrap() as i32,cmd["dy"].as_i64().unwrap() as i32);
+            world().lock().unwrap().cursor=native;
+            let Some((ctl,tx))=capture_handles() else {return serde_json::json!({"ok":false});};
+            let _gate=ctl.motion_gate.lock().unwrap();
+            super::route_motion(&ctl,&tx,native,dx,dy);
+            if ctl.forwarding.load(Ordering::SeqCst) {
+                let mut w=world().lock().unwrap();if let Some(anchor)=w.parking.correction(native) {w.cursor=anchor;}
             }
             ok
         }
