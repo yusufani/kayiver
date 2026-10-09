@@ -869,10 +869,11 @@ pub fn cursor_pos() -> (i32, i32) {
     (p.x, p.y)
 }
 
-pub fn set_forwarding_visuals(_on: bool) {
+pub fn set_forwarding_visuals(_on: bool) -> bool {
     // The hook swallows all motion, so the cursor simply stays parked.
     // Truly hiding a cursor owned by other processes needs an overlay
     // window; tracked in ROADMAP.
+    true
 }
 
 // ------------------------------------------------------------- capture ----

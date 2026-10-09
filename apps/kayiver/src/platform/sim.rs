@@ -44,6 +44,8 @@ struct SimWorld {
     handoff_delay_ms: u64,
     passive_notice: Option<Rect>,
     reject_injection: bool,
+    reject_containment: bool,
+    pending_capture: Vec<Captured>,
 }
 
 static WORLD: OnceLock<Mutex<SimWorld>> = OnceLock::new();
@@ -66,6 +68,8 @@ fn world() -> &'static Mutex<SimWorld> {
             handoff_delay_ms: 0,
             passive_notice: None,
             reject_injection: false,
+            reject_containment: false,
+            pending_capture: Vec::new(),
         })
     })
 }
@@ -169,8 +173,10 @@ pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Res
     Ok(())
 }
 
-pub fn set_forwarding_visuals(on: bool) {
-    let mut w=world().lock().unwrap();let native=w.cursor;w.parking.set_remote(on,native);
+pub fn set_forwarding_visuals(on: bool) -> bool {
+    let mut w=world().lock().unwrap();
+    if on && w.reject_containment {return false;}
+    let native=w.cursor;w.parking.set_remote(on,native);true
 }
 
 pub fn warp_cursor(x: i32, y: i32) {
@@ -394,6 +400,25 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             let intervened=super::route_motion(&ctl,&tx,(x,y),dx,dy);
             serde_json::json!({"ok":true,"intervened":intervened})
         }
+        "defer_motion" => {
+            // Reproduce capture claiming control before the router selects its
+            // queued Motion event. No alternate geometry or routing behavior.
+            let Some((ctl,_))=capture_handles() else {return serde_json::json!({"ok":false});};
+            let current=world().lock().unwrap().cursor;
+            let dx=cmd["dx"].as_i64().unwrap_or(0) as i32;
+            let dy=cmd["dy"].as_i64().unwrap_or(0) as i32;
+            let (tx,mut rx)=tokio::sync::mpsc::unbounded_channel();
+            let _gate=ctl.motion_gate.lock().unwrap();
+            super::route_motion(&ctl,&tx,(current.0+dx,current.1+dy),dx,dy);
+            while let Ok(ev)=rx.try_recv() {world().lock().unwrap().pending_capture.push(ev);}
+            ok
+        }
+        "flush_capture" => {
+            let Some((_,tx))=capture_handles() else {return serde_json::json!({"ok":false});};
+            let pending=std::mem::take(&mut world().lock().unwrap().pending_capture);
+            for ev in pending {let _=tx.send(ev);}
+            ok
+        }
         "input_move" | "queued_move" => {
             let (dx, dy) = (
                 cmd["dx"].as_i64().unwrap_or(0) as i32,
@@ -420,6 +445,7 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             super::capture_input(&ctl,&tx,InputEvent::Key {key,pressed});
             ok
         }
+        "reject_containment" => {world().lock().unwrap().reject_containment=cmd["enabled"].as_bool().unwrap_or(true);ok}
         "reject_injection" => {world().lock().unwrap().reject_injection=cmd["enabled"].as_bool().unwrap_or(true);ok}
         "programmatic_move" => {warp_cursor_settled(cmd["x"].as_i64().unwrap_or(0) as i32,cmd["y"].as_i64().unwrap_or(0) as i32);ok}
         "input_button" => {
@@ -435,7 +461,7 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
         }
         "state" => {
             let w = world().lock().unwrap();
-            let navigation = w.capture.as_ref().map(|(ctl,_)| { let nav=ctl.navigation.lock().unwrap(); serde_json::json!({"revision":nav.topology.revision,"surfaces":nav.topology.surfaces.len(),"seams":nav.topology.seams.len()}) });
+            let navigation = w.capture.as_ref().map(|(ctl,_)| { let nav=ctl.navigation.lock().unwrap(); serde_json::json!({"revision":nav.topology.revision,"surfaces":nav.topology.surfaces.len(),"layout":nav.topology,"seams":nav.topology.seams.len(),"control":match nav.control {super::navigation::Control::Local=>"local",super::navigation::Control::Remote(_)=>"remote",super::navigation::Control::Driven(_)=>"driven",super::navigation::Control::Recovering=>"recovering"}}) });
             let capture_bounds = w.capture.as_ref().map(|(ctl,_)| { let r=ctl.bounds(); [r.x,r.y,r.w,r.h] });
             let (forwarding, driven, portals, blocked) = match &w.capture {
                 Some((ctl, _)) => (

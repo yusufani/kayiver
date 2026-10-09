@@ -155,7 +155,10 @@ pub fn route_motion_precise(ctl:&CaptureCtl,tx:&tokio::sync::mpsc::UnboundedSend
     let Some(frame)=frame else {
         if matches!(ctl.navigation.lock().unwrap().control,navigation::Control::Recovering) {
             ctl.forwarding.store(false,Ordering::SeqCst);set_forwarding_visuals(false);
-            let _=tx.send(Captured::Panic);return RoutedMotion::handled();
+            if let Some(generation)=ctl.navigation.lock().unwrap().take_recovery_request() {
+                let _=tx.send(Captured::CaptureFailure {generation,reason:"navigation is no longer valid"});
+            }
+            return RoutedMotion::handled();
         }
         return RoutedMotion::passthrough();
     };
@@ -187,10 +190,18 @@ pub fn route_motion_precise(ctl:&CaptureCtl,tx:&tokio::sync::mpsc::UnboundedSend
     if local && !frame.handoff {return RoutedMotion::passthrough();}
     let was=ctl.forwarding.swap(!local,Ordering::SeqCst);
     if was != !local {
-        set_forwarding_visuals(!local);
+        if !set_forwarding_visuals(!local) {
+            let mut nav=ctl.navigation.lock().unwrap();
+            nav.begin_recovery();let generation=nav.take_recovery_request();drop(nav);
+            ctl.forwarding.store(false,Ordering::SeqCst);set_forwarding_visuals(false);
+            if let Some(generation)=generation {let _=tx.send(Captured::CaptureFailure {generation,reason:"source cursor containment failed"});}
+            return RoutedMotion::handled();
+        }
         if (!frame.keys.is_empty() || !frame.buttons.is_empty() || local) && !handoff_source_holds(&frame,local) {
-            ctl.navigation.lock().unwrap().control=navigation::Control::Recovering;
-            let _=tx.send(Captured::Panic);return RoutedMotion::handled();
+            let mut nav=ctl.navigation.lock().unwrap();nav.begin_recovery();let generation=nav.take_recovery_request();drop(nav);
+            ctl.forwarding.store(false,Ordering::SeqCst);set_forwarding_visuals(false);
+            if let Some(generation)=generation {let _=tx.send(Captured::CaptureFailure {generation,reason:"source held input handoff failed"});}
+            return RoutedMotion::handled();
         }
     }
     let resume=if local && reuse_event {Some((frame.position,frame.local_delta))} else {None};

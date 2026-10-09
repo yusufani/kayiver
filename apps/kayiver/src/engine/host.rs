@@ -533,7 +533,7 @@ impl Router {
     }
 
     /// A peer took control of this desk: start injecting what it sends.
-    fn enter_driven(&mut self, peer: &str, pos: (i32, i32)) {
+    fn enter_driven(&mut self, peer: &str, pos: (i32, i32)) -> bool {
         if self.injector.is_none() {
             match Injector::new() {
                 Ok(i) => self.injector = Some(i),
@@ -541,21 +541,17 @@ impl Router {
                     // Bounce it straight back rather than swallowing the
                     // cursor into a machine that cannot move it.
                     warn!("cannot inject input ({e:#}) — refusing control from {peer}");
-                    self.send_to(peer, Msg::CursorLeft { edge: Edge::Left, ratio: 0.5 });
-                    return;
+                    return false;
                 }
             }
         }
-        // We cannot drive and be driven at once; give up our own crossing.
-        if self.focus.is_some() {
-            self.release_all();
-            self.send_to_focus(Msg::Leave);
-            self.focus = None;
-            self.exit_forwarding();
-        }
+        // focus is asynchronous. Capture may already have claimed a remote
+        // source while its Motion frame is still waiting in the router queue.
+        if self.focus.is_some() {return false;}
         {
             let _gate=self.ctl.motion_gate.lock().unwrap();
-            self.ctl.navigation.lock().unwrap().drive(Some(peer.to_string()));
+            if !self.ctl.navigation.lock().unwrap().try_drive(peer) {return false;}
+            self.ctl.forwarding.store(false,Ordering::SeqCst);
             self.ctl.driven.store(true, Ordering::SeqCst);
         }
         self.driven = Some(Driven { peer: peer.to_string(), pos });
@@ -566,6 +562,7 @@ impl Router {
         platform::indicator::set_state(true, true);
         crate::ui::set_focus(Some(self.cfg.name.clone()));
         info!("{peer} is driving this desk — injecting at {pos:?}");
+        true
     }
 
     /// Control left this desk again (handed back, or the session died).
@@ -749,10 +746,13 @@ impl Router {
                 self.refresh_navigation();
             }
             Msg::NavigationRejected {stamp,reason}=>{
-                let nav=self.ctl.navigation.lock().unwrap();
-                let current=nav.session==stamp.session && nav.generation==stamp.generation;
-                drop(nav);
-                if current && self.focus.as_deref()==Some(&name) {self.recover_local(&reason);}
+                let current={
+                    let _gate=self.ctl.motion_gate.lock().unwrap();
+                    let current=self.ctl.navigation.lock().unwrap().reject_control(&name,stamp);
+                    if current {self.ctl.forwarding.store(false,Ordering::SeqCst);}
+                    current
+                };
+                if current {self.recover_local(&reason);}
             }
             Msg::CursorFrame { stamp, surface, x, y, keys, buttons } => {
                 let nav = self.ctl.navigation.lock().unwrap();
@@ -765,8 +765,7 @@ impl Router {
                 if !receiver.accept(stamp,session,stamp.revision) { return; }
                 if self.focus.is_some() || self.driven.as_ref().is_some_and(|d|d.peer != name) {self.send_to(&name,Msg::NavigationRejected {stamp,reason:"another controller is active".into()});return;}
                 if !self.driven.as_ref().is_some_and(|d|d.peer == name) {
-                    self.enter_driven(&name,(x,y));
-                    if !self.driven.as_ref().is_some_and(|d|d.peer==name) {self.send_to(&name,Msg::NavigationRejected {stamp,reason:"input injection is unavailable".into()});return;}
+                    if !self.enter_driven(&name,(x,y)) {self.send_to(&name,Msg::NavigationRejected {stamp,reason:"input control could not be acquired".into()});return;}
                     if let Some(i)=self.injector.as_mut() {
                         for key in keys {i.key(key,true);}
                         for button in buttons {i.button(button,true);}
@@ -1025,6 +1024,12 @@ impl Router {
                 }
             }
             Captured::EdgeHit {edge,ratio}=> {self.try_tablet_cross(edge,ratio);}
+            Captured::CaptureFailure {generation,reason} => {
+                let nav=self.ctl.navigation.lock().unwrap();
+                let current=nav.generation==generation && nav.control==platform::navigation::Control::Recovering;
+                drop(nav);
+                if current {self.recover_local(reason);}
+            },
             Captured::Panic => {
                 if self.tablet_active {self.set_tablet_control(false);}
                 self.recover_local("escape shortcut restored local control");

@@ -225,27 +225,13 @@ pub fn identified_monitors() -> Vec<(Option<String>, Rect)> {
     }).collect()
 }
 
-/// Built-in (laptop) flag per active display, same order as `monitors()`.
+/// Built-in flags use the same connected-display inventory as geometry and UUIDs.
 pub fn builtin_flags() -> Vec<bool> {
-    unsafe {
-        let mut ids = [0u32; 16];
-        let mut count = 0u32;
-        if CGGetActiveDisplayList(16, ids.as_mut_ptr(), &mut count) != 0 || count == 0 {
-            return vec![CGDisplayIsBuiltin(CGMainDisplayID()) != 0];
-        }
-        ids[..count as usize].iter().map(|&id| CGDisplayIsBuiltin(id) != 0).collect()
-    }
+    online_display_ids().into_iter().map(|id| unsafe { CGDisplayIsBuiltin(id) != 0 }).collect()
 }
 
 pub fn monitors() -> Vec<Rect> {
-    unsafe {
-        let mut ids = [0u32; 16];
-        let mut count = 0u32;
-        if CGGetActiveDisplayList(16, ids.as_mut_ptr(), &mut count) != 0 || count == 0 {
-            return vec![cgrect_to_rect(CGDisplayBounds(CGMainDisplayID()))];
-        }
-        ids[..count as usize].iter().map(|&id| cgrect_to_rect(CGDisplayBounds(id))).collect()
-    }
+    online_display_ids().into_iter().map(|id| unsafe { cgrect_to_rect(CGDisplayBounds(id)) }).collect()
 }
 
 pub fn desktop_bounds() -> Rect {
@@ -331,18 +317,22 @@ pub fn displays() -> Vec<(u32, String, Option<u16>)> {
     result
 }
 
-/// Active display IDs in the SAME order as `monitors()` (CGGetActiveDisplayList),
-/// so a shared-monitor index means the same physical display in the editor and
-/// in enable/disable. (Mirrored displays stay in this list, so an index is
-/// stable across a disable/enable cycle.)
+/// Connected displays, including sleeping panels. Active-only enumeration can
+/// become empty during display sleep and must not destroy stable identities or
+/// replace the layout with a synthetic main-display rectangle. All inventory
+/// consumers use this list, including mirrored panels needed for re-enabling.
 fn online_display_ids() -> Vec<u32> {
     unsafe {
-        let mut ids = [0u32; 16];
         let mut count = 0u32;
-        if CGGetActiveDisplayList(16, ids.as_mut_ptr(), &mut count) != 0 {
+        if CGGetOnlineDisplayList(0, std::ptr::null_mut(), &mut count) != 0 {
             return vec![];
         }
-        ids[..count as usize].to_vec()
+        let mut ids = vec![0u32; count as usize];
+        if count == 0 || CGGetOnlineDisplayList(count, ids.as_mut_ptr(), &mut count) != 0 {
+            return vec![];
+        }
+        ids.truncate(count as usize);
+        ids
     }
 }
 
@@ -535,7 +525,9 @@ pub fn warp_cursor(x: i32, y: i32) {
 pub fn warp_cursor_settled(x: i32, y: i32) {
     unsafe {
         CGWarpMouseCursorPosition(CGPoint { x: x as f64, y: y as f64 });
-        CGAssociateMouseAndMouseCursorPosition(1);
+        let error=CGAssociateMouseAndMouseCursorPosition(1);
+        ASSOCIATION_ERROR.store(error,Ordering::Relaxed);
+        if error==0 {DETACHED.store(false,Ordering::SeqCst);}
     }
 }
 
@@ -583,8 +575,21 @@ fn background_cursor_control() -> bool {
 static HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static HIDE_ERROR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static SHOW_ERROR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-pub fn set_forwarding_visuals(on: bool) {
+static DETACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ASSOCIATION_ERROR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static VISUALS_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub fn set_forwarding_visuals(on: bool) -> bool {
+    let _visuals=VISUALS_GATE.lock().unwrap();
     background_cursor_control();
+    // Dropping a session event prevents application delivery but cannot undo
+    // the cursor update that preceded it. Freeze the physical source once per
+    // ownership change; consuming the reports alone is not cursor containment.
+    if DETACHED.load(Ordering::SeqCst) != on {
+        let error=unsafe {CGAssociateMouseAndMouseCursorPosition(if on {0} else {1})};
+        ASSOCIATION_ERROR.store(error,Ordering::Relaxed);
+        if error!=0 {return false;}
+        DETACHED.store(on,Ordering::SeqCst);
+    }
     // Park inside a real monitor, with room for accelerated displacement in
     // every direction. Parking on the departure edge clips outward reports.
     let position=cursor_pos();
@@ -600,14 +605,15 @@ pub fn set_forwarding_visuals(on: bool) {
             if !HIDDEN.swap(true, Ordering::SeqCst) {
                 HIDE_ERROR.store(CGDisplayHideCursor(CGMainDisplayID()),Ordering::Relaxed);
             }
-            // Association stays enabled across handoffs; the tap contains
-            // the pointer without restarting the source acceleration pipeline.
+            // OS event deltas remain the movement contract while absolute
+            // source coordinates are frozen. Never infer motion from parking.
         } else {
             if HIDDEN.swap(false, Ordering::SeqCst) {
                 SHOW_ERROR.store(CGDisplayShowCursor(CGMainDisplayID()),Ordering::Relaxed);
             }
         }
     }
+    true
 }
 
 // ------------------------------------------------------------- capture ----
@@ -677,7 +683,7 @@ static REMOTE_SUPPRESSED: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 static PHYSICAL_REMOTE_SUPPRESSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static WARP_ERROR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 pub fn mouse_delivery_status()->serde_json::Value {
-    serde_json::json!({"remote_suppressed":REMOTE_SUPPRESSED.load(Ordering::Relaxed),
+    serde_json::json!({"tap_location":"session","cursor_detached_requested":DETACHED.load(Ordering::SeqCst),"association_error":ASSOCIATION_ERROR.load(Ordering::Relaxed),"remote_suppressed":REMOTE_SUPPRESSED.load(Ordering::Relaxed),
         "physical_remote_suppressed":PHYSICAL_REMOTE_SUPPRESSED.load(Ordering::Relaxed),
         "warp_error":WARP_ERROR.load(Ordering::Relaxed),"hide_error":HIDE_ERROR.load(Ordering::Relaxed),"show_error":SHOW_ERROR.load(Ordering::Relaxed),"cursor_hidden_requested":HIDDEN.load(Ordering::Relaxed),"background_cursor_control":background_cursor_control()})
 }
@@ -777,7 +783,7 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         let previous=state.motion_position;
         let native=kayiver_core::motion::Point::new(p.x,p.y);
         let rebasing=!forwarding && state.local_warp_reference.is_some();
-        // Association remains enabled, so these are accelerated OS deltas.
+        // OS displacement is independent of the frozen native position.
         // Native coordinates keep local subpixels; remote reports use only the
         // OS displacement, independent of the parking coordinate phase.
         let reference=previous.map(|o|kayiver_core::motion::Point::new(o.x,o.y));

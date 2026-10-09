@@ -700,6 +700,16 @@ fn crossing_to_the_windows_screen_above_survives_a_primary_switch() {
         let cfg = host.config_text();
         cfg.contains("x = -163") && cfg.contains("y = 1080")
     });
+    // Persisting the config precedes publication of the versioned topology.
+    // Exercise the crossing only once both real routers have installed it.
+    wait_until("both routers install the moved-panel topology", Duration::from_secs(10), || {
+        let h=host.state(); let c=client.state();
+        h["navigation"]["layout"]==c["navigation"]["layout"]
+            && h["navigation"]["layout"]["surfaces"].as_array().is_some_and(|surfaces|
+                surfaces.iter().any(|s|s["machine"]=="simwin"
+                    && s["rect"]==serde_json::json!({"x":0,"y":0,"w":1920,"h":1080})))
+            && c["capture_bounds"]==serde_json::json!([-163,0,2560,2520])
+    });
     client.injected();
     let ratio = (3600.0 + 1512.0) / (5120.0 + 1512.0);
     assert!(host.ctl(serde_json::json!({"op":"edge", "edge":"top", "ratio":ratio}))["ok"].as_bool().unwrap());
@@ -1827,4 +1837,43 @@ fn both_input_sources_roundtrip_with_each_shared_owner() {
             assert!(!source.log_text().contains("restoring local cursor"), "normal roundtrips entered recovery");
         }
     }
+}
+
+#[test]
+fn failed_source_containment_never_drives_the_peer_and_recovers_locally() {
+    let (mut host, mut client) = desk("source-containment-failure", 28880);
+    give_panel_to_client(&mut host);
+    host.ctl(serde_json::json!({"op":"warp","x":2550,"y":700}));
+    client.injected();
+    host.ctl(serde_json::json!({"op":"reject_containment","enabled":true}));
+    host.ctl(serde_json::json!({"op":"input_move","dx":100,"dy":0}));
+    wait_until("source failure is recovered", Duration::from_secs(5), || host.log_text().contains("source cursor containment failed"));
+    assert_eq!(host.state()["forwarding"], false);
+    assert_eq!(client.state()["driven"], false);
+    assert!(!client.injected().iter().any(|e|e["kind"]=="mouse_to"));
+    host.ctl(serde_json::json!({"op":"reject_containment","enabled":false}));
+    host.ctl(serde_json::json!({"op":"warp","x":2550,"y":700}));
+    host.ctl(serde_json::json!({"op":"input_move","dx":100,"dy":0}));
+    wait_until("later valid crossing still works", Duration::from_secs(5), || client.state()["driven"] == true);
+}
+
+#[test]
+fn an_incoming_frame_cannot_steal_a_source_whose_router_notification_is_queued() {
+    let (mut host, mut client) = desk("capture-router-claim", 28900);
+    host.ctl(serde_json::json!({"op":"warp","x":3800,"y":10}));
+    host.ctl(serde_json::json!({"op":"defer_motion","dx":0,"dy":-100}));
+    assert_eq!(host.state()["navigation"]["control"], "remote");
+    assert!(!host.log_text().contains("cursor control changed"), "router already saw deferred motion");
+    client.ctl(serde_json::json!({"op":"warp","x":1240,"y":-10}));
+    client.ctl(serde_json::json!({"op":"input_move","dx":0,"dy":100}));
+    wait_until("competing source is rejected", Duration::from_secs(5), || client.log_text().contains("input control could not be acquired"));
+    let source=host.state();
+    assert_eq!(source["navigation"]["control"], "remote");
+    assert_eq!(source["forwarding"], true);
+    assert_eq!(source["driven"], false);
+    host.ctl(serde_json::json!({"op":"flush_capture"}));
+    wait_until("original source drives after router catches up", Duration::from_secs(5), || client.state()["driven"]==true);
+    host.ctl(serde_json::json!({"op":"input_move","dx":0,"dy":100}));
+    wait_until("original source returns normally", Duration::from_secs(5), || client.state()["driven"]==false);
+    assert_eq!(host.state()["cursor"], serde_json::json!([3800,10]));
 }

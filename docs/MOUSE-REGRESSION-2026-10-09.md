@@ -1,5 +1,8 @@
 # Mouse crossing regression: 2026-10-09
 
+Superseded by `MOUSE-REGRESSION-2026-10-10.md`: the user subsequently reported
+source cursor motion despite the application-delivery observations below.
+
 Status: 0.3.10-dev development candidate installed on both devices. This is not
 full physical acceptance or a public fixed release. 0.3.9 remains withdrawn.
 

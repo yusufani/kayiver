@@ -58,6 +58,8 @@ def verify_roundtrip():
  start=state()['navigation']['location'];point=(start or {}).get('point',{'x':args.start[0],'y':args.start[1]})
  s=move(*args.start,round(args.start[0]-point['x']),round(args.start[1]-point['y']),local)
  s=move(*args.exit,*args.exit_delta,remote);assert s['forwarding'],'seam did not cross'
+ with urllib.request.urlopen('http://127.0.0.1:24818/api/status',timeout=3) as r:delivery=json.load(r)['mouse_delivery']
+ assert delivery['cursor_detached_requested'] and delivery['association_error']==0,'source freeze was not established'
  park=s['native_cursor'];hidden=not cg.CGCursorIsVisible();s=move(park[0]+12.5,park[1]+20.25,12,20,remote2)
  assert s['forwarding'],'concurrent physical input returned control during this fixture'
  assert s['native_cursor']==park,('native drift',s['native_cursor'],park,s['navigation'])
@@ -67,6 +69,8 @@ def verify_roundtrip():
  s=move(park[0]+.25,park[1]-.25,0,0,physical_zero,-1.0)
  assert s['forwarding'] and s['native_cursor']==park,'quantized physical zero escaped containment'
  s=move(park[0]+args.return_delta[0],park[1]+args.return_delta[1],*args.return_delta,back);assert not s['forwarding'],'return failed'
+ with urllib.request.urlopen('http://127.0.0.1:24818/api/status',timeout=3) as r:delivery=json.load(r)['mouse_delivery']
+ assert not delivery['cursor_detached_requested'] and delivery['association_error']==0,'local association was not restored'
  point=s['navigation']['location']['point'];s=move(park[0]+args.return_delta[0]+1,park[1]+args.return_delta[1],1,0,queued)
  assert abs(s['navigation']['location']['point']['x']-point['x']-1)<.01,'return queue gained parking distance'
  result=({'delivered_tags':seen,'remote_tags_leaked':[x for x in seen if x in [remote,remote2,zero,physical_zero]],'local_delivered':local in seen,'return_delivered':back in seen,'native_park':park,'cursor_hidden_while_remote':hidden,'cursor_visible_after_return':cg.CGCursorIsVisible()})
