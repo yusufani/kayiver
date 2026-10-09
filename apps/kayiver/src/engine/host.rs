@@ -533,7 +533,7 @@ impl Router {
     }
 
     /// A peer took control of this desk: start injecting what it sends.
-    fn enter_driven(&mut self, peer: &str, pos: (i32, i32)) {
+    fn enter_driven(&mut self, peer: &str, pos: (i32, i32)) -> bool {
         if self.injector.is_none() {
             match Injector::new() {
                 Ok(i) => self.injector = Some(i),
@@ -541,21 +541,17 @@ impl Router {
                     // Bounce it straight back rather than swallowing the
                     // cursor into a machine that cannot move it.
                     warn!("cannot inject input ({e:#}) — refusing control from {peer}");
-                    self.send_to(peer, Msg::CursorLeft { edge: Edge::Left, ratio: 0.5 });
-                    return;
+                    return false;
                 }
             }
         }
-        // We cannot drive and be driven at once; give up our own crossing.
-        if self.focus.is_some() {
-            self.release_all();
-            self.send_to_focus(Msg::Leave);
-            self.focus = None;
-            self.exit_forwarding();
-        }
+        // focus is asynchronous. Capture may already have claimed a remote
+        // source while its Motion frame is still waiting in the router queue.
+        if self.focus.is_some() {return false;}
         {
             let _gate=self.ctl.motion_gate.lock().unwrap();
-            self.ctl.navigation.lock().unwrap().drive(Some(peer.to_string()));
+            if !self.ctl.navigation.lock().unwrap().try_drive(peer) {return false;}
+            self.ctl.forwarding.store(false,Ordering::SeqCst);
             self.ctl.driven.store(true, Ordering::SeqCst);
         }
         self.driven = Some(Driven { peer: peer.to_string(), pos });
@@ -566,26 +562,21 @@ impl Router {
         platform::indicator::set_state(true, true);
         crate::ui::set_focus(Some(self.cfg.name.clone()));
         info!("{peer} is driving this desk — injecting at {pos:?}");
+        true
     }
 
     /// Control left this desk again (handed back, or the session died).
     fn leave_driven(&mut self) {
         if self.driven.take().is_none() {return;}
+        // Release held input while the source remains protected. Publish Local
+        // only after native parking and its movement reference are settled.
+        if let Some(inj)=self.injector.as_mut() {inj.release_all();}
         {
             let _gate=self.ctl.motion_gate.lock().unwrap();
+            if let Some(b)=*self.ctl.blocked.read().unwrap() {self.park_off_hidden_panel(b);}
+            platform::rebase_native_capture();
             self.ctl.navigation.lock().unwrap().drive(None);
             self.ctl.driven.store(false,Ordering::SeqCst);
-        }
-        // The driver may have left our cursor on our copy of the shared panel
-        // just as the panel was flipped away from us (it is blocked by now):
-        // an invisible cursor, and one the guard would otherwise treat as a
-        // fresh entry. Park it BEFORE the guard resumes.
-        if let Some(b) = *self.ctl.blocked.read().unwrap() {
-            self.park_off_hidden_panel(b);
-        }
-        self.ctl.driven.store(false, Ordering::SeqCst);
-        if let Some(inj) = self.injector.as_mut() {
-            inj.release_all();
         }
         self.refresh_portals();
         platform::indicator::set_state(true, false);
@@ -749,10 +740,13 @@ impl Router {
                 self.refresh_navigation();
             }
             Msg::NavigationRejected {stamp,reason}=>{
-                let nav=self.ctl.navigation.lock().unwrap();
-                let current=nav.session==stamp.session && nav.generation==stamp.generation;
-                drop(nav);
-                if current && self.focus.as_deref()==Some(&name) {self.recover_local(&reason);}
+                let current={
+                    let _gate=self.ctl.motion_gate.lock().unwrap();
+                    let current=self.ctl.navigation.lock().unwrap().reject_control(&name,stamp);
+                    if current {self.ctl.forwarding.store(false,Ordering::SeqCst);}
+                    current
+                };
+                if current {self.recover_local(&reason);}
             }
             Msg::CursorFrame { stamp, surface, x, y, keys, buttons } => {
                 let nav = self.ctl.navigation.lock().unwrap();
@@ -765,8 +759,7 @@ impl Router {
                 if !receiver.accept(stamp,session,stamp.revision) { return; }
                 if self.focus.is_some() || self.driven.as_ref().is_some_and(|d|d.peer != name) {self.send_to(&name,Msg::NavigationRejected {stamp,reason:"another controller is active".into()});return;}
                 if !self.driven.as_ref().is_some_and(|d|d.peer == name) {
-                    self.enter_driven(&name,(x,y));
-                    if !self.driven.as_ref().is_some_and(|d|d.peer==name) {self.send_to(&name,Msg::NavigationRejected {stamp,reason:"input injection is unavailable".into()});return;}
+                    if !self.enter_driven(&name,(x,y)) {self.send_to(&name,Msg::NavigationRejected {stamp,reason:"input control could not be acquired".into()});return;}
                     if let Some(i)=self.injector.as_mut() {
                         for key in keys {i.key(key,true);}
                         for button in buttons {i.button(button,true);}
@@ -1025,6 +1018,12 @@ impl Router {
                 }
             }
             Captured::EdgeHit {edge,ratio}=> {self.try_tablet_cross(edge,ratio);}
+            Captured::CaptureFailure {generation,reason} => {
+                let nav=self.ctl.navigation.lock().unwrap();
+                let current=nav.generation==generation && nav.control==platform::navigation::Control::Recovering;
+                drop(nav);
+                if current {self.recover_local(reason);}
+            },
             Captured::Panic => {
                 if self.tablet_active {self.set_tablet_control(false);}
                 self.recover_local("escape shortcut restored local control");

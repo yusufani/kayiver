@@ -700,6 +700,16 @@ fn crossing_to_the_windows_screen_above_survives_a_primary_switch() {
         let cfg = host.config_text();
         cfg.contains("x = -163") && cfg.contains("y = 1080")
     });
+    // Persisting the config precedes publication of the versioned topology.
+    // Exercise the crossing only once both real routers have installed it.
+    wait_until("both routers install the moved-panel topology", Duration::from_secs(10), || {
+        let h=host.state(); let c=client.state();
+        h["navigation"]["layout"]==c["navigation"]["layout"]
+            && h["navigation"]["layout"]["surfaces"].as_array().is_some_and(|surfaces|
+                surfaces.iter().any(|s|s["machine"]=="simwin"
+                    && s["rect"]==serde_json::json!({"x":0,"y":0,"w":1920,"h":1080})))
+            && c["capture_bounds"]==serde_json::json!([-163,0,2560,2520])
+    });
     client.injected();
     let ratio = (3600.0 + 1512.0) / (5120.0 + 1512.0);
     assert!(host.ctl(serde_json::json!({"op":"edge", "edge":"top", "ratio":ratio}))["ok"].as_bool().unwrap());
@@ -1781,4 +1791,105 @@ fn real_native_edge_reference_reenters_windows_without_hidden_travel() {
     host.ctl(serde_json::json!({"op":"capture_motion","x":x,"y":0,"dx":0,"dy":-6}));
     assert!(host.state()["forwarding"].as_bool().unwrap(),"real C edge must not wait for stale interior coordinates");
     wait_until("Windows receives reentry",Duration::from_secs(5),||client.state()["driven"].as_bool().unwrap());
+}
+
+/// The capture source is independent of panel ownership. Exercise each pair
+/// over ordered TCP, and check containment while the other cursor is driven.
+#[test]
+fn both_input_sources_roundtrip_with_each_shared_owner() {
+    let (mut host, mut client) = desk("source-owner-matrix", 28860);
+    for owner_is_client in [false, true] {
+        if owner_is_client {
+            give_panel_to_client(&mut host);
+        }
+        wait_until("receiver has the same panel owner", Duration::from_secs(5), || {
+            client.state()["blocked"].is_null() == owner_is_client
+        });
+        for source_is_client in [false, true] {
+            let (source, receiver, x, y, dx, dy) = match (owner_is_client, source_is_client) {
+                (false, false) => (&mut host, &mut client, 3800, 10, 0, -100),
+                (false, true) => (&mut client, &mut host, 1240, -10, 0, 100),
+                (true, false) => (&mut host, &mut client, 2550, 700, 100, 0),
+                (true, true) => (&mut client, &mut host, 10, 700, -100, 0),
+            };
+            source.ctl(serde_json::json!({"op":"warp","x":x,"y":y}));
+            let changes_before = source.log_text().matches("cursor control changed").count();
+            receiver.injected();
+            for turn in 0..100 {
+                source.ctl(serde_json::json!({"op":"input_move","dx":dx,"dy":dy}));
+                assert_eq!(source.state()["forwarding"], true, "owner={owner_is_client} source={source_is_client} turn={turn}");
+                let parked = source.state()["cursor"].clone();
+                source.ctl(serde_json::json!({"op":"native_drift","x":x+200,"y":y+200,"dx":0,"dy":0}));
+                assert_eq!(source.state()["cursor"], parked, "remote source drift escaped containment");
+                source.ctl(serde_json::json!({"op":"input_move","dx":-dx,"dy":-dy}));
+                assert_eq!(source.state()["forwarding"], false);
+                assert_eq!(source.state()["cursor"], serde_json::json!([x,y]), "roundtrip consumed distance incorrectly");
+            }
+            wait_until("all source-owner handoffs reach the router", Duration::from_secs(10), || {
+                source.log_text().matches("cursor control changed").count() >= changes_before + 200
+            });
+            let mut releases = 0;
+            wait_until("receiver consumes every handoff release", Duration::from_secs(10), || {
+                releases += receiver.injected().iter().filter(|e| e["kind"] == "release_all").count();
+                releases >= 100
+            });
+            assert_eq!(receiver.state()["driven"], false);
+            assert!(!source.log_text().contains("restoring local cursor"), "normal roundtrips entered recovery");
+        }
+    }
+}
+
+#[test]
+fn failed_source_containment_never_drives_the_peer_and_recovers_locally() {
+    let (mut host, mut client) = desk("source-containment-failure", 28880);
+    give_panel_to_client(&mut host);
+    host.ctl(serde_json::json!({"op":"warp","x":2550,"y":700}));
+    client.injected();
+    host.ctl(serde_json::json!({"op":"reject_containment","enabled":true}));
+    host.ctl(serde_json::json!({"op":"input_move","dx":100,"dy":0}));
+    wait_until("source failure is recovered", Duration::from_secs(5), || host.log_text().contains("source cursor containment failed"));
+    assert_eq!(host.state()["forwarding"], false);
+    assert_eq!(client.state()["driven"], false);
+    assert!(!client.injected().iter().any(|e|e["kind"]=="mouse_to"));
+    host.ctl(serde_json::json!({"op":"reject_containment","enabled":false}));
+    host.ctl(serde_json::json!({"op":"warp","x":2550,"y":700}));
+    host.ctl(serde_json::json!({"op":"input_move","dx":100,"dy":0}));
+    wait_until("later valid crossing still works", Duration::from_secs(5), || client.state()["driven"] == true);
+}
+
+#[test]
+fn an_incoming_frame_cannot_steal_a_source_whose_router_notification_is_queued() {
+    let (mut host, mut client) = desk("capture-router-claim", 28900);
+    host.ctl(serde_json::json!({"op":"warp","x":3800,"y":10}));
+    host.ctl(serde_json::json!({"op":"defer_motion","dx":0,"dy":-100}));
+    assert_eq!(host.state()["navigation"]["control"], "remote");
+    assert!(!host.log_text().contains("cursor control changed"), "router already saw deferred motion");
+    client.ctl(serde_json::json!({"op":"warp","x":1240,"y":-10}));
+    client.ctl(serde_json::json!({"op":"input_move","dx":0,"dy":100}));
+    wait_until("competing source is rejected", Duration::from_secs(5), || client.log_text().contains("input control could not be acquired"));
+    let source=host.state();
+    assert_eq!(source["navigation"]["control"], "remote");
+    assert_eq!(source["forwarding"], true);
+    assert_eq!(source["driven"], false);
+    host.ctl(serde_json::json!({"op":"flush_capture"}));
+    wait_until("original source drives after router catches up", Duration::from_secs(5), || client.state()["driven"]==true);
+    host.ctl(serde_json::json!({"op":"input_move","dx":0,"dy":100}));
+    wait_until("original source returns normally", Duration::from_secs(5), || client.state()["driven"]==false);
+    assert_eq!(host.state()["cursor"], serde_json::json!([3800,10]));
+}
+
+#[test]
+fn receiver_parking_finishes_before_physical_capture_is_reenabled() {
+    let (mut host,mut client)=primary_windows_desk("protected-release",28100);
+    wait_until("receiver is driven",Duration::from_secs(5),||client.state()["driven"]==true);
+    // An external programmatic position must not authorize receiver geometry.
+    // On release its hidden-panel parking must still be capture-protected.
+    client.ctl(serde_json::json!({"op":"programmatic_move","x":100,"y":1200}));
+    host.ctl(serde_json::json!({"op":"input_move","dx":0,"dy":100}));
+    wait_until("receiver releases control",Duration::from_secs(5),||client.state()["driven"]==false);
+    let state=client.state();
+    assert_eq!(state["cursor"],serde_json::json!([960,540]));
+    assert_eq!(state["last_warp_driven"],true,"parking exposed an intermediate local cursor state: {state}");
+    assert_eq!(state["navigation"]["control"],"local");
+    assert_eq!(state["forwarding"],false);
 }

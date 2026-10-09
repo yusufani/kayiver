@@ -21,7 +21,7 @@ pub struct Frame {
     pub keys: Vec<u16>,
     pub buttons: Vec<MouseButton>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Control {
     Local,
     Remote(String),
@@ -40,6 +40,8 @@ pub struct Navigation {
     pub session: u64,
     pub generation: u64,
     pub sequence: u64,
+    claim_sequence: u64,
+    recovery_notified: Option<u64>,
 }
 impl Default for Navigation {
     fn default() -> Self {
@@ -57,6 +59,8 @@ impl Default for Navigation {
                 .as_nanos() as u64,
             generation: 1,
             sequence: 0,
+            claim_sequence: 0,
+            recovery_notified: None,
         }
     }
 }
@@ -118,6 +122,33 @@ impl Navigation {
         self.native_reference=None;
         self.generation += 1;
     }
+    pub fn begin_recovery(&mut self) {
+        if self.control!=Control::Recovering {self.generation+=1;}
+        self.control=Control::Recovering;self.location=None;self.native_reference=None;
+    }
+    pub fn take_recovery_request(&mut self) -> Option<u64> {
+        if self.control==Control::Recovering && self.recovery_notified!=Some(self.generation) {
+            self.recovery_notified=Some(self.generation);Some(self.generation)
+        } else {None}
+    }
+    /// A delayed rejection belongs to its source claim, not a later return or
+    /// reentry in the same session/layout generation.
+    pub fn reject_control(&mut self, peer:&str, stamp:Stamp) -> bool {
+        let current=self.session==stamp.session && self.generation==stamp.generation
+            && self.topology.revision==stamp.revision && stamp.sequence>=self.claim_sequence
+            && stamp.sequence<=self.sequence && matches!(&self.control,Control::Remote(p) if p==peer);
+        if current {self.begin_recovery();}
+        current
+    }
+    /// Incoming ownership cannot override a source crossing whose router
+    /// notification is still queued. Call under capture's motion gate.
+    pub fn try_drive(&mut self, peer: &str) -> bool {
+        match &self.control {
+            Control::Local => {self.drive(Some(peer.to_owned()));true},
+            Control::Driven(current) if current==peer => true,
+            _ => false,
+        }
+    }
     /// A programmatic local position updates the reference without consuming
     /// a physical movement or authorizing a handoff.
     pub fn native_reposition(&mut self, native:Point) {
@@ -133,7 +164,7 @@ impl Navigation {
     }
     pub fn sample_precise(&mut self, native: Point, delta: Point) -> Option<Frame> {
         let dx=delta.x; let dy=delta.y;
-        if self.machine.is_empty() || matches!(self.control, Control::Driven(_)) {
+        if self.machine.is_empty() || matches!(self.control, Control::Driven(_) | Control::Recovering) {
             return None;
         }
         let previous_native=self.native_reference;
@@ -197,11 +228,9 @@ impl Navigation {
             }
         }
         let surface = self.topology.surface(&location.surface)?;
-        self.control = if surface.machine == self.machine {
-            Control::Local
-        } else {
-            Control::Remote(surface.machine.clone())
-        };
+        let next=if surface.machine==self.machine {Control::Local} else {Control::Remote(surface.machine.clone())};
+        if self.control!=next {self.claim_sequence=self.sequence+1;}
+        self.control=next;
         self.sequence += 1;
         let mut keys: Vec<_> = self.keys.iter().copied().collect();
         keys.sort_by_key(|key| (!(0xe0..=0xe7).contains(key), *key));
@@ -312,6 +341,33 @@ mod tests {
             assert_eq!(f.x, 2550);
         }
         assert!((n.location.unwrap().point.x - 2550.25).abs() < 0.001);
+    }
+    #[test]
+    fn incoming_control_cannot_override_a_source_crossing_before_router_catches_up() {
+        let mut n=Navigation::default();n.machine="mac".into();
+        n.control=Control::Remote("win".into());
+        let generation=n.generation;
+        assert!(!n.try_drive("win"));
+        assert!(matches!(n.control,Control::Remote(_)));assert_eq!(n.generation,generation);
+        n.control=Control::Recovering;assert!(!n.try_drive("win"));
+        n.control=Control::Local;assert!(n.try_drive("win"));
+        let generation=n.generation;
+        assert!(n.try_drive("win"));assert_eq!(n.generation,generation);
+        assert!(!n.try_drive("another-peer"));assert_eq!(n.generation,generation);
+    }
+    #[test]
+    fn old_rejections_cannot_recover_a_returned_or_reentered_source() {
+        let mut n=nav();n.location=Some(Location{surface:"A".into(),point:Point::new(2550.0,700.0)});
+        let first=n.sample((2565,700),100,0).unwrap();
+        n.sample((2565,700),-100,0).unwrap();
+        assert!(!n.reject_control("win",first.stamp));
+        let second=n.sample((2565,700),100,0).unwrap();
+        assert!(!n.reject_control("win",first.stamp));
+        assert!(n.reject_control("win",second.stamp));
+        let generation=n.take_recovery_request().unwrap();
+        assert!(n.sample((2565,700),100,0).is_none());
+        assert!(n.take_recovery_request().is_none());
+        n.begin_recovery();assert_eq!(n.generation,generation);
     }
     #[test]
     fn captured_buttons_and_keys_cross_with_the_cursor() {

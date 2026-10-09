@@ -849,9 +849,15 @@ pub fn warp_cursor(x: i32, y: i32) {
     unsafe {
         let _ = SetCursorPos(x, y);
     }
+    rebase_native_capture();
     if let Some(s) = STATE.get() {
-        *s.park.lock().unwrap() = (x, y);
+        *s.park.lock().unwrap() = cursor_pos();
     }
+}
+
+/// Call before allowing local physical reports after remote injection/parking.
+pub fn rebase_native_capture() {
+    if let Some(s)=STATE.get() {s.last_native.lock().unwrap().rebase(cursor_pos());}
 }
 
 /// Windows has no post-warp event suppression; identical to `warp_cursor`.
@@ -869,10 +875,11 @@ pub fn cursor_pos() -> (i32, i32) {
     (p.x, p.y)
 }
 
-pub fn set_forwarding_visuals(_on: bool) {
+pub fn set_forwarding_visuals(_on: bool) -> bool {
     // The hook swallows all motion, so the cursor simply stays parked.
     // Truly hiding a cursor owned by other processes needs an overlay
     // window; tracked in ROADMAP.
+    true
 }
 
 // ------------------------------------------------------------- capture ----
@@ -883,7 +890,7 @@ struct CapState {
     /// Where the physical cursor is parked while forwarding; deltas are
     /// computed against this point.
     park: Mutex<(i32, i32)>,
-    last_native: Mutex<Option<(i32,i32)>>,
+    last_native: Mutex<super::source_motion::PositionReference>,
     esc_downs: Mutex<[Option<Instant>; 2]>,
 }
 
@@ -891,7 +898,7 @@ static STATE: OnceLock<CapState> = OnceLock::new();
 
 pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Result<()> {
     if STATE
-        .set(CapState { ctl, tx, park: Mutex::new((0, 0)), last_native:Mutex::new(None), esc_downs: Mutex::new([None, None]) })
+        .set(CapState { ctl, tx, park: Mutex::new((0, 0)), last_native:Mutex::new({let mut reference=super::source_motion::PositionReference::default();reference.rebase(cursor_pos());reference}), esc_downs: Mutex::new([None, None]) })
         .is_err()
     {
         bail!("capture already started");
@@ -939,10 +946,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
     if msg==WM_MOUSEMOVE {
         if state.ctl.driven.load(Ordering::SeqCst) {return LRESULT(1);}
         let point=(info.pt.x,info.pt.y);
-        let previous=state.last_native.lock().unwrap().unwrap_or(point);
-        let origin=if forwarding {*state.park.lock().unwrap()}else{previous};
-        let (dx,dy)=(point.0-origin.0,point.1-origin.1);
-        *state.last_native.lock().unwrap()=Some(point);
+        let parked=if forwarding {Some(*state.park.lock().unwrap())}else{None};
+        let (dx,dy)=state.last_native.lock().unwrap().consume(point,parked);
         if super::route_motion(&state.ctl,&state.tx,point,dx,dy) {
             if state.ctl.forwarding.load(Ordering::SeqCst) {
                 if !forwarding {
@@ -954,7 +959,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                 let park=*state.park.lock().unwrap();
                 let _=SetCursorPos(park.0,park.1);
             } else {
-                *state.last_native.lock().unwrap()=Some(cursor_pos());
+                state.last_native.lock().unwrap().rebase(cursor_pos());
             }
             return LRESULT(1);
         }
@@ -1199,10 +1204,12 @@ impl Injector {
                          reattach={reattached} retry_ok={} now=({},{})]",
                         p.x, p.y, warp.is_ok(), clip, retried.is_ok(), q.x, q.y
                     ));
+                    rebase_native_capture();
                     return retried.is_ok() && (q.x-x).abs()<=4 && (q.y-y).abs()<=4;
                 }
             }
         }
+        rebase_native_capture();
         true
     }
 

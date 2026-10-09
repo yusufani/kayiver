@@ -1,3 +1,8 @@
+> WITHDRAWN 2026-10-09: physical mouse crossing regressed after deployment.
+> The prerelease is draft again; both devices were rolled back to 0.3.8.
+> The synthetic checks described below did not establish physical acceptance.
+> See MOUSE-REGRESSION-2026-10-09.md for the confirmed source-motion defect.
+
 # Kayıver 0.3.9
 
 Mac-to-Windows motion is now consumed at the macOS session event tap, after source acceleration and before local application delivery. Returning a rewritten HID event was insufficient: it could reach local applications and overwrite cursor parking. The session capture keeps mouse association enabled, passes local return reports through, and consumes all remote reports, including zero-delta and programmatic movement.

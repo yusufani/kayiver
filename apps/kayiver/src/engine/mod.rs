@@ -19,6 +19,8 @@ pub enum Captured {
     EdgeHit { edge: Edge, ratio: f32 },
     /// Panic escape (triple-Esc): capture already dropped out of forwarding.
     Panic,
+    /// A native capture operation failed; restore local control with its reason.
+    CaptureFailure {generation:u64,reason:&'static str},
     /// Shared-monitor hotkey (Cmd/Ctrl+Alt+M). Only emitted while
     /// `CaptureCtl::shared_hotkey` is set; the keystroke is swallowed.
     SharedHotkey,

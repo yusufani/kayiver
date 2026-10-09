@@ -64,6 +64,7 @@ pub fn record(topology: &Topology, start: &Location, delta: Point, expected: &St
 
 #[derive(serde::Serialize)]
 pub struct NativeSample {
+    pub stage: &'static str,
     pub timestamp: u64,
     pub source_pid: i64,
     pub remote: bool,
@@ -91,5 +92,5 @@ fn initialize_native() {
 pub fn native_enabled() -> bool {matches!(NATIVE.get(),Some(Some(_)))}
 pub fn record_native(sample: NativeSample) {
     let Some(Some(tx))=NATIVE.get() else {return;};
-    if NATIVE_COUNT.fetch_add(1,Ordering::Relaxed)<20000 {let _=tx.try_send(sample);}
+    if NATIVE_COUNT.fetch_add(1,Ordering::Relaxed)<120000 {let _=tx.try_send(sample);}
 }

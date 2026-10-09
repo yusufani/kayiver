@@ -54,7 +54,7 @@ pub fn start_capture(_ctl: Arc<CaptureCtl>, _tx: UnboundedSender<Captured>) -> R
     bail!("input capture is not implemented on this platform")
 }
 
-pub fn set_forwarding_visuals(_on: bool) {}
+pub fn set_forwarding_visuals(_on: bool) -> bool {true}
 
 pub fn warp_cursor(_x: i32, _y: i32) {}
 pub fn warp_cursor_settled(_x: i32, _y: i32) {}
