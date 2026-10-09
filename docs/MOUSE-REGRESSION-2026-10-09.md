@@ -77,12 +77,29 @@ receiver coordinates, hidden shared aliases, and ambiguous rectangles.
   `CGCursorIsVisible` is reported as advisory information, not asserted as
   proof of visible cursor behavior.
 
+## Source and owner matrix
+
+A paired-process regression now runs 100 immediate roundtrips for each of
+four source/shared-owner combinations (400 total). Every trip checks the
+source parking position, exact return distance, forwarding state and receiver
+release. Before switching the input source, it waits for all 100 ordered
+releases; a transient not-driven snapshot can belong to an earlier trip and
+is not proof that the network queue is empty. This is simulated OS input over
+real TCP/Noise, not physical acceleration acceptance.
+
 ## Validation and remaining gates
 
-App unit tests (35), paired simulated transport tests (37), and the unchanged
+App unit tests (35), paired simulated transport tests (38, with the release
+workflow's `--test-threads=1`), and the unchanged
 core geometry suite (35) passed. Both native platform builds compiled. macOS
 uses the original stable signing identity; Windows runs in console session 1.
 Both installed versions identify as 0.3.10-dev with protocol 16.
+
+The unrestricted parallel simulation run passed 36/38: the scaled landing
+scenario timed out, and the six-second load scenario received 46 motion
+frames instead of its >200 threshold. Both passed in the release workflow's
+serial run. This is a test execution limitation, not evidence that physical
+movement is correct under arbitrary CPU load.
 
 The broad acceptance matrix remains incomplete: different DPI configurations,
 held drag/key transfer, both physical sources and shared owners, and hundreds

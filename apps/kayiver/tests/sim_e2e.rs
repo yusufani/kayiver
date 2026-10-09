@@ -1782,3 +1782,49 @@ fn real_native_edge_reference_reenters_windows_without_hidden_travel() {
     assert!(host.state()["forwarding"].as_bool().unwrap(),"real C edge must not wait for stale interior coordinates");
     wait_until("Windows receives reentry",Duration::from_secs(5),||client.state()["driven"].as_bool().unwrap());
 }
+
+/// The capture source is independent of panel ownership. Exercise each pair
+/// over ordered TCP, and check containment while the other cursor is driven.
+#[test]
+fn both_input_sources_roundtrip_with_each_shared_owner() {
+    let (mut host, mut client) = desk("source-owner-matrix", 28860);
+    for owner_is_client in [false, true] {
+        if owner_is_client {
+            give_panel_to_client(&mut host);
+        }
+        wait_until("receiver has the same panel owner", Duration::from_secs(5), || {
+            client.state()["blocked"].is_null() == owner_is_client
+        });
+        for source_is_client in [false, true] {
+            let (source, receiver, x, y, dx, dy) = match (owner_is_client, source_is_client) {
+                (false, false) => (&mut host, &mut client, 3800, 10, 0, -100),
+                (false, true) => (&mut client, &mut host, 1240, -10, 0, 100),
+                (true, false) => (&mut host, &mut client, 2550, 700, 100, 0),
+                (true, true) => (&mut client, &mut host, 10, 700, -100, 0),
+            };
+            source.ctl(serde_json::json!({"op":"warp","x":x,"y":y}));
+            let changes_before = source.log_text().matches("cursor control changed").count();
+            receiver.injected();
+            for turn in 0..100 {
+                source.ctl(serde_json::json!({"op":"input_move","dx":dx,"dy":dy}));
+                assert_eq!(source.state()["forwarding"], true, "owner={owner_is_client} source={source_is_client} turn={turn}");
+                let parked = source.state()["cursor"].clone();
+                source.ctl(serde_json::json!({"op":"native_drift","x":x+200,"y":y+200,"dx":0,"dy":0}));
+                assert_eq!(source.state()["cursor"], parked, "remote source drift escaped containment");
+                source.ctl(serde_json::json!({"op":"input_move","dx":-dx,"dy":-dy}));
+                assert_eq!(source.state()["forwarding"], false);
+                assert_eq!(source.state()["cursor"], serde_json::json!([x,y]), "roundtrip consumed distance incorrectly");
+            }
+            wait_until("all source-owner handoffs reach the router", Duration::from_secs(10), || {
+                source.log_text().matches("cursor control changed").count() >= changes_before + 200
+            });
+            let mut releases = 0;
+            wait_until("receiver consumes every handoff release", Duration::from_secs(10), || {
+                releases += receiver.injected().iter().filter(|e| e["kind"] == "release_all").count();
+                releases >= 100
+            });
+            assert_eq!(receiver.state()["driven"], false);
+            assert!(!source.log_text().contains("restoring local cursor"), "normal roundtrips entered recovery");
+        }
+    }
+}
