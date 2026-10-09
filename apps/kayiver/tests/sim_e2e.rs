@@ -1769,3 +1769,16 @@ fn native_source_drift_is_contained_without_losing_remote_motion_or_return() {
     assert_eq!(after[0].as_i64(),Some(before[0].as_i64().unwrap()+30));
     assert_eq!(after[1].as_i64(),Some(before[1].as_i64().unwrap()+60));
 }
+
+#[test]
+fn real_native_edge_reference_reenters_windows_without_hidden_travel() {
+    let (mut host,mut client)=primary_windows_desk("native-edge-reference",28840);
+    host.ctl(serde_json::json!({"op":"input_move","dx":0,"dy":300}));
+    wait_until("returned locally",Duration::from_secs(5),||!host.state()["forwarding"].as_bool().unwrap());
+    let x=host.state()["cursor"][0].as_i64().unwrap();
+    host.ctl(serde_json::json!({"op":"programmatic_move","x":x,"y":0}));
+    host.ctl(serde_json::json!({"op":"capture_motion","x":x,"y":0,"dx":0,"dy":-10}));
+    host.ctl(serde_json::json!({"op":"capture_motion","x":x,"y":0,"dx":0,"dy":-6}));
+    assert!(host.state()["forwarding"].as_bool().unwrap(),"real C edge must not wait for stale interior coordinates");
+    wait_until("Windows receives reentry",Duration::from_secs(5),||client.state()["driven"].as_bool().unwrap());
+}

@@ -31,6 +31,7 @@ pub struct Navigation {
     pub machine: String,
     pub topology: Topology,
     pub location: Option<Location>,
+    native_reference: Option<Point>,
     pub keys: HashSet<u16>,
     pub buttons: HashSet<MouseButton>,
     pub control: Control,
@@ -44,6 +45,7 @@ impl Default for Navigation {
             machine: String::new(),
             topology: Topology::default(),
             location: None,
+            native_reference: None,
             control: Control::Local,
             keys: HashSet::new(),
             buttons: HashSet::new(),
@@ -61,6 +63,7 @@ impl Navigation {
         self.machine = machine;
         if self.topology != topology {
             self.generation += 1;
+            self.native_reference=None;
             if self.location.as_ref().is_some_and(|l| {
                 topology.surface(&l.surface).is_none_or(|s| {
                     l.point.x < s.rect.x as f64
@@ -110,6 +113,7 @@ impl Navigation {
     pub fn drive(&mut self, peer: Option<String>) {
         self.control = peer.map(Control::Driven).unwrap_or(Control::Local);
         self.location = None;
+        self.native_reference=None;
         self.generation += 1;
     }
     /// Native position is a reference only in Local mode; Remote mode advances
@@ -118,6 +122,8 @@ impl Navigation {
         if self.machine.is_empty() || matches!(self.control, Control::Driven(_)) {
             return None;
         }
+        let previous_native=self.native_reference;
+        self.native_reference=if matches!(self.control,Control::Local) {Some(Point::new(native.0 as f64,native.1 as f64))} else {None};
         let prev = Point::new(native.0 as f64 - dx as f64, native.1 as f64 - dy as f64);
         // A native cursor clipped by the OS outer boundary cannot describe the
         // report's starting point. Keep the logical reference for that report.
@@ -131,6 +137,14 @@ impl Navigation {
                     || (dy < 0 && native.1 <= s.rect.y)
                     || (dy > 0 && native.1 >= s.rect.bottom() - 1)
             });
+        if clipped && matches!(self.control, Control::Local) {
+            // The preceding native sample is the actual local start, even
+            // when acceleration or OS clipping differs from the model. A
+            // parked remote cursor is never used as a movement reference.
+            if let Some(reference)=previous_native {
+                if let Some(location)=self.topology.locate(&self.machine,reference) {self.location=Some(location);}
+            }
+        }
         if self.location.is_none()
             || (matches!(self.control, Control::Local)
                 && !clipped
@@ -197,6 +211,8 @@ impl Navigation {
             buttons: self.buttons.iter().copied().collect(),
         };
         self.location = Some(location);
+        if matches!(self.control,Control::Remote(_)) {self.native_reference=None;}
+        else if was_remote {self.native_reference=self.location.as_ref().map(|l|l.point);}
         if was_remote
             || step.wall
             || frame.path.len() > 1
@@ -356,6 +372,25 @@ mod tests {
         assert!(n.sample((700,0),0,10000).is_none());
         assert!(matches!(n.control,Control::Local));
         assert_eq!(n.location.as_ref().unwrap().point,Point::new(700.0,0.0));
+    }
+
+    #[test]
+    fn clipped_edge_rebases_stale_reference_without_waiting_for_hidden_distance() {
+        let mut n=nav();
+        assert!(n.sample((2500,700),100,0).is_none());
+        // The OS travels 59px to its edge, while this report carries 10px.
+        assert!(n.sample((2559,700),10,0).is_none());
+        let f=n.sample((2559,700),6,0).expect("a native edge push must immediately cross its seam");
+        assert_eq!(f.machine,"win");assert_eq!(f.x,5);assert!(f.handoff);
+    }
+    #[test]
+    fn clipped_empty_edge_rebase_never_grabs_local_control() {
+        let mut n=nav();n.topology.seams.clear();
+        assert!(n.sample((2500,700),100,0).is_none());
+        // The OS travels 59px to its edge, while this report carries 10px.
+        assert!(n.sample((2559,700),10,0).is_none());
+        let f=n.sample((2559,700),6,0).unwrap();
+        assert!(!f.handoff);assert_eq!((f.x,f.y),(2559,700));assert!(matches!(n.control,Control::Local));
     }
 
 }

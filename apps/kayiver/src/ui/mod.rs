@@ -1063,6 +1063,7 @@ fn api_status() -> String {
                 let control=match &nav.control {crate::platform::navigation::Control::Local=>"local",crate::platform::navigation::Control::Remote(_)=>"remote",crate::platform::navigation::Control::Driven(_)=>"driven",crate::platform::navigation::Control::Recovering=>"recovering"};
                 serde_json::json!({"revision":nav.topology.revision,"generation":nav.generation,"sequence":nav.sequence,"control":control,"location":nav.location,"surfaces":nav.topology.surfaces.len(),"seams":nav.topology.seams.len()})
             }),
+            "native_cursor": crate::platform::cursor_pos(),
             "bounds": ctl.bounds(),
             "blocked": *ctl.blocked.read().unwrap(),
             "forwarding": ctl.forwarding.load(std::sync::atomic::Ordering::SeqCst),
