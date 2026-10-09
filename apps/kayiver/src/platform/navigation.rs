@@ -13,6 +13,9 @@ pub struct Frame {
     pub y: i32,
     pub path: Vec<String>,
     pub wall: bool,
+    /// True only when this report involves remote control. A local wall is
+    /// observational data: it never authorizes a native cursor warp.
+    pub handoff: bool,
     pub keys: Vec<u16>,
     pub buttons: Vec<MouseButton>,
 }
@@ -140,8 +143,10 @@ impl Navigation {
             }
         }
         if self.location.is_none() {
-            if !self.topology.surfaces.is_empty() {
-                self.control = Control::Recovering;
+            // A clipped first report or an external/programmatic position is
+            // not a failed handoff. Establish a native reference, never warp.
+            if matches!(self.control, Control::Local) {
+                self.location = self.topology.locate(&self.machine, Point::new(native.0 as f64, native.1 as f64));
             }
             return None;
         }
@@ -153,8 +158,17 @@ impl Navigation {
             return None;
         };
         super::motion_trace::record(&self.topology, at, Point::new(dx as f64, dy as f64), &step);
-        let surface = self.topology.surface(&step.location.surface)?;
         let was_remote = matches!(self.control, Control::Remote(_));
+        let handoff = was_remote || step.path.iter().any(|id| self.topology.surface(id).is_some_and(|s| s.machine != self.machine));
+        let mut location = step.location;
+        if step.wall && !handoff {
+            // The OS clips local walls itself. Its native position, including
+            // tangential movement along the edge, remains authoritative.
+            if let Some(native_location) = self.topology.locate(&self.machine, Point::new(native.0 as f64, native.1 as f64)) {
+                location = native_location;
+            }
+        }
+        let surface = self.topology.surface(&location.surface)?;
         self.control = if surface.machine == self.machine {
             Control::Local
         } else {
@@ -172,16 +186,17 @@ impl Navigation {
             },
             machine: surface.machine.clone(),
             surface: surface.id.clone(),
-            x: (step.location.point.x.round() as i32)
+            x: (location.point.x.round() as i32)
                 .clamp(surface.rect.x, surface.rect.right() - 1),
-            y: (step.location.point.y.round() as i32)
+            y: (location.point.y.round() as i32)
                 .clamp(surface.rect.y, surface.rect.bottom() - 1),
             path: step.path,
             wall: step.wall,
+            handoff,
             keys,
             buttons: self.buttons.iter().copied().collect(),
         };
-        self.location = Some(step.location);
+        self.location = Some(location);
         if was_remote
             || step.wall
             || frame.path.len() > 1
@@ -317,4 +332,30 @@ mod tests {
         n.install("mac".into(), t);
         assert!(n.generation > old);
     }
+    #[test]
+    fn unconnected_local_edges_never_authorize_a_handoff_or_corner_warp() {
+        let mut n=nav();
+        n.topology.seams.clear();
+        n.topology.surfaces.retain(|s|s.id=="A");
+        let generation=n.generation;
+        for (native, delta) in [((700,1439),(800,20)), ((0,700),(-100,800)), ((700,0),(800,-100)), ((2559,700),(100,800))] {
+            n.location=Some(Location {surface:"A".into(),point:Point::new(2550.0,1430.0)});
+            for _ in 0..100 {
+                if let Some(frame)=n.sample(native,delta.0,delta.1) {
+                    assert!(!frame.handoff);
+                    assert_eq!((frame.x,frame.y),native);
+                }
+                assert!(matches!(n.control,Control::Local));
+                assert_eq!(n.generation,generation);
+            }
+        }
+    }
+    #[test]
+    fn clipped_first_report_establishes_native_reference_without_recovery() {
+        let mut n=nav();
+        assert!(n.sample((700,0),0,10000).is_none());
+        assert!(matches!(n.control,Control::Local));
+        assert_eq!(n.location.as_ref().unwrap().point,Point::new(700.0,0.0));
+    }
+
 }

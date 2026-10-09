@@ -289,6 +289,8 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     };
 
     router.refresh_shared_rects();
+    // A desk with no peer still needs its local surfaces from startup.
+    router.refresh_navigation();
 
     // Re-apply the restored ownership locally right away: if the panel is
     // showing the peer, this desk's copy must be blocked from the first

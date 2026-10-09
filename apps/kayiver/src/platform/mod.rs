@@ -143,7 +143,7 @@ pub fn route_motion(ctl: &CaptureCtl, tx: &tokio::sync::mpsc::UnboundedSender<Ca
     let local=frame.machine==ctl.navigation.lock().unwrap().machine;
     // Android remains a peripheral adapter. Its edge is considered only after
     // the shared geometry engine has established a real local outer wall.
-    if local && frame.wall {
+    if local && frame.wall && crate::android::is_connected() {
         let edge=*ctl.tablet_edge.read().unwrap();let b=ctl.bounds();
         let hit=match edge {
             Some(Edge::Left)=>dx<0 && frame.x==b.x,
@@ -163,6 +163,9 @@ pub fn route_motion(ctl: &CaptureCtl, tx: &tokio::sync::mpsc::UnboundedSender<Ca
             return true;
         }
     }
+    // No connected destination was traversed: do not suppress, enqueue or
+    // warp local movement, even when the model reports a wall or a corner.
+    if local && !frame.handoff {return false;}
     let was=ctl.forwarding.swap(!local,Ordering::SeqCst);
     if was != !local {
         set_forwarding_visuals(!local);

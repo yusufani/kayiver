@@ -373,8 +373,8 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             let dx = cmd["dx"].as_i64().unwrap_or(0) as i32;
             let dy = cmd["dy"].as_i64().unwrap_or(0) as i32;
             let _gate=ctl.motion_gate.lock().unwrap();
-            super::route_motion(&ctl,&tx,(x,y),dx,dy);
-            ok
+            let intervened=super::route_motion(&ctl,&tx,(x,y),dx,dy);
+            serde_json::json!({"ok":true,"intervened":intervened})
         }
         "input_move" | "queued_move" => {
             let (dx, dy) = (

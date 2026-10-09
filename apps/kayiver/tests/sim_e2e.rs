@@ -1704,3 +1704,26 @@ fn programmatic_warp_cannot_start_a_crossing() {
     assert!(!host.state()["forwarding"].as_bool().unwrap());
     assert!(!client.state()["driven"].as_bool().unwrap());
 }
+
+/// A standalone C surface has no connected edge. A clipped native report and
+/// a stale logical reference must never inject a corner position or take input.
+#[test]
+fn empty_edges_leave_the_native_cursor_alone_in_all_four_directions() {
+    let mut host=Machine::spawn("host", r#"name = "simhost"
+mode = "host"
+port = 27850
+"#, "2560,0,2560,1440",27851,"emptyedges");
+    wait_until("standalone C topology",Duration::from_secs(5),||host.state()["navigation"]["surfaces"]==1);
+    for ((x,y),(dx,dy)) in [((3400,1439),(800,20)),((2560,700),(-100,800)),((3400,0),(800,-100)),((5119,700),(100,800))] {
+        host.ctl(serde_json::json!({"op":"programmatic_move","x":x,"y":y}));
+        host.ctl(serde_json::json!({"op":"capture_motion","x":5100,"y":1430,"dx":0,"dy":0}));
+        host.injected();
+        for _ in 0..100 {
+            let r=host.ctl(serde_json::json!({"op":"capture_motion","x":x,"y":y,"dx":dx,"dy":dy}));
+            assert_eq!(r["intervened"],false,"empty C edge intercepted a native report: {r}");
+        }
+        assert_eq!(host.state()["cursor"],serde_json::json!([x,y]));
+        assert!(!host.state()["forwarding"].as_bool().unwrap());
+        assert!(!host.injected().iter().any(|e|e["kind"]=="mouse_to"),"empty edge injected a cursor warp");
+    }
+}
