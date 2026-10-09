@@ -42,6 +42,9 @@ pub struct Location {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Step {
+    /// Movement consumed on the final surface, excluding earlier surfaces.
+    #[serde(default)]
+    pub local_delta: Point,
     pub location: Location,
     pub path: Vec<String>,
     pub wall: bool,
@@ -155,6 +158,7 @@ impl Topology {
             return None;
         }
         let mut at = at.clone();
+        let mut entry = at.point;
         let mut d = delta;
         let mut path = vec![at.surface.clone()];
         let mut wall = false;
@@ -192,6 +196,7 @@ impl Topology {
             at.point.y += d.y * t;
             let Some(edge) = hit else {
                 return Some(Step {
+                    local_delta: Point::new(at.point.x-entry.x, at.point.y-entry.y),
                     location: at,
                     path,
                     wall,
@@ -228,6 +233,7 @@ impl Topology {
                         Edge::Bottom => Point::new(a, target.bottom() as f64),
                     },
                 };
+                entry = at.point;
                 path.push(at.surface.clone());
             } else {
                 wall = true;
@@ -240,6 +246,7 @@ impl Topology {
             if d.x == 0.0 && d.y == 0.0 {
                 at.point = interior(self.surface(&at.surface)?.rect, at.point);
                 return Some(Step {
+                    local_delta: Point::new(at.point.x-entry.x, at.point.y-entry.y),
                     location: at,
                     path,
                     wall,

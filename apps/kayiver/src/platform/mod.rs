@@ -40,6 +40,7 @@ pub fn clamp_monitor_move(monitors: &[Rect], from: (i32, i32), to: (i32, i32)) -
 
 pub mod navigation;
 mod cursor_parking;
+mod source_motion;
 mod motion_trace;
 
 pub struct CaptureCtl {
@@ -131,17 +132,32 @@ fn handoff_source_holds(frame:&navigation::Frame, returning:bool) -> bool {
 /// One synchronous decision for all native backends. Call while holding motion_gate.
 /// Native warps/association happen after the navigation lock is released.
 pub fn route_motion(ctl: &CaptureCtl, tx: &tokio::sync::mpsc::UnboundedSender<Captured>, native:(i32,i32), dx:i32, dy:i32) -> bool {
+    route_motion_precise(ctl,tx,kayiver_core::motion::Point::new(native.0 as f64,native.1 as f64),kayiver_core::motion::Point::new(dx as f64,dy as f64),false).handled
+}
+
+pub struct RoutedMotion {
+    pub handled: bool,
+    pub resume: Option<(kayiver_core::motion::Point,kayiver_core::motion::Point)>,
+}
+impl RoutedMotion {
+    fn handled() -> Self {Self {handled:true,resume:None}}
+    fn passthrough() -> Self {Self {handled:false,resume:None}}
+}
+/// A backend can reuse the current physical event for a local return, avoiding
+/// a synthetic report or an association change that resets native acceleration.
+pub fn route_motion_precise(ctl:&CaptureCtl,tx:&tokio::sync::mpsc::UnboundedSender<Captured>,native:kayiver_core::motion::Point,delta:kayiver_core::motion::Point,reuse_event:bool) -> RoutedMotion {
+    let dx=delta.x.round() as i32; let dy=delta.y.round() as i32;
     if ctl.tablet_forwarding.load(Ordering::SeqCst) {
         let _=tx.send(Captured::Input(kayiver_core::proto::InputEvent::MouseMove {dx,dy}));
-        return true;
+        return RoutedMotion::handled();
     }
-    let frame=ctl.navigation.lock().unwrap().sample(native,dx,dy);
+    let frame=ctl.navigation.lock().unwrap().sample_precise(native,delta);
     let Some(frame)=frame else {
         if matches!(ctl.navigation.lock().unwrap().control,navigation::Control::Recovering) {
             ctl.forwarding.store(false,Ordering::SeqCst);set_forwarding_visuals(false);
-            let _=tx.send(Captured::Panic);return true;
+            let _=tx.send(Captured::Panic);return RoutedMotion::handled();
         }
-        return false;
+        return RoutedMotion::passthrough();
     };
     let local=frame.machine==ctl.navigation.lock().unwrap().machine;
     // Android remains a peripheral adapter. Its edge is considered only after
@@ -163,26 +179,27 @@ pub fn route_motion(ctl: &CaptureCtl, tx: &tokio::sync::mpsc::UnboundedSender<Ca
                 ctl.forwarding.store(true,Ordering::SeqCst);set_forwarding_visuals(true);
             }
             let _=tx.send(Captured::EdgeHit {edge,ratio});
-            return true;
+            return RoutedMotion::handled();
         }
     }
     // No connected destination was traversed: do not suppress, enqueue or
     // warp local movement, even when the model reports a wall or a corner.
-    if local && !frame.handoff {return false;}
+    if local && !frame.handoff {return RoutedMotion::passthrough();}
     let was=ctl.forwarding.swap(!local,Ordering::SeqCst);
     if was != !local {
         set_forwarding_visuals(!local);
         if (!frame.keys.is_empty() || !frame.buttons.is_empty() || local) && !handoff_source_holds(&frame,local) {
             ctl.navigation.lock().unwrap().control=navigation::Control::Recovering;
-            let _=tx.send(Captured::Panic);return true;
+            let _=tx.send(Captured::Panic);return RoutedMotion::handled();
         }
     }
-    if local {warp_cursor_settled(frame.x,frame.y);}
+    let resume=if local && reuse_event {Some((frame.position,frame.local_delta))} else {None};
+    if local && !reuse_event {warp_cursor_settled(frame.x,frame.y);}
     if tx.send(Captured::Motion(frame)).is_err() {
         ctl.navigation.lock().unwrap().drive(None);
         ctl.forwarding.store(false,Ordering::SeqCst);set_forwarding_visuals(false);
     }
-    true
+    RoutedMotion {handled:true,resume}
 }
 
 // The `sim` feature swaps the whole OS backend for a scriptable virtual

@@ -1,10 +1,10 @@
 //! macOS backend.
 //!
-//! Capture: a CGEventTap at the HID level on a dedicated thread. While
-//! forwarding, events are swallowed (callback returns NULL) and the cursor is
-//! frozen via `CGAssociateMouseAndMouseCursorPosition(false)` — mouse deltas
-//! keep flowing to the tap with the cursor pinned, exactly like an FPS game
-//! grabs the mouse. No warp-recenter tricks, no visible jitter.
+//! Capture: a CGEventTap at the HID level on a dedicated thread. Motion is
+//! measured from native screen positions after source acceleration. Remote
+//! motion is returned with a parked position and zero local displacement;
+//! keys and buttons are swallowed. A return reuses the physical motion event
+//! with only the distance consumed on the local screen.
 //!
 //! Injection: CGEventPost at the HID level. Modifier flags are tracked
 //! explicitly because synthetic modifier key events do not implicitly flag
@@ -67,6 +67,9 @@ extern "C" {
     fn CGEventTapCreate(tap: u32, place: u32, options: u32, mask: u64, cb: TapCallback, user: *mut c_void) -> CFMachPortRef;
     fn CGEventTapEnable(port: CFMachPortRef, enable: bool);
     fn CGEventGetLocation(e: CGEventRef) -> CGPoint;
+    fn CGEventSetLocation(e: CGEventRef, point: CGPoint);
+    fn CGEventGetTimestamp(e: CGEventRef) -> u64;
+    fn CGEventGetDoubleValueField(e: CGEventRef, field: u32) -> f64;
     fn CGEventGetFlags(e: CGEventRef) -> u64;
     fn CGEventGetIntegerValueField(e: CGEventRef, field: u32) -> i64;
     fn CGEventSetIntegerValueField(e: CGEventRef, field: u32, value: i64);
@@ -550,7 +553,11 @@ static CURSOR_PARKING: std::sync::Mutex<super::cursor_parking::CursorParking> =
     std::sync::Mutex::new(super::cursor_parking::CursorParking::new());
 
 pub fn set_forwarding_visuals(on: bool) {
-    CURSOR_PARKING.lock().unwrap().set_remote(on, cursor_pos());
+    // Park inside a real monitor, with room for accelerated displacement in
+    // every direction. Parking on the departure edge clips outward reports.
+    let position=cursor_pos();
+    let anchor=if on {monitors().into_iter().find(|r| position.0>=r.x && position.0<r.right() && position.1>=r.y && position.1<r.bottom()).map(|r|(r.x+r.w/2,r.y+r.h/2)).unwrap_or(position)} else {position};
+    CURSOR_PARKING.lock().unwrap().set_remote(on, anchor);
     // CGDisplayHideCursor/ShowCursor are REFERENCE-COUNTED: two hides need two
     // shows or the cursor stays hidden (and, being app-scoped, only reappears
     // when kayiver isn't frontmost). Crossing onto the tablet used to hide twice
@@ -562,9 +569,9 @@ pub fn set_forwarding_visuals(on: bool) {
             if !HIDDEN.swap(true, Ordering::SeqCst) {
                 CGDisplayHideCursor(CGMainDisplayID());
             }
-            CGAssociateMouseAndMouseCursorPosition(0);
+            // Association stays enabled across handoffs; the tap contains
+            // the pointer without restarting the source acceleration pipeline.
         } else {
-            CGAssociateMouseAndMouseCursorPosition(1);
             if HIDDEN.swap(false, Ordering::SeqCst) {
                 CGDisplayShowCursor(CGMainDisplayID());
             }
@@ -581,6 +588,7 @@ struct CaptureState {
     /// Modifier keycodes currently held (for flagsChanged press/release).
     mods_down: Vec<u16>,
     esc_downs: [Option<Instant>; 2],
+    motion_position: Option<CGPoint>,
 
 }
 
@@ -590,12 +598,14 @@ pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Res
     std::thread::Builder::new()
         .name("kayiver-capture".into())
         .spawn(move || unsafe {
+            CGAssociateMouseAndMouseCursorPosition(1);
             let state = Box::into_raw(Box::new(CaptureState {
                 ctl,
                 tx,
                 tap: std::ptr::null_mut(),
                 mods_down: Vec::new(),
                 esc_downs: [None, None],
+                motion_position: None,
             }));
 
             let mask: u64 = [
@@ -639,7 +649,8 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
     // Our own injected events: pass straight through, untouched. Must come
     // before the hotkey checks and the forwarding translate, or a machine
     // being driven by its peer would echo every event back.
-    if CGEventGetIntegerValueField(event, F_SOURCE_USER_DATA) == TAG_OURS {
+    if CGEventGetIntegerValueField(event, F_SOURCE_USER_DATA) == TAG_OURS
+        || CGEventGetIntegerValueField(event,41)==std::process::id() as i64 {
         return event;
     }
 
@@ -681,21 +692,61 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
     if etype == ET_MOVED || etype == ET_LEFT_DRAG || etype == ET_RIGHT_DRAG || etype == ET_OTHER_DRAG {
         if ctl.driven.load(Ordering::SeqCst) {return std::ptr::null_mut();}
         let p=CGEventGetLocation(event);
-        let dx=CGEventGetIntegerValueField(event,F_MOUSE_DELTA_X) as i32;
-        let dy=CGEventGetIntegerValueField(event,F_MOUSE_DELTA_Y) as i32;
-        let handled=super::route_motion(&ctl,&state.tx,(p.x as i32,p.y as i32),dx,dy);
+        let raw=kayiver_core::motion::Point::new(CGEventGetIntegerValueField(event,F_MOUSE_DELTA_X) as f64,CGEventGetIntegerValueField(event,F_MOUSE_DELTA_Y) as f64);
+        let unaccelerated=kayiver_core::motion::Point::new(CGEventGetDoubleValueField(event,170),CGEventGetDoubleValueField(event,171));
+        if !super::source_motion::physical_motion(raw,unaccelerated) {
+            if forwarding {
+                if let Some((x,y))=CURSOR_PARKING.lock().unwrap().anchor() {
+                    let parked=CGPoint{x:x as f64,y:y as f64};
+                    if p.x!=parked.x || p.y!=parked.y {CGWarpMouseCursorPosition(parked);}
+                    CGEventSetLocation(event,parked);
+                    CGEventSetIntegerValueField(event,F_SOURCE_USER_DATA,TAG_OURS);
+                }
+            } else {
+                state.motion_position=Some(p);
+                ctl.navigation.lock().unwrap().native_reposition(kayiver_core::motion::Point::new(p.x,p.y));
+            }
+            return event;
+        }
+        let previous=state.motion_position;
+        let native=kayiver_core::motion::Point::new(p.x,p.y);
+        // Association remains enabled, so these are accelerated OS deltas.
+        // The previous report retains fractional phase across native parking.
+        let delta=super::source_motion::screen_delta(native,previous.map(|o|kayiver_core::motion::Point::new(o.x,o.y)),raw,forwarding);
+        if super::motion_trace::native_enabled() && (delta.x!=0.0 || delta.y!=0.0) {
+            super::motion_trace::record_native(super::motion_trace::NativeSample {
+                timestamp:CGEventGetTimestamp(event),source_pid:CGEventGetIntegerValueField(event,41),remote:forwarding,position:(p.x,p.y),
+                delta:(raw.x,raw.y),
+                unaccelerated:(unaccelerated.x,unaccelerated.y),
+            });
+        }
+        if forwarding && delta.x==0.0 && delta.y==0.0 {return event;}
+        let result=super::route_motion_precise(&ctl,&state.tx,native,delta,true);
         if ctl.forwarding.load(Ordering::SeqCst) {
-            // Association is best-effort (notably when this menu-bar app is
-            // not frontmost). Enforce the source anchor if native input leaks
-            // through, without ever replacing the remote logical position.
-            let correction=CURSOR_PARKING.lock().unwrap().correction((p.x as i32,p.y as i32));
-            if let Some((x,y))=correction {
-                CGWarpMouseCursorPosition(CGPoint {x:x as f64,y:y as f64});
-                CGAssociateMouseAndMouseCursorPosition(0);
+            if let Some((x,y))=CURSOR_PARKING.lock().unwrap().anchor() {
+                let parked=CGPoint{x:x as f64,y:y as f64};
+                CGWarpMouseCursorPosition(parked);
+                // Returning the event lets WindowServer honor containment;
+                // zero local movement prevents the source applications moving.
+                CGEventSetLocation(event,parked);
+                CGEventSetIntegerValueField(event,F_MOUSE_DELTA_X,0);
+                CGEventSetIntegerValueField(event,F_MOUSE_DELTA_Y,0);
+                state.motion_position=Some(p);
+                return event;
             }
             return std::ptr::null_mut();
         }
-        if handled {return std::ptr::null_mut();}
+        if let Some((position,remainder))=result.resume {
+            let point=CGPoint{x:position.x,y:position.y};
+            CGWarpMouseCursorPosition(point);
+            CGEventSetLocation(event,point);
+            CGEventSetIntegerValueField(event,F_MOUSE_DELTA_X,remainder.x.round() as i64);
+            CGEventSetIntegerValueField(event,F_MOUSE_DELTA_Y,remainder.y.round() as i64);
+            state.motion_position=Some(point);
+            return event;
+        }
+        state.motion_position=Some(p);
+        if result.handled {return std::ptr::null_mut();}
         return event;
     }
 

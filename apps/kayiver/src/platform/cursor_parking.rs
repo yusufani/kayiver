@@ -6,6 +6,7 @@ impl CursorParking {
     pub fn set_remote(&mut self, remote: bool, native: (i32,i32)) {
         if remote {self.anchor.get_or_insert(native);} else {self.anchor=None;}
     }
+    pub fn anchor(&self) -> Option<(i32,i32)> {self.anchor}
     pub fn correction(&self, native: (i32,i32)) -> Option<(i32,i32)> {
         self.anchor.filter(|anchor| *anchor!=native)
     }

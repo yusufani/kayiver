@@ -6,6 +6,8 @@ use std::collections::HashSet;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
+    pub position: Point,
+    pub local_delta: Point,
     pub stamp: Stamp,
     pub machine: String,
     pub surface: String,
@@ -116,15 +118,27 @@ impl Navigation {
         self.native_reference=None;
         self.generation += 1;
     }
+    /// A programmatic local position updates the reference without consuming
+    /// a physical movement or authorizing a handoff.
+    pub fn native_reposition(&mut self, native:Point) {
+        if matches!(self.control,Control::Local) {
+            self.native_reference=Some(native);
+            self.location=self.topology.locate(&self.machine,native);
+        }
+    }
     /// Native position is a reference only in Local mode; Remote mode advances
     /// the logical cursor, never a parked or detached OS cursor.
     pub fn sample(&mut self, native: (i32, i32), dx: i32, dy: i32) -> Option<Frame> {
+        self.sample_precise(Point::new(native.0 as f64,native.1 as f64),Point::new(dx as f64,dy as f64))
+    }
+    pub fn sample_precise(&mut self, native: Point, delta: Point) -> Option<Frame> {
+        let dx=delta.x; let dy=delta.y;
         if self.machine.is_empty() || matches!(self.control, Control::Driven(_)) {
             return None;
         }
         let previous_native=self.native_reference;
-        self.native_reference=if matches!(self.control,Control::Local) {Some(Point::new(native.0 as f64,native.1 as f64))} else {None};
-        let prev = Point::new(native.0 as f64 - dx as f64, native.1 as f64 - dy as f64);
+        self.native_reference=if matches!(self.control,Control::Local) {Some(native)} else {None};
+        let prev = Point::new(native.x - dx, native.y - dy);
         // A native cursor clipped by the OS outer boundary cannot describe the
         // report's starting point. Keep the logical reference for that report.
         let clipped = self
@@ -132,10 +146,10 @@ impl Navigation {
             .as_ref()
             .and_then(|l| self.topology.surface(&l.surface))
             .is_some_and(|s| {
-                (dx < 0 && native.0 <= s.rect.x)
-                    || (dx > 0 && native.0 >= s.rect.right() - 1)
-                    || (dy < 0 && native.1 <= s.rect.y)
-                    || (dy > 0 && native.1 >= s.rect.bottom() - 1)
+                (dx < 0.0 && native.x <= s.rect.x as f64)
+                    || (dx > 0.0 && native.x >= (s.rect.right() - 1) as f64)
+                    || (dy < 0.0 && native.y <= s.rect.y as f64)
+                    || (dy > 0.0 && native.y >= (s.rect.bottom() - 1) as f64)
             });
         if clipped && matches!(self.control, Control::Local) {
             // The preceding native sample is the actual local start, even
@@ -160,25 +174,25 @@ impl Navigation {
             // A clipped first report or an external/programmatic position is
             // not a failed handoff. Establish a native reference, never warp.
             if matches!(self.control, Control::Local) {
-                self.location = self.topology.locate(&self.machine, Point::new(native.0 as f64, native.1 as f64));
+                self.location = self.topology.locate(&self.machine, native);
             }
             return None;
         }
         let at = self.location.as_ref()?;
-        let Some(step) = self.topology.advance(at, Point::new(dx as f64, dy as f64)) else {
+        let Some(step) = self.topology.advance(at, delta) else {
             self.control = Control::Recovering;
             self.location = None;
             self.generation += 1;
             return None;
         };
-        super::motion_trace::record(&self.topology, at, Point::new(dx as f64, dy as f64), &step);
+        super::motion_trace::record(&self.topology, at, delta, &step);
         let was_remote = matches!(self.control, Control::Remote(_));
         let handoff = was_remote || step.path.iter().any(|id| self.topology.surface(id).is_some_and(|s| s.machine != self.machine));
         let mut location = step.location;
         if step.wall && !handoff {
             // The OS clips local walls itself. Its native position, including
             // tangential movement along the edge, remains authoritative.
-            if let Some(native_location) = self.topology.locate(&self.machine, Point::new(native.0 as f64, native.1 as f64)) {
+            if let Some(native_location) = self.topology.locate(&self.machine, native) {
                 location = native_location;
             }
         }
@@ -192,6 +206,8 @@ impl Navigation {
         let mut keys: Vec<_> = self.keys.iter().copied().collect();
         keys.sort_by_key(|key| (!(0xe0..=0xe7).contains(key), *key));
         let frame = Frame {
+            position: location.point,
+            local_delta: step.local_delta,
             stamp: Stamp {
                 session: self.session,
                 generation: self.generation,
@@ -391,6 +407,34 @@ mod tests {
         assert!(n.sample((2559,700),10,0).is_none());
         let f=n.sample((2559,700),6,0).unwrap();
         assert!(!f.handoff);assert_eq!((f.x,f.y),(2559,700));assert!(matches!(n.control,Control::Local));
+    }
+
+    #[test]
+    fn fractional_accelerated_motion_survives_remote_and_return_reports() {
+        let mut n=nav();
+        n.location=Some(Location {surface:"A".into(),point:Point::new(2550.25,700.25)});
+        let f=n.sample_precise(Point::new(2650.75,700.25),Point::new(100.5,0.0)).unwrap();
+        assert_eq!(f.position,Point::new(90.75,700.25));
+        assert_eq!(f.local_delta,Point::new(90.75,0.0));
+        for _ in 0..100 {
+            n.sample_precise(Point::new(1280.125,720.0),Point::new(0.125,0.0));
+        }
+        assert_eq!(n.location.as_ref().unwrap().point.x,103.25);
+        let f=n.sample_precise(Point::new(1169.5,720.0),Point::new(-110.5,0.0)).unwrap();
+        assert_eq!(f.position.x,2552.75);
+        assert_eq!(f.local_delta.x,-7.25);
+        // Immediate direction reversal uses the real accelerated displacement.
+        let f=n.sample_precise(Point::new(2563.25,700.25),Point::new(10.5,0.0)).unwrap();
+        assert_eq!(f.machine,"win");assert_eq!(f.position.x,3.25);
+    }
+
+    #[test]
+    fn programmatic_reposition_never_crosses_or_consumes_a_report() {
+        let mut n=nav();let sequence=n.sequence;
+        n.native_reposition(Point::new(2559.0,700.0));
+        assert!(matches!(n.control,Control::Local));assert_eq!(n.sequence,sequence);
+        let f=n.sample((2559,700),6,0).unwrap();
+        assert_eq!(f.machine,"win");assert_eq!(f.x,5);
     }
 
 }
