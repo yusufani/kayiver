@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Opt-in native capture test. Moves the cursor on the running paired devices.
 Only marker-tagged synthetic motion is observed; no keys or clipboard are read.
-Requires an idle local source and a known connected seam. See RELEASE-0.3.9.md.
+Requires an idle local source and a known connected seam.
+This tests synthetic event delivery only; it cannot validate physical mouse
+acceleration or establish crossing acceptance. 0.3.9 was withdrawn.
 """
 import argparse,sys,math
 parser=argparse.ArgumentParser(description=__doc__)
