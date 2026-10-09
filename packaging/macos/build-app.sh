@@ -10,6 +10,7 @@ export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
 cargo build --release
 
 VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+BUNDLE_VERSION=$(scripts/macos-bundle-version.sh "$VERSION")
 APP=dist/Kayiver.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -28,8 +29,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key><string>kayiver</string>
     <key>CFBundleIconFile</key><string>Kayiver</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-    <key>CFBundleVersion</key><string>${VERSION}</string>
+    <key>CFBundleShortVersionString</key><string>${BUNDLE_VERSION}</string>
+    <key>CFBundleVersion</key><string>${BUNDLE_VERSION}</string>
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>

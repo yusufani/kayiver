@@ -1121,22 +1121,26 @@ canvas.appendChild(capEl);
 let curPos = { x: 300, y: 200 }, curBuf = [], curT = 0, realTarget = null;
 // Map the host's real cursor (or the focused machine) to canvas coordinates.
 function mapCursor(c) {
+  if (c.visible === false) return null;
   const meName = (machines.find(m => m.me) || {}).name;
-  const focus = c.focus;
-  if (focus === 'tablet') return tabPos ? { x: tabPos.x + TAB_W / 2, y: tabPos.y + TAB_H / 2 } : null;
-  if (focus && focus !== meName) {
-    const pt = mons.find(m => m.machine === focus && m.el.style.display !== 'none');
-    return pt ? { x: pt.x + pt.w / 2, y: pt.y + pt.h / 2 } : null;
+  const targetName = c.machine || c.focus || meName;
+  if (targetName === 'tablet') return tabPos ? { x: tabPos.x + TAB_W / 2, y: tabPos.y + TAB_H / 2 } : null;
+  const candidates = mons.filter(t => t.machine === targetName &&
+    c.x >= t.realX && c.x < t.realX + t.realW && c.y >= t.realY && c.y < t.realY + t.realH);
+  if (candidates.length !== 1) return null;
+  const target = candidates[0];
+  let view = target;
+  if (target.el.style.display === 'none') {
+    // One physical shared panel has two native coordinate spaces. Draw the
+    // hidden alias on the visible merged panel using its native fractions.
+    const shared = sharedPair();
+    if (!shared || (target !== shared.a && target !== shared.b)) return null;
+    view = shared.a.el.style.display !== 'none' ? shared.a : shared.b;
   }
-  // on this machine: place at the exact spot inside whichever monitor holds it
-  for (const t of mons) {
-    if (!t.me || t.el.style.display === 'none') continue;
-    if (c.x >= t.realX && c.x < t.realX + t.realW && c.y >= t.realY && c.y < t.realY + t.realH) {
-      return { x: t.x + (c.x - t.realX) * t.w / Math.max(1, t.realW), y: t.y + (c.y - t.realY) * t.h / Math.max(1, t.realH) };
-    }
-  }
-  return null;
+  return { x: view.x + (c.x - target.realX) * view.w / Math.max(1, target.realW),
+           y: view.y + (c.y - target.realY) * view.h / Math.max(1, target.realH) };
 }
+
 async function pollCursor() {
   if (liveOn) { try { realTarget = mapCursor(await (await fetch('/api/cursor')).json()); } catch (_) { realTarget = null; } }
   setTimeout(pollCursor, 120);

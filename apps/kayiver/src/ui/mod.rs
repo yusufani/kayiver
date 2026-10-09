@@ -1057,7 +1057,12 @@ fn api_permissions(body: &[u8]) -> Result<()> {
 fn api_status() -> String {
     // Never hold the UI mutex while acquiring capture locks.
     let capture = live().lock().unwrap().capture.clone();
-    let capture = capture.as_ref().map(|ctl| serde_json::json!({
+    let capture = capture.as_ref().map(|ctl| {
+        // Read control, navigation and native position from one capture frame.
+        // Otherwise a fast physical return can report a local cursor together
+        // with the next remote frame's forwarding flag.
+        let _motion=ctl.motion_gate.lock().unwrap();
+        serde_json::json!({
             "navigation": ({
                 let nav=ctl.navigation.lock().unwrap();
                 let control=match &nav.control {crate::platform::navigation::Control::Local=>"local",crate::platform::navigation::Control::Remote(_)=>"remote",crate::platform::navigation::Control::Driven(_)=>"driven",crate::platform::navigation::Control::Recovering=>"recovering"};
@@ -1069,7 +1074,7 @@ fn api_status() -> String {
             "forwarding": ctl.forwarding.load(std::sync::atomic::Ordering::SeqCst),
             "driven": ctl.driven.load(std::sync::atomic::Ordering::SeqCst),
             "portals": *ctl.portals.read().unwrap(),
-        }));
+        })});
     let s = live().lock().unwrap();
     let peers: HashMap<&String, serde_json::Value> = s
         .peers
@@ -1097,6 +1102,10 @@ fn api_status() -> String {
             #[cfg(not(all(target_os="windows",not(feature="sim"))))] {serde_json::Value::Null}
         }),
         "permissions": crate::platform::permissions_status(),
+        "mouse_delivery": ({
+            #[cfg(all(target_os="macos",not(feature="sim")))] {crate::platform::mouse_delivery_status()}
+            #[cfg(not(all(target_os="macos",not(feature="sim"))))] {serde_json::Value::Null}
+        }),
         "capture": capture,
         "running": s.running,
         "focus": s.focus,
@@ -1113,12 +1122,30 @@ fn api_status() -> String {
     .to_string()
 }
 
-/// GET /api/cursor — the host's real cursor position (desktop coords) and which
-/// machine currently has control, so the editor can show the live pointer.
+/// The live preview uses the same cursor owner and position as capture, not a
+/// parked source cursor or the router's asynchronously updated focus.
+fn cursor_snapshot(nav:&crate::platform::navigation::Navigation,native:kayiver_core::motion::Point)->serde_json::Value {
+    use crate::platform::navigation::Control;
+    let source=match &nav.control {Control::Driven(peer)=>peer.as_str(),_=>nav.machine.as_str()};
+    if let Some((location,surface))=nav.location.as_ref().and_then(|l|nav.topology.surface(&l.surface).map(|s|(l,s))) {
+        let focus=if surface.machine!=nav.machine {Some(&surface.machine)} else {None};
+        return serde_json::json!({"x":location.point.x,"y":location.point.y,"focus":focus,"machine":surface.machine,"source":source,"surface":surface.id,"visible":true});
+    }
+    // Receivers apply the incoming cursor directly; their local navigation
+    // location is empty while Driven. Use their own native coordinate space.
+    let visible=nav.topology.surfaces.is_empty() || nav.topology.locate(&nav.machine,native).is_some();
+    serde_json::json!({"x":native.x,"y":native.y,"focus":null,"machine":nav.machine,"source":source,"visible":visible})
+}
 fn api_cursor() -> String {
-    let (x, y) = crate::platform::cursor_pos();
-    let focus = live().lock().unwrap().focus.clone();
-    serde_json::json!({ "x": x, "y": y, "focus": focus }).to_string()
+    let (capture,focus)={let s=live().lock().unwrap();(s.capture.clone(),s.focus.clone())};
+    if let Some(ctl)=capture {
+        let _gate=ctl.motion_gate.lock().unwrap();
+        if ctl.tablet_forwarding.load(std::sync::atomic::Ordering::SeqCst) {return serde_json::json!({"focus":"tablet","machine":"tablet","visible":true}).to_string();}
+        let (x,y)=crate::platform::cursor_pos();let nav=ctl.navigation.lock().unwrap();
+        return cursor_snapshot(&nav,kayiver_core::motion::Point::new(x as f64,y as f64)).to_string();
+    }
+    let (x,y)=crate::platform::cursor_pos();
+    serde_json::json!({"x":x,"y":y,"focus":focus}).to_string()
 }
 
 fn api_save_layout(body: &[u8]) -> Result<()> {
@@ -1187,6 +1214,26 @@ fn api_quickshare_action(body: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cursor_preview_uses_remote_surface_position_instead_of_native_parking() {
+        use kayiver_core::motion::{Surface,Point,Location};
+        let mut nav=crate::platform::navigation::Navigation::default();nav.machine="mac".into();
+        nav.topology.surfaces.push(Surface{id:"win:E".into(),machine:"win".into(),rect:kayiver_core::proto::Rect{x:0,y:0,w:1920,h:1080}});
+        nav.location=Some(Location{surface:"win:E".into(),point:Point::new(727.25,580.5)});
+        nav.control=crate::platform::navigation::Control::Remote("win".into());
+        let c=cursor_snapshot(&nav,Point::new(3840.0,720.0));
+        assert_eq!(c["machine"],"win");assert_eq!(c["source"],"mac");assert_eq!(c["x"],727.25);assert_eq!(c["y"],580.5);
+    }
+    #[test]
+    fn driven_receiver_preview_uses_its_own_native_space_and_keeps_physical_source_separate() {
+        use kayiver_core::motion::{Surface,Point};
+        let mut nav=crate::platform::navigation::Navigation::default();nav.machine="win".into();
+        nav.topology.surfaces.push(Surface{id:"win:E".into(),machine:"win".into(),rect:kayiver_core::proto::Rect{x:0,y:0,w:1920,h:1080}});
+        nav.control=crate::platform::navigation::Control::Driven("mac".into());
+        let c=cursor_snapshot(&nav,Point::new(727.0,580.0));
+        assert_eq!(c["machine"],"win");assert_eq!(c["source"],"mac");assert_eq!(c["focus"],serde_json::Value::Null);assert_eq!(c["visible"],true);
+        assert_eq!(cursor_snapshot(&nav,Point::new(5000.0,5000.0))["visible"],false);
+    }
     #[test]
     fn routes_index() {
         let (status, ctype, body) = route("GET / HTTP/1.1", b"");

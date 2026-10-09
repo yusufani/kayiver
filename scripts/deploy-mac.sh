@@ -28,6 +28,9 @@ if [ -n "${KAYIVER_SIGN_PW:-}" ]; then
   security unlock-keychain -p "$KAYIVER_SIGN_PW" "$KC"
 fi
 
+VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+BUNDLE_VERSION=$(scripts/macos-bundle-version.sh "$VERSION")
+
 echo "==> stopping running app"
 pkill -f "Kayiver.app/Contents/MacOS/kayiver" 2>/dev/null || true
 sleep 1
@@ -37,6 +40,8 @@ for APP in "${APPS[@]}"; do
   echo "==> installing + signing $APP"
   /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$APP/Contents/Info.plist" 2>/dev/null || \
     /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $BUNDLE_VERSION" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUNDLE_VERSION" "$APP/Contents/Info.plist"
   cp target/release/kayiver "$APP/Contents/MacOS/kayiver"
   codesign --force --deep --sign "$HASH" --keychain "$KC" --identifier "$IDENT" "$APP"
 done

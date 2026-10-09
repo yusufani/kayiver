@@ -1,8 +1,8 @@
 //! macOS backend.
 //!
-//! Capture: a CGEventTap at the HID level on a dedicated thread. Motion is
-//! measured from native screen positions after source acceleration. Remote
-//! motion is returned with a parked position and zero local displacement;
+//! Capture: one session-level CGEventTap on a dedicated thread. Local motion
+//! uses native positions; remote motion uses OS event displacement. Remote
+//! reports are consumed in the same callback that makes the control decision;
 //! keys and buttons are swallowed. A return reuses the physical motion event
 //! with only the distance consumed on the local screen.
 //!
@@ -189,6 +189,7 @@ const FLAG_CTRL: u64 = 0x0004_0000;
 const FLAG_ALT: u64 = 0x0008_0000;
 const FLAG_CMD: u64 = 0x0010_0000;
 
+const TAP_SESSION: u32 = 1;
 const TAP_HID: u32 = 0; // kCGHIDEventTap
 const TAP_HEAD_INSERT: u32 = 0;
 const TAP_OPT_DEFAULT: u32 = 0;
@@ -552,7 +553,38 @@ pub fn cursor_pos() -> (i32, i32) {
 static CURSOR_PARKING: std::sync::Mutex<super::cursor_parking::CursorParking> =
     std::sync::Mutex::new(super::cursor_parking::CursorParking::new());
 
+// Quartz cursor visibility is normally foreground-only. Enable background
+// control on this process's WindowServer connection without taking focus.
+// Resolve optional private symbols dynamically so unsupported systems can
+// still start, report the limitation and keep the session event gate active.
+fn background_cursor_control() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| unsafe {
+        extern "C" {fn dlsym(handle:*mut c_void,name:*const c_char)->*mut c_void;}
+        let handle=-2isize as *mut c_void; // RTLD_DEFAULT on Darwin
+        let mut connection=dlsym(handle,b"_CGSDefaultConnection\0".as_ptr().cast());
+        if connection.is_null() {connection=dlsym(handle,b"CGSMainConnectionID\0".as_ptr().cast());}
+        let property=dlsym(handle,b"CGSSetConnectionProperty\0".as_ptr().cast());
+        if connection.is_null() || property.is_null() {
+            tracing::warn!("background cursor control unavailable; delivery gate remains active");
+            return false;
+        }
+        let connection:unsafe extern "C" fn()->i32=std::mem::transmute(connection);
+        let property:unsafe extern "C" fn(i32,i32,CFStringRef,*const c_void)->i32=std::mem::transmute(property);
+        let key=CFStringCreateWithCString(std::ptr::null(),b"SetsCursorInBackground\0".as_ptr().cast(),0x08000100);
+        if key.is_null() {return false;}
+        let cid=connection();let result=property(cid,cid,key,kCFBooleanTrue);
+        CFRelease(key);
+        if result!=0 {tracing::warn!(result,"background cursor control rejected");}
+        result==0
+    })
+}
+
+static HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static HIDE_ERROR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static SHOW_ERROR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 pub fn set_forwarding_visuals(on: bool) {
+    background_cursor_control();
     // Park inside a real monitor, with room for accelerated displacement in
     // every direction. Parking on the departure edge clips outward reports.
     let position=cursor_pos();
@@ -563,17 +595,16 @@ pub fn set_forwarding_visuals(on: bool) {
     // when kayiver isn't frontmost). Crossing onto the tablet used to hide twice
     // — once from the capture thread, once from tablet control — but restore
     // once. Guard the hide/show so it's idempotent: exactly one of each.
-    static HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     unsafe {
         if on {
             if !HIDDEN.swap(true, Ordering::SeqCst) {
-                CGDisplayHideCursor(CGMainDisplayID());
+                HIDE_ERROR.store(CGDisplayHideCursor(CGMainDisplayID()),Ordering::Relaxed);
             }
             // Association stays enabled across handoffs; the tap contains
             // the pointer without restarting the source acceleration pipeline.
         } else {
             if HIDDEN.swap(false, Ordering::SeqCst) {
-                CGDisplayShowCursor(CGMainDisplayID());
+                SHOW_ERROR.store(CGDisplayShowCursor(CGMainDisplayID()),Ordering::Relaxed);
             }
         }
     }
@@ -601,6 +632,7 @@ pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Res
         .name("kayiver-capture".into())
         .spawn(move || unsafe {
             CGAssociateMouseAndMouseCursorPosition(1);
+            background_cursor_control();
             let state = Box::into_raw(Box::new(CaptureState {
                 ctl,
                 tx,
@@ -620,7 +652,7 @@ pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Res
             .iter()
             .fold(0u64, |m, t| m | (1u64 << t));
 
-            let tap = CGEventTapCreate(TAP_HID, TAP_HEAD_INSERT, TAP_OPT_DEFAULT, mask, tap_callback, state as *mut c_void);
+            let tap = CGEventTapCreate(TAP_SESSION, TAP_HEAD_INSERT, TAP_OPT_DEFAULT, mask, tap_callback, state as *mut c_void);
             if tap.is_null() {
                 let _ = ready_tx.send(Err(anyhow::anyhow!(
                     "CGEventTapCreate failed — grant Accessibility & Input Monitoring permissions (see `kayiver doctor`)"
@@ -639,6 +671,35 @@ pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Res
     ready_rx
         .recv_timeout(Duration::from_secs(5))
         .map_err(|_| anyhow::anyhow!("capture thread did not start"))?
+}
+
+static REMOTE_SUPPRESSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PHYSICAL_REMOTE_SUPPRESSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WARP_ERROR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+pub fn mouse_delivery_status()->serde_json::Value {
+    serde_json::json!({"remote_suppressed":REMOTE_SUPPRESSED.load(Ordering::Relaxed),
+        "physical_remote_suppressed":PHYSICAL_REMOTE_SUPPRESSED.load(Ordering::Relaxed),
+        "warp_error":WARP_ERROR.load(Ordering::Relaxed),"hide_error":HIDE_ERROR.load(Ordering::Relaxed),"show_error":SHOW_ERROR.load(Ordering::Relaxed),"cursor_hidden_requested":HIDDEN.load(Ordering::Relaxed),"background_cursor_control":background_cursor_control()})
+}
+unsafe fn contain_remote_motion(event:CGEventRef)->CGEventRef {
+    if super::motion_trace::native_enabled() {
+        let p=CGEventGetLocation(event);
+        super::motion_trace::record_native(super::motion_trace::NativeSample {
+            stage:"suppressed",timestamp:CGEventGetTimestamp(event),source_pid:CGEventGetIntegerValueField(event,41),remote:true,
+            position:(p.x,p.y),delta:(CGEventGetIntegerValueField(event,F_MOUSE_DELTA_X) as f64,CGEventGetIntegerValueField(event,F_MOUSE_DELTA_Y) as f64),
+            unaccelerated:(CGEventGetDoubleValueField(event,170),CGEventGetDoubleValueField(event,171)),
+        });
+    }
+    if let Some((x,y))=CURSOR_PARKING.lock().unwrap().anchor() {
+        WARP_ERROR.store(CGWarpMouseCursorPosition(CGPoint{x:x as f64,y:y as f64}),Ordering::Relaxed);
+    }
+    REMOTE_SUPPRESSED.fetch_add(1,Ordering::Relaxed);
+    if CGEventGetIntegerValueField(event,41)==0 && (CGEventGetDoubleValueField(event,170)!=0.0 || CGEventGetDoubleValueField(event,171)!=0.0) {
+        PHYSICAL_REMOTE_SUPPRESSED.fetch_add(1,Ordering::Relaxed);
+    }
+    // This same callback computed the motion and its ownership. There is no
+    // second tap, event identity transfer, or delayed forwarding-state read.
+    std::ptr::null_mut()
 }
 
 unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEventRef, user: *mut c_void) -> CGEventRef {
@@ -706,12 +767,7 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         let unaccelerated=kayiver_core::motion::Point::new(CGEventGetDoubleValueField(event,170),CGEventGetDoubleValueField(event,171));
         if !super::source_motion::physical_motion(raw,unaccelerated) {
             if forwarding {
-                if let Some((x,y))=CURSOR_PARKING.lock().unwrap().anchor() {
-                    let parked=CGPoint{x:x as f64,y:y as f64};
-                    if p.x!=parked.x || p.y!=parked.y {CGWarpMouseCursorPosition(parked);}
-                    CGEventSetLocation(event,parked);
-                    CGEventSetIntegerValueField(event,F_SOURCE_USER_DATA,TAG_OURS);
-                }
+                return contain_remote_motion(event);
             } else if state.local_warp_reference.is_none() {
                 state.motion_position=Some(p);
                 ctl.navigation.lock().unwrap().native_reposition(kayiver_core::motion::Point::new(p.x,p.y));
@@ -730,29 +786,25 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         } else {(native,super::source_motion::screen_delta(native,reference,raw,forwarding),true)};
         if super::motion_trace::native_enabled() && (delta.x!=0.0 || delta.y!=0.0) {
             super::motion_trace::record_native(super::motion_trace::NativeSample {
-                timestamp:CGEventGetTimestamp(event),source_pid:CGEventGetIntegerValueField(event,41),remote:forwarding,position:(p.x,p.y),
+                stage:"captured",timestamp:CGEventGetTimestamp(event),source_pid:CGEventGetIntegerValueField(event,41),remote:forwarding,position:(p.x,p.y),
                 delta:(raw.x,raw.y),
                 unaccelerated:(unaccelerated.x,unaccelerated.y),
             });
         }
-        if forwarding && delta.x==0.0 && delta.y==0.0 {return event;}
+        if forwarding && delta.x==0.0 && delta.y==0.0 {return contain_remote_motion(event);}
         let result=super::route_motion_precise(&ctl,&state.tx,native,delta,true);
         if ctl.forwarding.load(Ordering::SeqCst) {
-            if let Some((x,y))=CURSOR_PARKING.lock().unwrap().anchor() {
-                let parked=CGPoint{x:x as f64,y:y as f64};
-                CGWarpMouseCursorPosition(parked);
-                // Returning the event lets WindowServer honor containment;
-                // zero local movement prevents the source applications moving.
-                CGEventSetLocation(event,parked);
-                CGEventSetIntegerValueField(event,F_MOUSE_DELTA_X,0);
-                CGEventSetIntegerValueField(event,F_MOUSE_DELTA_Y,0);
-                state.motion_position=Some(p);
-                state.local_warp_reference=None;
-                return event;
-            }
-            return std::ptr::null_mut();
+            state.motion_position=Some(p);
+            state.local_warp_reference=None;
+            return contain_remote_motion(event);
         }
         if let Some((position,remainder))=result.resume {
+            if super::motion_trace::native_enabled() {
+                super::motion_trace::record_native(super::motion_trace::NativeSample {
+                    stage:"resumed",timestamp:CGEventGetTimestamp(event),source_pid:CGEventGetIntegerValueField(event,41),remote:false,
+                    position:(position.x,position.y),delta:(remainder.x,remainder.y),unaccelerated:(unaccelerated.x,unaccelerated.y),
+                });
+            }
             let point=CGPoint{x:position.x,y:position.y};
             CGWarpMouseCursorPosition(point);
             CGEventSetLocation(event,point);
