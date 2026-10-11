@@ -140,6 +140,34 @@ fn decode_image(bytes: &[u8]) -> anyhow::Result<Image> {
     validate_image(&image)?;
     Ok(image)
 }
+fn decode_legacy_dib(bytes: &[u8]) -> anyhow::Result<Image> {
+    use image::ImageDecoder;
+    anyhow::ensure!(
+        bytes.len() <= MAX_RGBA + 65536,
+        "legacy bitmap exceeds size limit"
+    );
+    let mut decoder = image::codecs::bmp::BmpDecoder::new_without_file_header(Cursor::new(bytes))?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_RGBA as u64);
+    decoder.set_limits(limits)?;
+    let (width, height) = decoder.dimensions();
+    anyhow::ensure!(
+        (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .is_some_and(|n| n > 0 && n <= MAX_RGBA),
+        "invalid bitmap dimensions"
+    );
+    let pixels = image::DynamicImage::from_decoder(decoder)?.to_rgba8();
+    let image = Image {
+        width: width as usize,
+        height: height as usize,
+        rgba: pixels.into_raw(),
+    };
+    validate_image(&image)?;
+    Ok(image)
+}
+
 fn decode_copied_image_file(path: &std::path::Path) -> anyhow::Result<Image> {
     let ext = path
         .extension()
@@ -179,6 +207,12 @@ fn read_image() -> Option<Image> {
             height: image.height,
             rgba: image.bytes.into_owned(),
         });
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(image) =
+        platform::get_legacy_clipboard_image_data().and_then(|bytes| decode_legacy_dib(&bytes).ok())
+    {
+        return Some(image);
     }
     let file = platform::get_clipboard_file()?;
     decode_copied_image_file(std::path::Path::new(&file)).ok()
@@ -427,6 +461,23 @@ impl ImageTransfer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_dib_preserves_bottom_up_rows_and_pixel_padding() {
+        let mut dib = vec![0u8; 40];
+        dib[0..4].copy_from_slice(&40u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&2i32.to_le_bytes());
+        dib[8..12].copy_from_slice(&2i32.to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&24u16.to_le_bytes());
+        dib.extend_from_slice(&[255, 0, 0, 255, 255, 255, 0, 0, 0, 0, 255, 0, 255, 0, 0, 0]);
+        let decoded = decode_legacy_dib(&dib).unwrap();
+        assert_eq!((decoded.width, decoded.height), (2, 2));
+        assert_eq!(
+            decoded.rgba,
+            vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]
+        );
+        assert!(decode_legacy_dib(&[0; 40]).is_err());
+    }
     #[test]
     fn copied_rgb_png_file_is_decoded_without_requiring_bitmap_clipboard() {
         let path =

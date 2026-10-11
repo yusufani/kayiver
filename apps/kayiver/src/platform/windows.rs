@@ -1351,6 +1351,27 @@ pub fn get_clipboard() -> Option<String> {
     }
 }
 
+/// Legacy Windows applications publish CF_DIB rather than PNG/CF_DIBV5.
+/// Read bounded bitmap memory without exposing any clipboard payload in logs.
+pub fn get_legacy_clipboard_image_data() -> Option<Vec<u8>> {
+    use windows::Win32::System::DataExchange::{CloseClipboard,GetClipboardData};
+    use windows::Win32::System::Memory::{GlobalSize,GlobalLock,GlobalUnlock};
+    unsafe {
+        if !open_clipboard_with_retry() {return None;}
+        let result=(|| {
+            let handle=GetClipboardData(8).ok()?; // CF_DIB
+            let global=windows::Win32::Foundation::HGLOBAL(handle.0);
+            let len=GlobalSize(global);
+            if len<40 || len>64*1024*1024+65536 {return None;}
+            let data=GlobalLock(global) as *const u8;
+            if data.is_null() {return None;}
+            let bytes=std::slice::from_raw_parts(data,len).to_vec();
+            let _=GlobalUnlock(global);Some(bytes)
+        })();
+        let _=CloseClipboard();result
+    }
+}
+
 /// Replace the clipboard with `text`.
 pub fn set_clipboard(text: &str) {
     use windows::Win32::System::DataExchange::{
