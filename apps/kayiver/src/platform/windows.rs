@@ -28,9 +28,9 @@ use windows::Win32::System::Power::{
     SetThreadExecutionState, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    keybd_event, mouse_event, MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
     KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC,
-    MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
     MOUSEEVENTF_XUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
@@ -1193,6 +1193,14 @@ impl Drop for InjectionDesktop {
     }
 }
 
+/// Target the center of a physical pixel in SendInput's 16-bit coordinate
+/// grid. Use the full virtual desktop, including negative monitor origins.
+fn absolute_mouse_axis(pixel: i32, origin: i32, extent: i32) -> i32 {
+    let extent = i64::from(extent.max(1));
+    let pixel = (i64::from(pixel) - i64::from(origin)).clamp(0, extent - 1);
+    ((pixel * 65_536 + 32_768) / extent).clamp(0, 65_535) as i32
+}
+
 struct NativeInjector {
     down_keys: Vec<u16>,
     down_buttons: Vec<MouseButton>,
@@ -1213,14 +1221,9 @@ impl NativeInjector {
         })
     }
 
-    /// Wake sleeping monitors and reset the display sleep idle timer.
-    ///
-    /// When the Windows screen has turned off (Display sleep / VIDEOIDLE),
-    /// plain SendInput or SetCursorPos often doesn't trigger display power-on
-    /// because Windows distinguishes hardware input from synthetic input.
-    /// Calling SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)
-    /// together with SC_MONITORPOWER (-1 = power on), driver-level mouse movement deltas (+1, -1),
-    /// and a dummy keystroke (VK_F24) reliably wakes up all displays without flickering or side effects.
+    /// Reset display/system idle timers without inventing keystrokes or
+    /// relative motion. Fake Shift/F24 hides Terminal's cursor, while wake
+    /// movement pulses can disturb a drag or a raw-input application.
     fn wake_display(&mut self) {
         let now = Instant::now();
         if let Some(last) = self.last_wake {
@@ -1242,18 +1245,7 @@ impl NativeInjector {
                 LPARAM(-1),
             );
 
-            // 3. Driver-level mouse event pulses with actual delta (+1, -1)
-            // (Many graphics drivers ignore 0,0 deltas for waking monitors)
-            mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, 0);
-            mouse_event(MOUSEEVENTF_MOVE, -1, 0, 0, 0);
 
-            // 4. Send low-level keybd_event pulses (VK_SHIFT and VK_F24)
-            // keybd_event communicates directly with the driver/raw-input stack
-            // and reliably wakes monitors from power-save mode across all Windows versions.
-            keybd_event(0x10, 0, KEYBD_EVENT_FLAGS(0), 0); // VK_SHIFT down
-            keybd_event(0x10, 0, KEYEVENTF_KEYUP, 0);      // VK_SHIFT up
-            keybd_event(0x87, 0, KEYBD_EVENT_FLAGS(0), 0); // VK_F24 down
-            keybd_event(0x87, 0, KEYEVENTF_KEYUP, 0);      // VK_F24 up
         }
     }
 
@@ -1294,6 +1286,15 @@ impl NativeInjector {
         self.wake_display();
         if dx != 0 || dy != 0 {
             self.send_mouse(MOUSEEVENTF_MOVE, dx, dy, 0);
+        } else {
+            // CursorFrames are absolute positions, not relative deltas.
+            // SendInput also updates the pointer-input stream that Terminal
+            // uses to restore its cursor after typing; SetCursorPos alone
+            // only updates legacy mouse messages. ABSOLUTE bypasses EPP.
+            let bounds = desktop_bounds();
+            self.send_mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                absolute_mouse_axis(x, bounds.x, bounds.w),
+                absolute_mouse_axis(y, bounds.y, bounds.h), 0);
         }
         unsafe {
             let warp = SetCursorPos(x, y);
@@ -1653,6 +1654,19 @@ mod secure_desktop_tests {
         let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
         unsafe { CreateDesktopW(PCWSTR(name.as_ptr()), PCWSTR::null(), None,
             DESKTOP_CONTROL_FLAGS(0), 0x1000_0000, None).unwrap() }
+    }
+
+    #[test]
+    fn absolute_pointer_coordinates_preserve_pixels_and_negative_origins() {
+        for (origin, extent) in [(-2560, 7680i32), (0, 1920), (-1440, 4000), (0, 1)] {
+            for offset in 0..extent {
+                let encoded = absolute_mouse_axis(origin + offset as i32, origin, extent);
+                assert_eq!(i64::from(encoded) * i64::from(extent) / 65_536,
+                    i64::from(offset));
+            }
+            assert_eq!(absolute_mouse_axis(i32::MIN, origin, extent), absolute_mouse_axis(origin, origin, extent));
+            assert_eq!(absolute_mouse_axis(i32::MAX, origin, extent), absolute_mouse_axis(origin + extent as i32 - 1, origin, extent));
+        }
     }
 
     #[test]

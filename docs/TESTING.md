@@ -155,3 +155,17 @@ source, move and click on the consent dialog, dismiss it, and immediately
 move/click on the regular desktop. Do not automatically approve elevated
 applications as part of this test. Pointer geometry, motion units and the
 network protocol are unchanged.
+
+### Windows Terminal pointer visibility
+
+Absolute CursorFrames emit SendInput MOVE|ABSOLUTE|VIRTUALDESK before the
+exact SetCursorPos landing. This updates modern pointer input consumers
+(e.g. Terminal's WM_POINTERUPDATE visibility handling) without applying
+Windows pointer acceleration a second time. Wake activity uses the power
+manager and monitor-power message only, never fake Shift/F24 keys or
+relative movement pulses. `absolute_pointer_coordinates_preserve_pixels_and_negative_origins`
+checks every pixel for several virtual desktops, negative origins and edge
+clamping. Physical acceptance: type in Windows Terminal, then move the Mac
+mouse; the pointer should reappear and remain visible during motion. Also
+verify UAC interaction and screen wake from monitor sleep, since wake
+hardware behavior varies by display driver.
