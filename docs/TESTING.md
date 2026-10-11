@@ -169,3 +169,9 @@ clamping. Physical acceptance: type in Windows Terminal, then move the Mac
 mouse; the pointer should reappear and remain visible during motion. Also
 verify UAC interaction and screen wake from monitor sleep, since wake
 hardware behavior varies by display driver.
+
+Repeated Windows input retains the opened handle for the current desktop;
+only a real desktop-name change calls SetThreadDesktop. The
+`repeated_probes_keep_the_existing_desktop_binding` test verifies that
+1,000 probes keep the same bound handle on an isolated desktop. Its elapsed time is an isolated backend measurement,
+not end-to-end mouse latency or a physical acceptance test.

@@ -1150,11 +1150,12 @@ impl Drop for Injector {
 struct InjectionDesktop {
     original: windows::Win32::System::StationsAndDesktops::HDESK,
     attached: Option<windows::Win32::System::StationsAndDesktops::HDESK>,
+    attached_name: Option<Vec<u16>>,
 }
 impl InjectionDesktop {
     fn new() -> Self {
         use windows::Win32::System::{StationsAndDesktops::GetThreadDesktop, Threading::GetCurrentThreadId};
-        Self { original: unsafe { GetThreadDesktop(GetCurrentThreadId()).unwrap_or_default() }, attached: None }
+        Self { original: unsafe { GetThreadDesktop(GetCurrentThreadId()).unwrap_or_default() }, attached: None, attached_name: None }
     }
     fn follow_input(&mut self) -> bool {
         use windows::Win32::System::StationsAndDesktops::{OpenInputDesktop,
@@ -1171,6 +1172,15 @@ impl InjectionDesktop {
     fn bind(&mut self, next: windows::Win32::System::StationsAndDesktops::HDESK) -> bool {
         use windows::Win32::System::StationsAndDesktops::{CloseDesktop, SetThreadDesktop};
         unsafe {
+            if self.attached == Some(next) { return true; }
+            let name = desktop_name(next);
+            if self.attached.is_some() && name.is_some() && name == self.attached_name {
+                // Rebinding the same desktop resets Windows thread input
+                // association on every packet. Keep its existing binding;
+                // only the newly opened duplicate handle needs closing.
+                if self.attached != Some(next) { let _ = CloseDesktop(next); }
+                return true;
+            }
             if let Err(e) = SetThreadDesktop(next) {
                 let _ = CloseDesktop(next);
                 tracing::warn!("input desktop switch failed: {e:?}");
@@ -1178,10 +1188,22 @@ impl InjectionDesktop {
             }
             // Never close a handle while it is still bound to this thread.
             if let Some(previous) = self.attached.replace(next) { let _ = CloseDesktop(previous); }
+            self.attached_name = name;
             true
         }
     }
 }
+fn desktop_name(desktop: windows::Win32::System::StationsAndDesktops::HDESK) -> Option<Vec<u16>> {
+    use windows::Win32::System::StationsAndDesktops::{GetUserObjectInformationW, UOI_NAME};
+    let mut name = [0u16; 256];
+    unsafe {
+        GetUserObjectInformationW(windows::Win32::Foundation::HANDLE(desktop.0), UOI_NAME,
+            Some(name.as_mut_ptr().cast()), std::mem::size_of_val(&name) as u32, None).ok()?;
+    }
+    let len = name.iter().position(|&c| c == 0)?;
+    Some(name[..len].to_vec())
+}
+
 impl Drop for InjectionDesktop {
     fn drop(&mut self) {
         use windows::Win32::System::StationsAndDesktops::{CloseDesktop, SetThreadDesktop};
@@ -1654,6 +1676,28 @@ mod secure_desktop_tests {
         let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
         unsafe { CreateDesktopW(PCWSTR(name.as_ptr()), PCWSTR::null(), None,
             DESKTOP_CONTROL_FLAGS(0), 0x1000_0000, None).unwrap() }
+    }
+
+    #[test]
+    fn repeated_probes_keep_the_existing_desktop_binding() {
+        std::thread::spawn(|| {
+            // SSH runs in session 0 without an interactive input desktop.
+            // Use a private desktop: no dependency on user activity, UAC or
+            // visible cursor position while exercising the real Win32 calls.
+            let name = format!("KayiverProbe{}", std::process::id());
+            let mut desktop = InjectionDesktop::new();
+            assert!(desktop.bind(test_desktop(&name)));
+            let original = desktop.attached.unwrap();
+            let started = Instant::now();
+            for _ in 0..1000 {
+                let encoded: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+                let next = unsafe { OpenDesktopW(PCWSTR(encoded.as_ptr()), DESKTOP_CONTROL_FLAGS(0),
+                    false, 0x81).unwrap() };
+                assert!(desktop.bind(next));
+                assert_eq!(desktop.attached.unwrap(), original);
+            }
+            println!("1000 unchanged desktop probes: {:.3} ms", started.elapsed().as_secs_f64() * 1000.0);
+        }).join().unwrap();
     }
 
     #[test]
