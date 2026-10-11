@@ -17,6 +17,7 @@ EXE=target/x86_64-pc-windows-gnu/release/kayiver.exe
 KEY="$HOME/.ssh/drift_win_ed25519"
 USER_="yusuf"
 REMOTE_EXE='C:/Users/yusuf/AppData/Local/kayiver/kayiver.exe'
+REMOTE_STAGE='C:/Users/yusuf/AppData/Local/kayiver/kayiver.pending.exe'
 HOSTS=("${WIN_HOST:-}" 192.168.0.18 10.99.0.2 192.168.0.13)
 
 if [ -z "${SKIP_BUILD:-}" ]; then
@@ -37,6 +38,11 @@ fi
 SSH=(ssh -i "$KEY" -o ConnectTimeout=5 -o BatchMode=yes "$USER_@$HOST")
 echo "==> deploying to $HOST"
 
+# Finish the network copy before stopping input sharing. Never truncate the
+# installed executable while Windows/antivirus still holds its image mapping.
+echo "==> staging $EXE"
+scp -i "$KEY" -o ConnectTimeout=5 "$EXE" "$USER_@$HOST:$REMOTE_STAGE"
+
 echo "==> stopping kayiver.exe"
 "${SSH[@]}" 'taskkill /IM kayiver.exe /F' >/dev/null 2>&1 || true
 # Wait for it to actually go: the successor's single-instance guard only
@@ -47,8 +53,20 @@ for _ in $(seq 1 20); do
   sleep 1
 done
 
-echo "==> copying $EXE"
-scp -i "$KEY" -o ConnectTimeout=5 "$EXE" "$USER_@$HOST:$REMOTE_EXE"
+echo "==> replacing staged executable"
+REPLACED=0
+for _ in $(seq 1 10); do
+  if "${SSH[@]}" "powershell -NoProfile -Command \"Move-Item -Force -ErrorAction Stop '$REMOTE_STAGE' '$REMOTE_EXE'\"" >/dev/null 2>&1; then
+    REPLACED=1
+    break
+  fi
+  sleep 1
+done
+if [ "$REPLACED" != 1 ]; then
+  echo "!! Windows still holds the executable; restarting the previous installed version" >&2
+  "${SSH[@]}" 'schtasks /Run /TN kayiver' >/dev/null 2>&1 || true
+  exit 1
+fi
 
 echo "==> restarting via scheduled task (console session)"
 "${SSH[@]}" 'schtasks /Run /TN kayiver'
