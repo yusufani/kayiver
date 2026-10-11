@@ -211,3 +211,20 @@ that authoritative readback, avoiding a duplicate GetCursorPos call.
 from native event application; `position_fallbacks` counts absolute moves
 that required the additional exact warp. Monitor origins, rounding and
 clipping must still satisfy the same cursor-landing contract.
+
+### File production backpressure
+
+All senders for a peer share one file-frame permit. The permit is owned by
+the queued frame and stays alive until the serial encrypted writer finishes
+sending it. Abort/disconnect closes the budget and wakes blocked producers;
+cancelling an awaiting producer does not consume a slot. Control events use
+the ordinary FIFO and never wait for a file permit. File and image producers
+now send 8 KiB payload chunks; image receivers still accept the original
+32 KiB chunks from protocol-17 peers.
+
+Tests verify +100/-100 input order while a file producer is blocked, bounded
+file production, cancellation, disconnect failure, exact file bytes/offsets,
+and empty-file EOF. This bounds the application queue, not TCP's kernel send
+buffer or the peer's disk-processing time. Slow-link/slow-receiver acceptance
+must measure those independently; do not claim this alone eliminates all
+motion latency during transfer.

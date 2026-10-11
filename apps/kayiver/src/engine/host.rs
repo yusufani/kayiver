@@ -66,7 +66,7 @@ const WARM_EDGE_PX: i32 = 100;
 /// ONLY its own entry: a reconnect inserts the successor first, and the old
 /// session's teardown used to wipe it — leaving a live session invisible to
 /// the router ("peer offline" while RTT kept updating).
-type Sessions = Arc<Mutex<HashMap<String, (u64, UnboundedSender<Msg>)>>>;
+type Sessions = Arc<Mutex<HashMap<String, (u64, super::outbound::Sender)>>>;
 static SESSION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Layout is shared (and hot-reloaded) so `kayiver ui` edits apply live.
 type SharedLayout = Arc<RwLock<Layout>>;
@@ -1754,7 +1754,7 @@ async fn run_session(
     ctl: Arc<CaptureCtl>,
 ) -> Result<()> {
     let mut writer = writer;
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Msg>();
+    let (out_tx, mut out_rx) = super::outbound::channel();
     let session_id = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
     sessions.lock().unwrap().insert(name.clone(), (session_id, out_tx.clone()));
     let _ = evt_tx.send(SessionEvent::Connected { name: name.clone(), connection:session_id });
@@ -1880,12 +1880,13 @@ async fn run_session(
     // Writer task: a single serial writer, no competing branch — every frame
     // reaches the socket whole, so the nonce stays in lockstep with the peer.
     let writer_task = tokio::spawn(async move {
-        while let Some(m) = out_rx.recv().await {
+        while let Some(frame) = out_rx.recv().await {
+            let m = &frame.message;
             #[cfg(feature = "sim")]
             if matches!(m, Msg::CursorFrame { .. } | Msg::CursorRelease { .. }) {
                 tokio::time::sleep(Duration::from_millis(platform::handoff_delay_ms())).await;
             }
-            if writer.send(&m).await.is_err() {
+            if writer.send(m).await.is_err() {
                 return;
             }
         }

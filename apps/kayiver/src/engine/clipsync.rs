@@ -11,7 +11,8 @@ use std::{
 };
 const MAX_PNG: usize = 16 * 1024 * 1024;
 const MAX_RGBA: usize = 64 * 1024 * 1024;
-const CHUNK: usize = 32 * 1024;
+const CHUNK: usize = 32 * 1024; // Accept protocol-17 peers using the original size.
+const SEND_CHUNK: usize = 8 * 1024;
 const RETRIES: usize = 6;
 #[derive(Clone, PartialEq, Eq)]
 struct Image {
@@ -381,10 +382,10 @@ pub fn watch(state: ClipState, send: impl Fn(Msg) + Send + 'static) {
                                 id: transfer,
                                 bytes: png.len() as u32,
                             });
-                            for (index, chunk) in png.chunks(CHUNK).enumerate() {
+                            for (index, chunk) in png.chunks(SEND_CHUNK).enumerate() {
                                 send(Msg::ClipboardImageChunk {
                                     id: transfer,
-                                    offset: (index * CHUNK) as u32,
+                                    offset: (index * SEND_CHUNK) as u32,
                                     data: chunk.to_vec(),
                                 });
                                 // Yield between bounded chunks; input events can be enqueued

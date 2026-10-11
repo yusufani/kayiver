@@ -1,4 +1,5 @@
 
+pub(crate) mod outbound;
 pub mod clipsync;
 pub mod host;
 pub mod pairing;

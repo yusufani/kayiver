@@ -52,3 +52,18 @@ Windows also retains `kayiver.pre-fastpath.exe` beside its installed binary.
 Restore the pair together for a full rollback, and preserve the Mac signing
 identity. No clipboard content or pairing secrets are included in these
 verification notes or status counters.
+
+## Subsequent bulk-production improvement
+
+Prepared and verified after the installed native fast path: a shared per-peer
+file-frame budget prevents file producers from filling the unbounded control
+FIFO, 8 KiB outbound data chunks shorten each encrypted frame, cancelled
+producers release their slot, and disconnected/truncated file streams report
+failure. Tests confirm correct input reversal ordering while the file producer
+is blocked and exact/empty file transfer semantics. 55 application tests and
+42 two-process transition tests pass for this stage; Windows cross-check passes.
+
+This stage has not been installed yet. Application queue backpressure does
+not bound bytes already accepted by TCP or synchronous inbound disk writes.
+Further slow-receiver testing is required before making an end-to-end latency
+claim or adding receiver credits/a separate data path.

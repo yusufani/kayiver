@@ -15,13 +15,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use kayiver_core::proto::{Msg, QuickShareOffer, QuickSharePayload};
 use tokio::io::AsyncReadExt;
-use tokio::sync::mpsc::UnboundedSender;
+
 use tracing::{debug, info, warn};
 
 /// Maximum age of a copied item to be offered upon crossing (10 minutes).
 const OFFER_MAX_AGE: Duration = Duration::from_secs(600);
-/// Chunk size for file transfer (32 KiB, fits well within wire frame limit).
-const CHUNK_SIZE: usize = 32 * 1024;
+/// Short frames limit the wire interval before the next control event.
+const CHUNK_SIZE: usize = 8 * 1024;
 
 static NEXT_OFFER_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -170,7 +170,7 @@ impl QuickShareEngine {
         &self,
         id: u64,
         source_path: String,
-        out_tx: UnboundedSender<Msg>,
+        out_tx: super::outbound::Sender,
     ) -> Result<()> {
         let mut file = tokio::fs::File::open(&source_path)
             .await
@@ -181,19 +181,21 @@ impl QuickShareEngine {
         let mut offset = 0u64;
         let mut buf = vec![0u8; CHUNK_SIZE];
 
-        info!("quickshare: streaming file {source_path} ({total_size} bytes) for offer #{id}");
+        info!("quickshare: streaming {total_size} bytes for offer #{id}");
 
         loop {
-            let n = file.read(&mut buf).await?;
+            let limit = total_size.saturating_sub(offset).min(CHUNK_SIZE as u64) as usize;
+            let n = file.read(&mut buf[..limit]).await?;
             if n == 0 {
+                if offset < total_size { anyhow::bail!("source file was truncated during transfer"); }
                 // If the file was 0 bytes, send an empty EOF chunk
                 if offset == 0 {
-                    let _ = out_tx.send(Msg::QuickShareChunk {
+                    out_tx.send_file(Msg::QuickShareChunk {
                         id,
                         offset: 0,
                         data: Vec::new(),
                         is_eof: true,
-                    });
+                    }).await.map_err(|_| anyhow::anyhow!("peer connection closed during file transfer"))?;
                 }
                 break;
             }
@@ -208,9 +210,9 @@ impl QuickShareEngine {
                 is_eof,
             };
 
-            if out_tx.send(chunk_msg).is_err() {
+            if out_tx.send_file(chunk_msg).await.is_err() {
                 warn!("quickshare: peer connection closed during file transfer #{id}");
-                return Ok(());
+                anyhow::bail!("peer connection closed during file transfer");
             }
 
             if is_eof {
@@ -221,7 +223,7 @@ impl QuickShareEngine {
             tokio::task::yield_now().await;
         }
 
-        info!("quickshare: file {source_path} stream completed for offer #{id}");
+        info!("quickshare: file stream completed for offer #{id}");
         Ok(())
     }
 
@@ -403,5 +405,56 @@ mod tests {
         });
         let third = engine.get_offer_for_crossing();
         assert!(third.is_some());
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new(data: &[u8]) -> Self {
+            let path = std::env::temp_dir().join(format!("kayiver-stream-test-{}-{}",std::process::id(),NEXT_OFFER_ID.fetch_add(1,Ordering::Relaxed)));
+            std::fs::write(&path,data).unwrap(); Self(path)
+        }
+    }
+    impl Drop for Fixture { fn drop(&mut self) { let _=std::fs::remove_file(&self.0); } }
+    fn isolated_engine() -> QuickShareEngine {
+        QuickShareEngine { inner: Arc::new(Mutex::new(QuickShareInner::default())) }
+    }
+    #[tokio::test]
+    async fn bounded_file_stream_preserves_bytes_offsets_and_eof() {
+        for length in [0, CHUNK_SIZE * 17 + 13] {
+            let expected: Vec<u8> = (0..length).map(|n| (n.wrapping_mul(71) % 251) as u8).collect();
+            let fixture = Fixture::new(&expected);
+            let path = fixture.0.to_string_lossy().to_string();
+            let (tx, mut rx) = super::super::outbound::channel();
+            let task = tokio::spawn(async move { isolated_engine().stream_file(17,path,tx).await });
+            let mut actual = Vec::new();
+            loop {
+                let frame = tokio::time::timeout(Duration::from_secs(2),rx.recv()).await.unwrap().unwrap();
+                let eof = match &frame.message {
+                    Msg::QuickShareChunk {id,offset,data,is_eof} => {
+                        assert_eq!(*id,17); assert_eq!(*offset,actual.len() as u64);
+                        assert!(data.len()<=CHUNK_SIZE); actual.extend_from_slice(data); *is_eof
+                    }, _ => panic!("unexpected stream message"),
+                };
+                drop(frame); // A real writer drops after encrypted socket send.
+                if eof {break;}
+            }
+            task.await.unwrap().unwrap();
+            assert_eq!(actual,expected);
+        }
+    }
+    #[tokio::test]
+    async fn disconnected_stream_reports_failure_instead_of_completion() {
+        let fixture=Fixture::new(&vec![1;CHUNK_SIZE*3]);
+        let path=fixture.0.to_string_lossy().to_string();
+        let (tx,mut rx)=super::super::outbound::channel();
+        let task=tokio::spawn(async move {isolated_engine().stream_file(19,path,tx).await});
+        let held=rx.recv().await.unwrap();
+        drop(rx);
+        assert!(tokio::time::timeout(Duration::from_secs(2),task).await.unwrap().unwrap().is_err());
+        drop(held);
     }
 }
