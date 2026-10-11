@@ -326,8 +326,8 @@ pub fn watch(state: ClipState, send: impl Fn(Msg) + Send + 'static) {
                     "unknown"
                 });
                 if image_only && image.is_none() {
-                    state.lock().unwrap().error =
-                        Some("current clipboard has no supported bitmap image".into());
+                    // An explicit image-only probe finding text is not a
+                    // transport failure; keep the source-kind diagnostic only.
                     continue;
                 }
                 if let Some(payload) =
