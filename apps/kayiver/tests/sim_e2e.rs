@@ -1893,3 +1893,27 @@ fn receiver_parking_finishes_before_physical_capture_is_reenabled() {
     assert_eq!(state["navigation"]["control"],"local");
     assert_eq!(state["forwarding"],false);
 }
+
+#[test]
+fn image_clipboard_is_bidirectional_chunked_and_never_echoes() {
+    use std::hash::{Hash,Hasher};
+    let (mut host,mut client)=desk("image-clipboard",7990);
+    // Incompressible pixels cross multiple encrypted frames, including alpha.
+    let (width,height)=(256usize,128usize);
+    let mut seed=927u32;
+    let rgba:Vec<u8>=(0..width*height*4).map(|_|{seed^=seed<<13;seed^=seed>>17;seed^=seed<<5;seed as u8}).collect();
+    let mut hash=std::collections::hash_map::DefaultHasher::new();width.hash(&mut hash);height.hash(&mut hash);rgba.hash(&mut hash);
+    let expected=hash.finish();
+    host.ctl(serde_json::json!({"op":"set_clipboard_image","width":width,"height":height,"rgba":rgba}));
+    wait_until("host image in client clipboard",Duration::from_secs(6),||client.ctl(serde_json::json!({"op":"clipboard_state"}))["image"]["fingerprint"].as_u64()==Some(expected));
+    let host_sequence=host.ctl(serde_json::json!({"op":"clipboard_state"}))["sequence"].as_u64().unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(host.ctl(serde_json::json!({"op":"clipboard_state"}))["sequence"].as_u64(),Some(host_sequence),"received image must not echo to sender");
+    client.ctl(serde_json::json!({"op":"set_clipboard_text","text":"between-images"}));
+    wait_until("text after image",Duration::from_secs(4),||host.ctl(serde_json::json!({"op":"clipboard_state"}))["text"]=="between-images");
+    client.ctl(serde_json::json!({"op":"set_clipboard_image","width":width,"height":height,"rgba":rgba}));
+    wait_until("same image copied in reverse after text",Duration::from_secs(6),||host.ctl(serde_json::json!({"op":"clipboard_state"}))["image"]["fingerprint"].as_u64()==Some(expected));
+    let client_sequence=client.ctl(serde_json::json!({"op":"clipboard_state"}))["sequence"].as_u64().unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(client.ctl(serde_json::json!({"op":"clipboard_state"}))["sequence"].as_u64(),Some(client_sequence));
+}

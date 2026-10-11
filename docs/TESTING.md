@@ -126,3 +126,13 @@ controls. Device feet must not intersect any other visible screen (including
 sideways laptop keyboard overhang beside taller monitors). Compact shared
 screens retain owner letters without a badge obscuring them. Selection borders
 stay inside the screen rectangle. Check both Precision and Gallery.
+
+Image clipboard (0.3.14-dev, protocol 17): run
+`cargo test -p kayiver --features sim --test sim_e2e image_clipboard_is_bidirectional_chunked_and_never_echoes`.
+This checks incompressible RGBA across multiple encrypted frames, both directions,
+image→text→same-image replacement, alpha preservation and no echo. Unit tests
+reject oversized, incomplete/out-of-order chunks and invalid PNG data. Native
+acceptance must confirm an actual Windows bitmap arrives as an image on macOS.
+`/api/status.clipboard` reports only counters, dimensions and errors; no image
+or clipboard text is exposed there. `POST /api/clipboard/sync` explicitly resends
+current clipboard content; startup alone never transmits an old clipboard.

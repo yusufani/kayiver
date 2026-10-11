@@ -706,6 +706,16 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
             if !EDITOR_NOTIFY.get().is_some_and(|notify|notify()) {EDITOR_REQUEST.store(true,std::sync::atomic::Ordering::SeqCst);}
             ("200 OK", "text/plain", b"ok".to_vec())
         },
+        ("POST", "/api/clipboard/sync") => {
+            let image_only = if body.is_empty() {false} else {
+                match serde_json::from_slice::<serde_json::Value>(body) {
+                    Ok(value)=>value.get("image_only").and_then(|v|v.as_bool()).unwrap_or(false),
+                    Err(_)=>return ("400 Bad Request","text/plain",b"invalid JSON".to_vec()),
+                }
+            };
+            if crate::engine::clipsync::request_sync(image_only) {("200 OK","text/plain",b"queued".to_vec())}
+            else {("503 Service Unavailable","text/plain",b"clipboard worker not running".to_vec())}
+        },
         ("GET", "/api/status") => ("200 OK", "application/json", api_status().into_bytes()),
         ("GET", "/api/cursor") => ("200 OK", "application/json", api_cursor().into_bytes()),
         ("POST", "/api/layout") => match api_save_layout(body) {
@@ -1107,6 +1117,7 @@ fn api_status() -> String {
         .map(|(addr, label)| serde_json::json!({ "addr": addr, "label": label }))
         .collect();
     serde_json::json!({
+        "clipboard": crate::engine::clipsync::status(),
         "version": env!("CARGO_PKG_VERSION"),
         "editor": ({
             #[cfg(all(target_os="windows",not(feature="sim")))] {crate::platform::editor_status()}

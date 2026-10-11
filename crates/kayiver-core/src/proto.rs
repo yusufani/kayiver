@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 16;
+pub const PROTOCOL_VERSION: u16 = 17;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -166,6 +166,10 @@ pub enum Msg {
     ControlledInput {stamp:crate::motion::Stamp,event:InputEvent},
     NavigationRejected {stamp:crate::motion::Stamp, reason:String},
     MonitorIdentity { monitors: Vec<(String, Rect)> },
+    /// Bounded PNG clipboard transfer. Separate from URL/file Quick Share.
+    ClipboardImageBegin { id: u64, bytes: u32 },
+    ClipboardImageChunk { id: u64, offset: u32, data: Vec<u8> },
+
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1691,10 +1691,13 @@ async function poll() {
     document.getElementById('hostTxt').textContent = st.running ? t('running') : t('stopped');
 
     const banner = document.getElementById('banner');
-    banner.classList.toggle('recovery', !st.link_error && Boolean(st.control_notice));
+    banner.classList.toggle('recovery', !st.link_error && !st.clipboard?.error && Boolean(st.control_notice));
     if (st.link_error) {
       banner.style.display = 'block';
       banner.textContent = t('linkProblem') + st.link_error;
+    } else if (st.clipboard?.error) {
+      banner.style.display = 'block';
+      banner.textContent = (lang === 'en' ? 'Clipboard issue: ' : 'Pano sorunu: ') + st.clipboard.error;
     } else if (st.control_notice) {
       banner.style.display = 'block';
       banner.textContent = lang === 'en' ? 'Local control restored · ' + st.control_notice : 'Yerel kontrol geri alındı · ' + st.control_notice;

@@ -216,10 +216,10 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     let clip = crate::engine::clipsync::new_state();
     {
         let sessions_c = sessions.clone();
-        crate::engine::clipsync::watch(clip.clone(), move |text| {
+        crate::engine::clipsync::watch(clip.clone(), move |message| {
             let s = sessions_c.lock().unwrap();
             for (_, tx) in s.values() {
-                let _ = tx.send(Msg::Clipboard { text: text.clone() });
+                let _ = tx.send(message.clone());
             }
         });
     }
@@ -855,6 +855,8 @@ impl Router {
             | Msg::Monitors { .. }
             | Msg::Builtin { .. }
             | Msg::Clipboard { .. }
+            | Msg::ClipboardImageBegin { .. }
+            | Msg::ClipboardImageChunk { .. }
             | Msg::OpenUrl { .. }
             | Msg::SharedRequest { .. }
             | Msg::UseAddr { .. }
@@ -1890,6 +1892,7 @@ async fn run_session(
         let _ = writer.send(&Msg::Bye).await;
     });
 
+    let mut clipboard_image = crate::engine::clipsync::ImageTransfer::default();
     // Reader loop with a liveness watchdog.
     let result: Result<()> = async {
         loop {
@@ -1917,6 +1920,12 @@ async fn run_session(
                     let _ = evt_tx.send(SessionEvent::SharedRequest { name: name.clone(), owner });
                 }
                 Msg::Clipboard { text } => crate::engine::clipsync::apply_remote(&clip, &text),
+                Msg::ClipboardImageBegin { id, bytes } => { clipboard_image.begin(id, bytes as usize); }
+                Msg::ClipboardImageChunk { id, offset, data } => {
+                    if let Some(png) = clipboard_image.chunk(id, offset as usize, &data) {
+                        crate::engine::clipsync::apply_remote_image(&clip, png);
+                    }
+                }
                 Msg::OpenUrl { url } => {
                     info!("{name}: open url {url}");
                     platform::open_url(&url);

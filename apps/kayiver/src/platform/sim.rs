@@ -40,6 +40,7 @@ struct SimWorld {
     injected: Vec<serde_json::Value>,
     capture: Option<(Arc<CaptureCtl>, UnboundedSender<Captured>)>,
     clipboard: Option<String>,
+    clipboard_image: Option<(usize, usize, Vec<u8>)>,
     clip_seq: u64,
     handoff_delay_ms: u64,
     passive_notice: Option<Rect>,
@@ -65,6 +66,7 @@ fn world() -> &'static Mutex<SimWorld> {
             injected: Vec::new(),
             capture: None,
             clipboard: None,
+            clipboard_image: None,
             clip_seq: 0,
             handoff_delay_ms: 0,
             passive_notice: None,
@@ -229,8 +231,14 @@ pub fn get_clipboard() -> Option<String> {
 
 pub fn set_clipboard(text: &str) {
     let mut w = world().lock().unwrap();
+    w.clipboard_image = None;
     w.clipboard = Some(text.to_string());
     w.clip_seq += 1;
+}
+
+pub fn get_clipboard_image() -> Option<(usize,usize,Vec<u8>)> {world().lock().unwrap().clipboard_image.clone()}
+pub fn set_clipboard_image(width:usize,height:usize,rgba:Vec<u8>) {
+    let mut w=world().lock().unwrap();w.clipboard=None;w.clipboard_image=Some((width,height,rgba));w.clip_seq+=1;
 }
 
 pub fn clipboard_seq() -> u64 {
@@ -350,6 +358,23 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             } else {
                 serde_json::json!({ "ok": false, "error": "router not running" })
             }
+        }
+        "set_clipboard_image" => {
+            let width=cmd["width"].as_u64().unwrap_or(0) as usize;
+            let height=cmd["height"].as_u64().unwrap_or(0) as usize;
+            let rgba:Vec<u8>=cmd["rgba"].as_array().map(|a|a.iter().filter_map(|v|v.as_u64().and_then(|n|u8::try_from(n).ok())).collect()).unwrap_or_default();
+            if width.checked_mul(height).and_then(|n|n.checked_mul(4))!=Some(rgba.len()) || rgba.is_empty() {return serde_json::json!({"ok":false});}
+            set_clipboard_image(width,height,rgba);ok
+        }
+        "set_clipboard_text" => {set_clipboard(cmd["text"].as_str().unwrap_or(""));ok}
+        "clipboard_state" => {
+            use std::hash::{Hash,Hasher};
+            let w=world().lock().unwrap();
+            let image=w.clipboard_image.as_ref().map(|(width,height,rgba)| {
+                let mut hash=std::collections::hash_map::DefaultHasher::new();width.hash(&mut hash);height.hash(&mut hash);rgba.hash(&mut hash);
+                serde_json::json!({"width":width,"height":height,"fingerprint":hash.finish()})
+            });
+            serde_json::json!({"ok":true,"sequence":w.clip_seq,"text":w.clipboard,"image":image})
         }
         "set_monitors" => {
             let mons: Vec<Rect> = cmd["monitors"]

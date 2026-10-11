@@ -228,3 +228,9 @@ desk has a regression scenario there. See [docs/TESTING.md](docs/TESTING.md).
 [PolyForm Noncommercial License 1.0.0](LICENSE): individuals and other
 noncommercial users can use it freely. **Companies and any commercial use
 need a commercial license** — get in touch: **yusuf.ani8@gmail.com**.
+
+Image clipboard sharing is supported between macOS and Windows in 0.3.14-dev
+(protocol 17; update both devices together). Copied bitmap images are sent as
+PNG in encrypted 32 KiB chunks, capped at 16 MiB compressed / 64 MiB RGBA.
+Copied image files remain file offers through Quick Share. Transfer failures
+appear as clipboard issues, independently of network connection status.
