@@ -83,6 +83,10 @@ extern "C" {
     fn CGEventSourceSetLocalEventsSuppressionInterval(source: CGEventSourceRef, seconds: f64);
     fn CGEventSourceSetLocalEventsFilterDuringSuppressionState(source: CGEventSourceRef, filter: u32, state: u32);
     fn CGWarpMouseCursorPosition(p: CGPoint) -> i32;
+    // Unlike posted events, CGWarp has no CGEventSource parameter. This legacy
+    // API configures its default source; zeroing an Injector's separate source
+    // does not remove native return suppression.
+    fn CGSetLocalEventsSuppressionInterval(seconds:f64) -> i32;
     fn CGAssociateMouseAndMouseCursorPosition(connected: u32) -> i32;
     fn CGDisplayHideCursor(display: u32) -> i32;
     fn CGDisplayShowCursor(display: u32) -> i32;
@@ -516,14 +520,19 @@ pub fn warp_cursor(x: i32, y: i32) {
     }
 }
 
-/// Warp the cursor AND immediately cancel macOS's post-warp local-events
-/// suppression (~0.25 s, during which physical mouse moves are swallowed).
-/// Re-associating right after the warp defeats that window, so control feels
-/// instant when it returns to this machine. Use ONLY when regaining local
-/// control — the plain `warp_cursor` (cursor parked while forwarding) must not
-/// re-associate, or it would reconnect the frozen pointer mid-session.
+// A native warp uses the default Quartz source, unlike Injector's explicitly
+// created event source. Genuine return recordings showed ~250 ms of frozen
+// native positions despite nonzero accelerated reports and re-association.
+// Disable that suppression before the warp; keep normal remote containment.
+unsafe fn prepare_local_warp() {
+    SUPPRESSION_ERROR.store(CGSetLocalEventsSuppressionInterval(0.0),Ordering::Relaxed);
+}
+
+/// Restore local control without Quartz's default post-warp pause.
+/// Never use for receiver parking: that must retain source disassociation.
 pub fn warp_cursor_settled(x: i32, y: i32) {
     unsafe {
+        prepare_local_warp();
         CGWarpMouseCursorPosition(CGPoint { x: x as f64, y: y as f64 });
         let error=CGAssociateMouseAndMouseCursorPosition(1);
         ASSOCIATION_ERROR.store(error,Ordering::Relaxed);
@@ -679,11 +688,12 @@ pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Res
 
 static REMOTE_SUPPRESSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PHYSICAL_REMOTE_SUPPRESSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SUPPRESSION_ERROR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static WARP_ERROR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 pub fn mouse_delivery_status()->serde_json::Value {
     serde_json::json!({"tap_location":"session","cursor_detached_requested":DETACHED.load(Ordering::SeqCst),"association_error":ASSOCIATION_ERROR.load(Ordering::Relaxed),"remote_suppressed":REMOTE_SUPPRESSED.load(Ordering::Relaxed),
         "physical_remote_suppressed":PHYSICAL_REMOTE_SUPPRESSED.load(Ordering::Relaxed),
-        "warp_error":WARP_ERROR.load(Ordering::Relaxed),"hide_error":HIDE_ERROR.load(Ordering::Relaxed),"show_error":SHOW_ERROR.load(Ordering::Relaxed),"cursor_hidden_requested":HIDDEN.load(Ordering::Relaxed),"background_cursor_control":background_cursor_control()})
+        "suppression_error":SUPPRESSION_ERROR.load(Ordering::Relaxed),"warp_error":WARP_ERROR.load(Ordering::Relaxed),"hide_error":HIDE_ERROR.load(Ordering::Relaxed),"show_error":SHOW_ERROR.load(Ordering::Relaxed),"cursor_hidden_requested":HIDDEN.load(Ordering::Relaxed),"background_cursor_control":background_cursor_control()})
 }
 unsafe fn contain_remote_motion(event:CGEventRef)->CGEventRef {
     if super::motion_trace::native_enabled() {
@@ -816,6 +826,7 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
             // that relocation, preserving the source acceleration.
             extern "C" {fn mach_absolute_time()->u64; fn mach_timebase_info(info:*mut [u32;2])->i32;}
             let mut timebase=[0u32;2];mach_timebase_info(&mut timebase);
+            prepare_local_warp();
             WARP_ERROR.store(CGWarpMouseCursorPosition(point),Ordering::Relaxed);
             let cutoff=(mach_absolute_time() as u128*timebase[0] as u128/timebase[1] as u128) as u64;
             if super::motion_trace::native_enabled() {
