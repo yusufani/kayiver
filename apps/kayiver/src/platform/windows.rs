@@ -9,8 +9,8 @@
 //!
 //! Injection: relative SendInput deltas (so raw-input games see real motion)
 //! pinned to the exact position with SetCursorPos, and VK+scancode pairs for
-//! keys. Warps verify their landing and re-attach the input desktop if the
-//! cursor didn't move (lock screen / UAC desktop switches).
+//! keys. A windowless injection worker follows the input desktop before every
+//! event, including stationary clicks and keys on UAC prompts.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -1083,7 +1083,117 @@ const EXTENDED_HIDS: &[u16] = &[
     0xE3, 0xE7, // LWin, RWin
 ];
 
+/// Input runs on a windowless, hook-free thread: SetThreadDesktop cannot
+/// switch a thread that owns GUI windows/hooks to UAC's secure desktop.
 pub struct Injector {
+    tx: std::sync::mpsc::Sender<InjectionRequest>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+type InjectionAction = Box<dyn FnOnce(&mut NativeInjector) -> bool + Send>;
+struct InjectionRequest {
+    action: InjectionAction,
+    reply: std::sync::mpsc::SyncSender<bool>,
+}
+
+impl Injector {
+    pub fn new() -> Result<Self> {
+        let (tx, rx) = std::sync::mpsc::channel::<InjectionRequest>();
+        let worker = std::thread::Builder::new().name("kayiver-inject".into()).spawn(move || {
+            let mut desktop = InjectionDesktop::new();
+            let mut native = NativeInjector::new().expect("native injector initialization");
+            while let Ok(request) = rx.recv() {
+                // Bind before motion, clicks AND keys; a stationary click can
+                // be the first event after the UAC desktop switches.
+                let ok = desktop.follow_input() && (request.action)(&mut native);
+                let _ = request.reply.send(ok);
+            }
+            if desktop.follow_input() { native.release_all(); }
+        })?;
+        Ok(Self { tx, worker: Some(worker) })
+    }
+
+    fn run(&self, action: impl FnOnce(&mut NativeInjector) -> bool + Send + 'static) -> bool {
+        let (reply, result) = std::sync::mpsc::sync_channel(1);
+        self.tx.send(InjectionRequest { action: Box::new(action), reply }).is_ok()
+            && result.recv().unwrap_or(false)
+    }
+    pub fn rebase_position(&mut self, x: i32, y: i32) {
+        self.run(move |i| { i.rebase_position(x, y); true });
+    }
+    pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) -> bool {
+        self.run(move |i| i.mouse_to(x, y, dx, dy))
+    }
+    pub fn button(&mut self, b: MouseButton, pressed: bool) {
+        self.run(move |i| { i.button(b, pressed); true });
+    }
+    pub fn wheel(&mut self, dx: i32, dy: i32) {
+        self.run(move |i| { i.wheel(dx, dy); true });
+    }
+    pub fn key(&mut self, hid: u16, pressed: bool) {
+        self.run(move |i| { i.key(hid, pressed); true });
+    }
+    pub fn release_all(&mut self) {
+        self.run(|i| { i.release_all(); true });
+    }
+}
+
+impl Drop for Injector {
+    fn drop(&mut self) {
+        // Disconnect before joining, so the worker releases pressed inputs.
+        let (unused, _) = std::sync::mpsc::channel();
+        drop(std::mem::replace(&mut self.tx, unused));
+        if let Some(worker) = self.worker.take() { let _ = worker.join(); }
+    }
+}
+
+struct InjectionDesktop {
+    original: windows::Win32::System::StationsAndDesktops::HDESK,
+    attached: Option<windows::Win32::System::StationsAndDesktops::HDESK>,
+}
+impl InjectionDesktop {
+    fn new() -> Self {
+        use windows::Win32::System::{StationsAndDesktops::GetThreadDesktop, Threading::GetCurrentThreadId};
+        Self { original: unsafe { GetThreadDesktop(GetCurrentThreadId()).unwrap_or_default() }, attached: None }
+    }
+    fn follow_input(&mut self) -> bool {
+        use windows::Win32::System::StationsAndDesktops::{OpenInputDesktop,
+            DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS};
+        unsafe {
+            let next = match OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_ACCESS_FLAGS(0x1000_0000)) {
+                Ok(next) => next,
+                Err(e) => { tracing::warn!("input desktop unavailable: {e:?}"); return false; }
+            };
+            self.bind(next)
+        }
+    }
+    /// Takes ownership of an opened handle, including on failure.
+    fn bind(&mut self, next: windows::Win32::System::StationsAndDesktops::HDESK) -> bool {
+        use windows::Win32::System::StationsAndDesktops::{CloseDesktop, SetThreadDesktop};
+        unsafe {
+            if let Err(e) = SetThreadDesktop(next) {
+                let _ = CloseDesktop(next);
+                tracing::warn!("input desktop switch failed: {e:?}");
+                return false;
+            }
+            // Never close a handle while it is still bound to this thread.
+            if let Some(previous) = self.attached.replace(next) { let _ = CloseDesktop(previous); }
+            true
+        }
+    }
+}
+impl Drop for InjectionDesktop {
+    fn drop(&mut self) {
+        use windows::Win32::System::StationsAndDesktops::{CloseDesktop, SetThreadDesktop};
+        unsafe {
+            if SetThreadDesktop(self.original).is_ok() {
+                if let Some(attached) = self.attached.take() { let _ = CloseDesktop(attached); }
+            }
+        }
+    }
+}
+
+struct NativeInjector {
     down_keys: Vec<u16>,
     down_buttons: Vec<MouseButton>,
     /// Last time an injection problem was logged, to keep the log readable
@@ -1093,9 +1203,9 @@ pub struct Injector {
     last_wake: Option<Instant>,
 }
 
-impl Injector {
+impl NativeInjector {
     pub fn new() -> Result<Self> {
-        Ok(Injector {
+        Ok(NativeInjector {
             down_keys: Vec::new(),
             down_buttons: Vec::new(),
             last_issue_log: None,
@@ -1177,8 +1287,7 @@ impl Injector {
     ///     primary) without normalization games.
     /// Warps (dx=dy=0 — Enter/EnterAt handoffs) are position-critical, so
     /// they verify the landing with GetCursorPos and re-attach the input
-    /// desktop + retry once if the cursor didn't actually move (lock screen /
-    /// UAC switched desktops, or a fullscreen app clips the cursor).
+    /// desktop before dispatch; retry once if a fullscreen app clips the cursor.
     // Buttons use the current native cursor on this backend.
     pub fn rebase_position(&mut self, _x: i32, _y: i32) {}
     pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) -> bool {
@@ -1188,20 +1297,22 @@ impl Injector {
         }
         unsafe {
             let warp = SetCursorPos(x, y);
-            if warp.is_err() {return false;}
+            if warp.is_err() {
+                self.log_issue(format!("SetCursorPos failed on active input desktop: {warp:?}"));
+                return false;
+            }
             if dx == 0 && dy == 0 {
                 let mut p = POINT::default();
                 let _ = GetCursorPos(&mut p);
                 if (p.x - x).abs() > 4 || (p.y - y).abs() > 4 {
                     let mut clip = windows::Win32::Foundation::RECT::default();
                     let _ = GetClipCursor(&mut clip);
-                    let reattached = attach_input_desktop();
                     let retried = SetCursorPos(x, y);
                     let mut q = POINT::default();
                     let _ = GetCursorPos(&mut q);
                     self.log_issue(format!(
                         "warp to ({x},{y}) landed at ({},{}) [warp_ok={} clip={:?} \
-                         reattach={reattached} retry_ok={} now=({},{})]",
+                         retry_ok={} now=({},{})]",
                         p.x, p.y, warp.is_ok(), clip, retried.is_ok(), q.x, q.y
                     ));
                     rebase_native_capture();
@@ -1529,4 +1640,41 @@ pub fn raise_editor_if_present()->bool {
         let _=SetForegroundWindow(hwnd);
     }
     true
+}
+
+#[cfg(test)]
+mod secure_desktop_tests {
+    use super::*;
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::System::StationsAndDesktops::*;
+    use windows::Win32::UI::WindowsAndMessaging::*;
+
+    fn test_desktop(name: &str) -> HDESK {
+        let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        unsafe { CreateDesktopW(PCWSTR(name.as_ptr()), PCWSTR::null(), None,
+            DESKTOP_CONTROL_FLAGS(0), 0x1000_0000, None).unwrap() }
+    }
+
+    #[test]
+    fn gui_thread_cannot_switch_but_windowless_injection_thread_can() {
+        let name = format!("KayiverTest{}", std::process::id());
+        // Invisible standard control: reproduce the GUI ownership constraint
+        // without switching the user's visible desktop or injecting input.
+        let window = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!(""),
+            WINDOW_STYLE(0), 0, 0, 1, 1, None, None, None, None).unwrap() };
+        let mut gui_desktop = InjectionDesktop::new();
+        assert!(!gui_desktop.bind(test_desktop(&name)));
+        let result = std::thread::spawn(move || {
+            let mut desktop = InjectionDesktop::new();
+            assert!(desktop.bind(test_desktop(&name)));
+            // Switch back and forth repeatedly. Drop restores the original
+            // desktop and closes each formerly attached opened handle.
+            for _ in 0..100 {
+                assert!(desktop.bind(test_desktop(&format!("{name}Other"))));
+                assert!(desktop.bind(test_desktop(&name)));
+            }
+        }).join();
+        unsafe { DestroyWindow(window).unwrap(); }
+        result.unwrap();
+    }
 }

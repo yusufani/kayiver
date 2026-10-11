@@ -136,3 +136,22 @@ acceptance must confirm an actual Windows bitmap arrives as an image on macOS.
 `/api/status.clipboard` reports only counters, dimensions and errors; no image
 or clipboard text is exposed there. `POST /api/clipboard/sync` explicitly resends
 current clipboard content; startup alone never transmits an old clipboard.
+
+### Windows UAC input desktop
+
+The Windows injector owns a windowless, hook-free worker. Every motion,
+button, wheel and key command follows the active input desktop before
+injection. The GUI/runtime thread must not be rebound: Windows rejects
+SetThreadDesktop when that thread owns windows or hooks. Opened desktop
+handles are closed after switching away, and worker shutdown releases held
+inputs before restoring its original desktop.
+
+`secure_desktop_tests::gui_thread_cannot_switch_but_windowless_injection_thread_can`
+creates an invisible window and isolated desktops; it verifies the GUI
+constraint and 200 successful switches on a clean thread without moving
+any real cursor or changing the visible desktop. Run this test on Windows.
+Physical acceptance still requires a real UAC prompt: with the Mac as input
+source, move and click on the consent dialog, dismiss it, and immediately
+move/click on the regular desktop. Do not automatically approve elevated
+applications as part of this test. Pointer geometry, motion units and the
+network protocol are unchanged.
