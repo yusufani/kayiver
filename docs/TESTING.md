@@ -117,3 +117,12 @@ pass confirms determinism for the captured reports; it does not prove physical
 pointer acceleration or real application drag behavior. Perform native desktop,
 taskbar, rescue, startup/reopen, and source-mouse acceptance separately on both
 platforms. Secure desktop and raw-input games are separate platform gates.
+
+Device presentation regression: exercise 320×568, 480×640 and 957×664
+windows with long adapter labels. Header controls must wrap without horizontal
+page overflow; the narrow inspector must retain all fields through page scroll.
+At reset zoom, screen bodies must fit the canvas without covering its zoom
+controls. Device feet must not intersect any other visible screen (including
+sideways laptop keyboard overhang beside taller monitors). Compact shared
+screens retain owner letters without a badge obscuring them. Selection borders
+stay inside the screen rectangle. Check both Precision and Gallery.

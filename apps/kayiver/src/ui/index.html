@@ -321,8 +321,8 @@
   .workspace { flex:1 0 300px; min-height:300px; display:flex; margin:16px 22px 4px; border:1px solid var(--line); border-radius:16px; background:var(--bg2); overflow:hidden; }
   #canvas { flex:1; min-width:0; margin:0; border:0; border-radius:0; min-height:350px; background:radial-gradient(ellipse at 50% 35%,var(--panel),var(--field) 85%); }
   .mon { background:#11141b; border:0; overflow:visible; border-radius:5px; box-shadow:0 8px 14px rgba(0,0,0,.35); transition:box-shadow 160ms ease-out; }
-  .mon::before { inset:-5px; background:linear-gradient(130deg,#626a75,#161a21 20%,#0b0e13 65%,#77818a); border-radius:8px; box-shadow:inset 0 0 0 1px #858e98,0 12px 25px rgba(0,0,0,.4); z-index:-1; }
-  .device-glass { position:absolute; inset:0; overflow:hidden; border-radius:4px; background:var(--wallpaper); background-image:linear-gradient(180deg,rgba(4,10,24,.08),rgba(4,10,24,.3)),url('/assets/alpine-blue.png'); background-size:cover; background-position:center; pointer-events:none; }
+  .mon::before { inset:0; background:linear-gradient(130deg,#626a75,#161a21 20%,#0b0e13 65%,#77818a); border-radius:8px; box-shadow:inset 0 0 0 1px #858e98,0 12px 25px rgba(0,0,0,.4); z-index:0; }
+  .device-glass { position:absolute; inset:4px; overflow:hidden; border-radius:4px; background:var(--wallpaper); background-image:linear-gradient(180deg,rgba(4,10,24,.08),rgba(4,10,24,.3)),url('/assets/alpine-blue.png'); background-size:cover; background-position:center; pointer-events:none; }
   .device-glass::after { content:''; position:absolute; inset:0; background:linear-gradient(140deg,rgba(255,255,255,.12),transparent 45%); }
   :root[data-look="gallery"] .device-glass { background-image:linear-gradient(150deg,rgba(20,10,4,.2),rgba(65,35,10,.15)),url('/assets/alpine-blue.png'); }
   .device-foot { position:absolute; top:calc(100% + 5px); left:50%; width:24%; height:26px; transform:translateX(-50%); background:linear-gradient(90deg,#333a45,#a5adb5 48%,#414955); clip-path:polygon(38% 0,62% 0,66% 66%,100% 79%,100% 100%,0 100%,0 79%,34% 66%); pointer-events:none; }
@@ -337,9 +337,10 @@
   .mon.compact .name,.mon.compact .kind,.mon.compact .segname { display:none; }
   .mon.compact .ltr { top:4px; left:4px; font-size:12px; min-width:21px; height:21px; }
   .mon.compact .segpick { display:none; }
-  .mon.compact .panel-badge { font-size:10px; bottom:3px; }
+  .mon.compact .panel-badge { display:none; }
+  .mon.compact .segltr { font-size:13px; }
   #inspectorKind { margin-top:12px; padding:6px 10px; font:inherit; font-size:12px; color:var(--text); background:var(--bg2); border:1px solid var(--line2); border-radius:7px; }
-  .mon.selected { outline:2px solid var(--hardware-accent); outline-offset:5px; }
+  .mon.selected { outline:2px solid var(--hardware-accent); outline-offset:-2px; }
   .mon.focus { animation:none; }
   .mon.snapped { box-shadow:0 8px 14px rgba(0,0,0,.35); }
   .mon.livefocus { box-shadow:0 0 0 2px var(--hardware-accent),0 8px 14px rgba(0,0,0,.35); }
@@ -363,6 +364,34 @@
   button:focus-visible,.mon:focus-visible { outline:2px solid var(--a1); outline-offset:4px; }
   @media(max-width:900px) { #deviceInspector { flex-basis:185px; padding:17px; } }
   @media(max-width:650px) { .workspace { flex-direction:column; margin:12px 12px 0; } #canvas { flex-basis:320px; min-height:320px; } #deviceInspector { flex-basis:auto; border-left:0; border-top:1px solid var(--line); padding:14px 18px; } #deviceInspector h2 { font-size:24px; } #inspectorMachine { margin-bottom:8px; } #deviceInspector dl { grid-template-columns:repeat(2,minmax(0,1fr)); } #deviceInspector .inspector-note { margin-top:14px; padding-top:10px; } }
+  /* Controls wrap as a group; long adapter names must not widen the window. */
+  header { flex-shrink:0; }
+  .brand { min-width:0; max-width:100%; }
+  .brand .sub { overflow-wrap:anywhere; }
+  .statusbar { flex:1 1 540px; min-width:0; max-width:100%; }
+  #linkSel { min-width:0; max-width:240px; text-overflow:ellipsis; }
+  .workspace { flex-shrink:0; }
+  footer { flex-shrink:0; }
+  #deviceInspector { overflow:auto; }
+  #zoomBox { max-width:calc(100% - 20px); }
+  @media(max-width:1000px) {
+    .statusbar { justify-content:flex-start; margin-left:0; }
+    #deviceInspector { flex-basis:200px; padding:16px; }
+    .workspace { margin:12px 14px 4px; }
+  }
+  @media(max-width:650px) {
+    header { padding:12px; }
+    .statusbar { gap:8px; }
+    .stat { font-size:11px; }
+    #linkSel { max-width:180px; }
+    .workspace { flex:none; height:auto; }
+    #canvas { flex:none; height:320px; }
+    #deviceInspector { flex:none; overflow:visible; }
+    #deviceInspector dl { column-gap:16px; }
+    .workspace { margin:8px 12px 4px; }
+    footer { padding:10px 12px; }
+    #msg { flex-basis:100%; }
+  }
   @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none!important; transition:none!important; } }
 </style>
 </head>
@@ -393,7 +422,7 @@
     <div class="stat"><span class="dot" id="hostDot"></span><span id="hostTxt">connecting…</span></div>
     <div class="stat" id="linkStat" style="display:none;gap:6px;align-items:center">
       <span id="linkTxt" style="opacity:.85"></span>
-      <select id="linkSel" title="Connection path" style="max-width:210px"></select>
+      <select id="linkSel" title="Connection path"></select>
       <button class="iconbtn" id="linkGo" title="Move the session to this address" style="font-size:13px;width:auto;padding:0 8px">switch</button>
     </div>
     <button class="iconbtn" id="themeBtn" title="Theme" aria-label="Theme" style="font-size:15px">☾</button>
@@ -798,7 +827,7 @@ function fitArrangement() {
   const minx = Math.min(...visible.map(t => t.x)), miny = Math.min(...visible.map(t => t.y));
   const width = Math.max(...visible.map(t => t.x + t.w)) - minx;
   const height = Math.max(...visible.map(t => t.y + t.h)) - miny;
-  const pad = 30;
+  const pad = 56;
   const factor = Math.min(1, Math.max(1, canvas.clientWidth - pad * 2) / Math.max(1, width),
     Math.max(1, canvas.clientHeight - pad * 2) / Math.max(1, height)) * zoom;
   const ox = (canvas.clientWidth - width * factor) / 2 + pan.x;
@@ -1173,10 +1202,21 @@ function currentLinks() {
   return links;
 }
 
+// Decorative hardware never covers another screen, even when a laptop's
+// keyboard extends sideways beside a taller monitor.
+function deviceFootOccluded(tile, tiles) {
+  const laptop = tile.el.classList.contains('laptop');
+  const width = tile.w * (laptop ? 1.12 : .24);
+  const foot = {x:tile.x + (tile.w-width)/2, y:tile.y+tile.h+5, w:width, h:26};
+  return tiles.some(other => other !== tile && other.el.style.display !== 'none' &&
+    foot.x < other.x+other.w && foot.x+foot.w > other.x &&
+    foot.y < other.y+other.h && foot.y+foot.h > other.y);
+}
+
 function refreshSnap() {
   for (const t of mons) {
     const foot=t.el.querySelector('.device-foot');
-    if (foot) foot.hidden=mons.some(o=>o!==t && o.el.style.display!=='none' && o.y>=t.y+t.h-1 && o.y<t.y+t.h+34 && hOver(t,o)>0);
+    if (foot) foot.hidden = deviceFootOccluded(t, mons);
   }
   const linked = new Set();
   for (const l of currentLinks()) { linked.add(l.from); linked.add(l.to); }

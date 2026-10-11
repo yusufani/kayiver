@@ -35,3 +35,16 @@ assert.deepEqual(shared(),{},'shared aliases must use the receiver scale');
 upper.y-=20;
 assert.equal(shared().receiver[1].y,-600,'shared alias offsets must preserve native units');
 console.log('Free gaps, proximity snapping, unknown devices, portrait ratios, pan and mixed-scale shared aliases verified.');
+
+const footSource=source('deviceFootOccluded','function refreshSnap');
+const occluded=new Function(footSource+';return deviceFootOccluded;')();
+const hardware=(x,y,w,h,laptop=false)=>({...tile(x,y,w,h),el:{style:{display:''},classList:{contains:()=>laptop}}});
+const laptop=hardware(0,0,100,80,true), tall=hardware(100,0,100,130);
+assert.equal(occluded(laptop,[laptop,tall]),true,'sideways keyboard must not cover a taller adjacent screen');
+const isolated=hardware(0,0,100,80,true);
+assert.equal(occluded(isolated,[isolated]),false,'isolated laptop keeps its keyboard');
+const monitor=hardware(0,0,100,80), below=hardware(0,80,100,80);
+assert.equal(occluded(monitor,[monitor,below]),true,'monitor stand must not cover screen below');
+tall.el.style.display='none';
+assert.equal(occluded(laptop,[laptop,tall]),false,'hidden shared aliases must not remove hardware');
+console.log('Decorative hardware cannot cover neighboring screens.');
