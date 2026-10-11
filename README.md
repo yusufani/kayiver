@@ -232,5 +232,6 @@ need a commercial license** — get in touch: **yusuf.ani8@gmail.com**.
 Image clipboard sharing is supported between macOS and Windows in 0.3.14-dev
 (protocol 17; update both devices together). Copied bitmap images are sent as
 PNG in encrypted 32 KiB chunks, capped at 16 MiB compressed / 64 MiB RGBA.
-Copied image files remain file offers through Quick Share. Transfer failures
+A single copied PNG/JPEG/GIF/WebP/TIFF/BMP file is also read as an image;
+other copied files use Quick Share. Transfer failures
 appear as clipboard issues, independently of network connection status.

@@ -1931,7 +1931,7 @@ async fn run_session(
                     platform::open_url(&url);
                 }
                 Msg::QuickShareOffer(offer) => {
-                    info!("{name}: quick share offer #{}: {:?}", offer.id, offer.payload);
+                    info!("{name}: quick share offer #{}", offer.id);
                     crate::ui::present_quick_share(name.clone(), offer);
                 }
                 Msg::QuickShareAccept { id } => {

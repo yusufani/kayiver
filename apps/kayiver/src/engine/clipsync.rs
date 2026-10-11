@@ -38,6 +38,7 @@ pub struct ClipboardState {
     received_images: u64,
     image_size: Option<(usize, usize)>,
     error: Option<String>,
+    source_kind: Option<&'static str>,
 }
 pub type ClipState = Arc<Mutex<ClipboardState>>;
 static ACTIVE: OnceLock<ClipState> = OnceLock::new();
@@ -49,7 +50,7 @@ pub fn status() -> serde_json::Value {
         return serde_json::json!({"running":false});
     };
     let s = state.lock().unwrap();
-    serde_json::json!({"running":true,"sent_images":s.sent_images,"received_images":s.received_images,"image_size":s.image_size,"error":s.error})
+    serde_json::json!({"running":true,"sent_images":s.sent_images,"received_images":s.received_images,"image_size":s.image_size,"error":s.error,"source_kind":s.source_kind})
 }
 pub fn request_sync(image_only: bool) -> bool {
     let Some(state) = ACTIVE.get() else {
@@ -139,14 +140,48 @@ fn decode_image(bytes: &[u8]) -> anyhow::Result<Image> {
     validate_image(&image)?;
     Ok(image)
 }
+fn decode_copied_image_file(path: &std::path::Path) -> anyhow::Result<Image> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    anyhow::ensure!(
+        matches!(
+            ext.as_str(),
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "tif" | "tiff" | "bmp"
+        ),
+        "copied file is not an image"
+    );
+    anyhow::ensure!(
+        std::fs::metadata(path)?.len() <= MAX_PNG as u64,
+        "copied image file exceeds size limit"
+    );
+    let mut reader = image::ImageReader::open(path)?.with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_RGBA as u64);
+    reader.limits(limits);
+    let decoded = reader.decode()?.to_rgba8();
+    let image = Image {
+        width: decoded.width() as usize,
+        height: decoded.height() as usize,
+        rgba: decoded.into_raw(),
+    };
+    validate_image(&image)?;
+    Ok(image)
+}
+
 #[cfg(all(not(feature = "sim"), any(target_os = "macos", target_os = "windows")))]
 fn read_image() -> Option<Image> {
-    let image = arboard::Clipboard::new().ok()?.get_image().ok()?;
-    Some(Image {
-        width: image.width,
-        height: image.height,
-        rgba: image.bytes.into_owned(),
-    })
+    if let Ok(image) = arboard::Clipboard::new().and_then(|mut c| c.get_image()) {
+        return Some(Image {
+            width: image.width,
+            height: image.height,
+            rgba: image.bytes.into_owned(),
+        });
+    }
+    let file = platform::get_clipboard_file()?;
+    decode_copied_image_file(std::path::Path::new(&file)).ok()
 }
 #[cfg(feature = "sim")]
 fn read_image() -> Option<Image> {
@@ -280,12 +315,21 @@ pub fn watch(state: ClipState, send: impl Fn(Msg) + Send + 'static) {
                     continue;
                 } // never send a torn copy
                 sequence = seq;
+                let file = platform::get_clipboard_file();
+                state.lock().unwrap().source_kind = Some(if image.is_some() {
+                    "image"
+                } else if text.is_some() {
+                    "text"
+                } else if file.is_some() {
+                    "file"
+                } else {
+                    "unknown"
+                });
                 if image_only && image.is_none() {
                     state.lock().unwrap().error =
                         Some("current clipboard has no supported bitmap image".into());
                     continue;
                 }
-                let file = platform::get_clipboard_file();
                 if let Some(payload) =
                     crate::engine::quickshare::detect_payload(text.as_deref(), file.as_deref())
                 {
@@ -383,6 +427,19 @@ impl ImageTransfer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn copied_rgb_png_file_is_decoded_without_requiring_bitmap_clipboard() {
+        let path =
+            std::env::temp_dir().join(format!("kayiver-clipboard-file-{}.png", std::process::id()));
+        image::RgbImage::from_raw(2, 1, vec![255, 0, 0, 0, 128, 255])
+            .unwrap()
+            .save(&path)
+            .unwrap();
+        let decoded = decode_copied_image_file(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(decoded.rgba, vec![255, 0, 0, 255, 0, 128, 255, 255]);
+        assert!(decode_copied_image_file(std::path::Path::new("unrelated.txt")).is_err());
+    }
     #[test]
     fn image_png_roundtrip_preserves_rgba_and_alpha() {
         let image = Image {

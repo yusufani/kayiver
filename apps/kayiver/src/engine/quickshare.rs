@@ -131,7 +131,7 @@ impl QuickShareEngine {
             }
         }
 
-        debug!("quickshare: new candidate available: {payload:?}");
+        debug!("quickshare: new candidate available");
         inner.latest_candidate = Some((QuickShareOffer { id, payload }, Instant::now()));
     }
 

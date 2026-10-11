@@ -1457,7 +1457,10 @@ pub fn reveal_path(path: &str) {
 
 /// If a file was copied on Windows, return its local file path (if readable).
 pub fn get_clipboard_file() -> Option<String> {
-    None
+    let files=arboard::Clipboard::new().ok()?.get().file_list().ok()?;
+    // Never choose an arbitrary file from a multiple-selection clipboard.
+    if files.len()!=1 {return None;}
+    files[0].to_str().map(str::to_owned)
 }
 
 /// Monotonic clipboard change counter (cheap change detection).
