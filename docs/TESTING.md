@@ -175,3 +175,30 @@ only a real desktop-name change calls SetThreadDesktop. The
 `repeated_probes_keep_the_existing_desktop_binding` test verifies that
 1,000 probes keep the same bound handle on an isolated desktop. Its elapsed time is an isolated backend measurement,
 not end-to-end mouse latency or a physical acceptance test.
+
+### Ordered Windows injection and latency counters
+
+Windows input commands use a typed, bounded FIFO and one reusable completion
+slot. No command closure or reply channel is allocated per motion. One caller
+waits for exactly its command result; worker shutdown wakes it with failure,
+and shutdown waits for native pressed-input cleanup. The panic-wakeup test
+applies to unwinding test builds; production uses the existing panic=abort
+policy and relies on peer-disconnect recovery if the process aborts. Tests exercise 10,000
+reversing commands, failure wakeup and cleanup. Run the ignored
+`benchmark_reusable_completion_against_per_command_reply_channel` explicitly
+for a same-machine transport comparison. On the development Windows machine,
+five-trial median for 10,000 commands was 15,017 us versus 39,635 us for the
+previous per-request reply-channel path. This excludes native injection and
+network latency and is not a portable performance guarantee.
+
+Windows `/api/status.injection` exposes command count, failed calls, mean/max
+worker round-trip microseconds and calls over 2 ms. It contains no input
+payload, keys, clipboard content or window titles. Compare counter deltas
+while physically using the mouse; empty counters are not acceptance evidence.
+
+Encrypted sessions reuse plaintext/ciphertext frame buffers and write the
+length prefix with ciphertext in one socket call. Protocol 17 and the bytes
+on the wire are unchanged. The legacy-framing interoperability test exercises
+1,000 alternating movement/bulk messages and checks stable buffer capacity
+after warmup; an oversized message is rejected without consuming a nonce.
+Oversized plaintext frames are rejected before any socket write as well.

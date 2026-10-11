@@ -1086,65 +1086,86 @@ const EXTENDED_HIDS: &[u16] = &[
 /// Input runs on a windowless, hook-free thread: SetThreadDesktop cannot
 /// switch a thread that owns GUI windows/hooks to UAC's secure desktop.
 pub struct Injector {
-    tx: std::sync::mpsc::Sender<InjectionRequest>,
-    worker: Option<std::thread::JoinHandle<()>>,
+    worker: super::ordered_worker::OrderedWorker<InjectionCommand, bool>,
 }
-
-type InjectionAction = Box<dyn FnOnce(&mut NativeInjector) -> bool + Send>;
-struct InjectionRequest {
-    action: InjectionAction,
-    reply: std::sync::mpsc::SyncSender<bool>,
+#[derive(Clone, Copy)]
+enum InjectionCommand {
+    Move { x: i32, y: i32, dx: i32, dy: i32 },
+    Button(MouseButton, bool),
+    Wheel(i32, i32),
+    Key(u16, bool),
+    Release,
 }
-
+struct NativeWorker { desktop: InjectionDesktop, native: NativeInjector }
+impl NativeWorker {
+    fn apply(&mut self, command: InjectionCommand) -> bool {
+        if !self.desktop.follow_input() { return false; }
+        match command {
+            InjectionCommand::Move {x,y,dx,dy} => self.native.mouse_to(x,y,dx,dy),
+            InjectionCommand::Button(b,p) => { self.native.button(b,p); true },
+            InjectionCommand::Wheel(dx,dy) => { self.native.wheel(dx,dy); true },
+            InjectionCommand::Key(k,p) => { self.native.key(k,p); true },
+            InjectionCommand::Release => { self.native.release_all(); true },
+        }
+    }
+}
+impl Drop for NativeWorker {
+    fn drop(&mut self) { if self.desktop.follow_input() { self.native.release_all(); } }
+}
 impl Injector {
     pub fn new() -> Result<Self> {
-        let (tx, rx) = std::sync::mpsc::channel::<InjectionRequest>();
-        let worker = std::thread::Builder::new().name("kayiver-inject".into()).spawn(move || {
-            let mut desktop = InjectionDesktop::new();
-            let mut native = NativeInjector::new().expect("native injector initialization");
-            while let Ok(request) = rx.recv() {
-                // Bind before motion, clicks AND keys; a stationary click can
-                // be the first event after the UAC desktop switches.
-                let ok = desktop.follow_input() && (request.action)(&mut native);
-                let _ = request.reply.send(ok);
-            }
-            if desktop.follow_input() { native.release_all(); }
+        let worker = super::ordered_worker::OrderedWorker::spawn("kayiver-inject", || {
+            let mut state = NativeWorker { desktop: InjectionDesktop::new(),
+                native: NativeInjector::new().expect("native injector initialization") };
+            move |command| state.apply(command)
         })?;
-        Ok(Self { tx, worker: Some(worker) })
+        Ok(Self { worker })
     }
-
-    fn run(&self, action: impl FnOnce(&mut NativeInjector) -> bool + Send + 'static) -> bool {
-        let (reply, result) = std::sync::mpsc::sync_channel(1);
-        self.tx.send(InjectionRequest { action: Box::new(action), reply }).is_ok()
-            && result.recv().unwrap_or(false)
+    fn run(&mut self, command: InjectionCommand) -> bool {
+        let started = Instant::now();
+        let result = self.worker.run(command).unwrap_or(false);
+        INJECTION_METRICS.record(started.elapsed(), result);
+        result
     }
-    pub fn rebase_position(&mut self, x: i32, y: i32) {
-        self.run(move |i| { i.rebase_position(x, y); true });
-    }
+    // Windows button coordinates are implicit; no worker round-trip needed.
+    pub fn rebase_position(&mut self, _x: i32, _y: i32) {}
     pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) -> bool {
-        self.run(move |i| i.mouse_to(x, y, dx, dy))
+        self.run(InjectionCommand::Move {x,y,dx,dy})
     }
-    pub fn button(&mut self, b: MouseButton, pressed: bool) {
-        self.run(move |i| { i.button(b, pressed); true });
-    }
-    pub fn wheel(&mut self, dx: i32, dy: i32) {
-        self.run(move |i| { i.wheel(dx, dy); true });
-    }
-    pub fn key(&mut self, hid: u16, pressed: bool) {
-        self.run(move |i| { i.key(hid, pressed); true });
-    }
-    pub fn release_all(&mut self) {
-        self.run(|i| { i.release_all(); true });
-    }
+    pub fn button(&mut self, b: MouseButton, pressed: bool) { self.run(InjectionCommand::Button(b,pressed)); }
+    pub fn wheel(&mut self, dx: i32, dy: i32) { self.run(InjectionCommand::Wheel(dx,dy)); }
+    pub fn key(&mut self, hid: u16, pressed: bool) { self.run(InjectionCommand::Key(hid,pressed)); }
+    pub fn release_all(&mut self) { self.run(InjectionCommand::Release); }
 }
 
-impl Drop for Injector {
-    fn drop(&mut self) {
-        // Disconnect before joining, so the worker releases pressed inputs.
-        let (unused, _) = std::sync::mpsc::channel();
-        drop(std::mem::replace(&mut self.tx, unused));
-        if let Some(worker) = self.worker.take() { let _ = worker.join(); }
+struct InjectionMetrics {
+    count: std::sync::atomic::AtomicU64,
+    failed: std::sync::atomic::AtomicU64,
+    total_us: std::sync::atomic::AtomicU64,
+    max_us: std::sync::atomic::AtomicU64,
+    over_2ms: std::sync::atomic::AtomicU64,
+}
+static INJECTION_METRICS: InjectionMetrics = InjectionMetrics {
+    count: std::sync::atomic::AtomicU64::new(0), failed: std::sync::atomic::AtomicU64::new(0),
+    total_us: std::sync::atomic::AtomicU64::new(0), max_us: std::sync::atomic::AtomicU64::new(0),
+    over_2ms: std::sync::atomic::AtomicU64::new(0),
+};
+impl InjectionMetrics {
+    fn record(&self, duration: Duration, success: bool) {
+        let us = duration.as_micros().min(u64::MAX as u128) as u64;
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.total_us.fetch_add(us, Ordering::Relaxed);
+        self.max_us.fetch_max(us, Ordering::Relaxed);
+        if !success { self.failed.fetch_add(1, Ordering::Relaxed); }
+        if us > 2000 { self.over_2ms.fetch_add(1, Ordering::Relaxed); }
     }
+}
+pub fn injection_status() -> serde_json::Value {
+    let count = INJECTION_METRICS.count.load(Ordering::Relaxed);
+    serde_json::json!({"commands":count,"failed":INJECTION_METRICS.failed.load(Ordering::Relaxed),
+        "mean_us": if count == 0 {0.0} else {INJECTION_METRICS.total_us.load(Ordering::Relaxed) as f64 / count as f64},
+        "max_us":INJECTION_METRICS.max_us.load(Ordering::Relaxed),
+        "over_2ms":INJECTION_METRICS.over_2ms.load(Ordering::Relaxed)})
 }
 
 struct InjectionDesktop {

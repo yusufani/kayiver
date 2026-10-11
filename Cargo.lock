@@ -1556,7 +1556,7 @@ dependencies = [
 
 [[package]]
 name = "kayiver"
-version = "0.3.14-dev"
+version = "0.3.15-dev"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "kayiver-core"
-version = "0.3.14-dev"
+version = "0.3.15-dev"
 dependencies = [
  "base64",
  "dirs",

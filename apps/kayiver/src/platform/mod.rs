@@ -38,6 +38,8 @@ pub fn clamp_monitor_move(monitors: &[Rect], from: (i32, i32), to: (i32, i32)) -
     }).map(clamp).unwrap_or(from)
 }
 
+#[cfg(any(target_os = "windows", test))]
+mod ordered_worker;
 pub mod navigation;
 mod cursor_parking;
 mod source_motion;

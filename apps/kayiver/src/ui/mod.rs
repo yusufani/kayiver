@@ -1128,6 +1128,10 @@ fn api_status() -> String {
             #[cfg(all(target_os="macos",not(feature="sim")))] {crate::platform::mouse_delivery_status()}
             #[cfg(not(all(target_os="macos",not(feature="sim"))))] {serde_json::Value::Null}
         }),
+        "injection": ({
+            #[cfg(all(target_os="windows",not(feature="sim")))] {crate::platform::injection_status()}
+            #[cfg(not(all(target_os="windows",not(feature="sim"))))] {serde_json::Value::Null}
+        }),
         "capture": capture,
         "running": s.running,
         "focus": s.focus,
