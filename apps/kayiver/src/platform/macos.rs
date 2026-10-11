@@ -542,8 +542,6 @@ pub fn cursor_pos() -> (i32, i32) {
 }
 
 
-static CURSOR_PARKING: std::sync::Mutex<super::cursor_parking::CursorParking> =
-    std::sync::Mutex::new(super::cursor_parking::CursorParking::new());
 
 // Quartz cursor visibility is normally foreground-only. Enable background
 // control on this process's WindowServer connection without taking focus.
@@ -590,11 +588,11 @@ pub fn set_forwarding_visuals(on: bool) -> bool {
         if error!=0 {return false;}
         DETACHED.store(on,Ordering::SeqCst);
     }
-    // Park inside a real monitor, with room for accelerated displacement in
-    // every direction. Parking on the departure edge clips outward reports.
-    let position=cursor_pos();
-    let anchor=if on {monitors().into_iter().find(|r| position.0>=r.x && position.0<r.right() && position.1>=r.y && position.1<r.bottom()).map(|r|(r.x+r.w/2,r.y+r.h/2)).unwrap_or(position)} else {position};
-    CURSOR_PARKING.lock().unwrap().set_remote(on, anchor);
+    // Freeze at the departure position. Relocating a detached source changes
+    // the next native delta: real reports contained hundreds of relocation
+    // pixels despite only 3-5 unaccelerated device units. Remote motion has no
+    // dependence on this absolute position, so no remote warp is necessary.
+
     // CGDisplayHideCursor/ShowCursor are REFERENCE-COUNTED: two hides need two
     // shows or the cursor stays hidden (and, being app-scoped, only reappears
     // when kayiver isn't frontmost). Crossing onto the tablet used to hide twice
@@ -627,7 +625,7 @@ struct CaptureState {
     esc_downs: [Option<Instant>; 2],
     motion_position: Option<CGPoint>,
     motion_generation: u64,
-    local_warp_reference: Option<kayiver_core::motion::Point>,
+    local_warp_reference: Option<super::source_motion::ReturnWarp>,
 
 }
 
@@ -696,9 +694,10 @@ unsafe fn contain_remote_motion(event:CGEventRef)->CGEventRef {
             unaccelerated:(CGEventGetDoubleValueField(event,170),CGEventGetDoubleValueField(event,171)),
         });
     }
-    if let Some((x,y))=CURSOR_PARKING.lock().unwrap().anchor() {
-        WARP_ERROR.store(CGWarpMouseCursorPosition(CGPoint{x:x as f64,y:y as f64}),Ordering::Relaxed);
-    }
+    // The physical source is detached at entry. Never reposition it per
+    // report: repeated warps perturb the source pipeline and can visibly
+    // correct movement that has already reached the native cursor.
+
     REMOTE_SUPPRESSED.fetch_add(1,Ordering::Relaxed);
     if CGEventGetIntegerValueField(event,41)==0 && (CGEventGetDoubleValueField(event,170)!=0.0 || CGEventGetDoubleValueField(event,171)!=0.0) {
         PHYSICAL_REMOTE_SUPPRESSED.fetch_add(1,Ordering::Relaxed);
@@ -787,8 +786,8 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         // Native coordinates keep local subpixels; remote reports use only the
         // OS displacement, independent of the parking coordinate phase.
         let reference=previous.map(|o|kayiver_core::motion::Point::new(o.x,o.y));
-        let (native,delta,settled)=if let Some(destination)=state.local_warp_reference.filter(|_|!forwarding) {
-            super::source_motion::after_local_warp(native,reference,raw,destination)
+        let (native,delta,settled)=if let Some(destination)=state.local_warp_reference.as_mut().filter(|_|!forwarding) {
+            destination.consume(CGEventGetTimestamp(event), native, raw)
         } else {(native,super::source_motion::screen_delta(native,reference,raw,forwarding),true)};
         if super::motion_trace::native_enabled() && (delta.x!=0.0 || delta.y!=0.0) {
             super::motion_trace::record_native(super::motion_trace::NativeSample {
@@ -812,20 +811,33 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
                 });
             }
             let point=CGPoint{x:position.x,y:position.y};
-            CGWarpMouseCursorPosition(point);
+            // Quartz folds this one relocation into the next physical delta.
+            // Fence queued reports by their capture timestamp and remove only
+            // that relocation, preserving the source acceleration.
+            extern "C" {fn mach_absolute_time()->u64; fn mach_timebase_info(info:*mut [u32;2])->i32;}
+            let mut timebase=[0u32;2];mach_timebase_info(&mut timebase);
+            WARP_ERROR.store(CGWarpMouseCursorPosition(point),Ordering::Relaxed);
+            let cutoff=(mach_absolute_time() as u128*timebase[0] as u128/timebase[1] as u128) as u64;
+            if super::motion_trace::native_enabled() {
+                super::motion_trace::record_native(super::motion_trace::NativeSample {stage:"return_warp",timestamp:cutoff,source_pid:CGEventGetIntegerValueField(event,41),remote:false,position:(p.x,p.y),delta:(position.x-p.x,position.y-p.y),unaccelerated:(0.0,0.0)});
+            }
+            let error=CGAssociateMouseAndMouseCursorPosition(1);
+            ASSOCIATION_ERROR.store(error,Ordering::Relaxed);
             CGEventSetLocation(event,point);
             CGEventSetIntegerValueField(event,F_MOUSE_DELTA_X,remainder.x.round() as i64);
             CGEventSetIntegerValueField(event,F_MOUSE_DELTA_Y,remainder.y.round() as i64);
             state.motion_position=Some(p);
-            state.local_warp_reference=Some(position);
+            state.local_warp_reference=Some(super::source_motion::ReturnWarp::new(kayiver_core::motion::Point::new(p.x,p.y),position,cutoff));
             return event;
         }
         if rebasing {
             let position=ctl.navigation.lock().unwrap().location.as_ref().map(|l|l.point);
             if let Some(position)=position {
                 let point=CGPoint{x:position.x,y:position.y};
-                if !settled {CGWarpMouseCursorPosition(point);CGEventSetLocation(event,point);}
-                state.local_warp_reference=if settled {None} else {Some(position)};
+                if !settled {CGEventSetLocation(event,point);}
+                CGEventSetIntegerValueField(event,F_MOUSE_DELTA_X,delta.x.round() as i64);
+                CGEventSetIntegerValueField(event,F_MOUSE_DELTA_Y,delta.y.round() as i64);
+                if settled {state.local_warp_reference=None;}
             } else {state.local_warp_reference=None;}
         }
         state.motion_position=Some(p);

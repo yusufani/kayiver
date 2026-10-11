@@ -23,15 +23,25 @@ pub(super) fn screen_delta(native:Point, reference:Option<Point>, event_delta:Po
     delta
 }
 
-/// Normalize a report captured before the return warp took effect. Native
-/// coordinates may still belong to the parking center; its movement does not.
-pub(super) fn after_local_warp(native:Point, previous:Option<Point>, event_delta:Point, destination:Point) -> (Point,Point,bool) {
-    let delta=screen_delta(native,previous,event_delta,true);
-    let expected=Point::new(destination.x+delta.x,destination.y+delta.y);
-    // An integer delta's quantization is at most one pixel per component.
-    let settled=(native.x-expected.x).abs()<=1.0 && (native.y-expected.y).abs()<=1.0;
-    if settled {(native,screen_delta(native,Some(destination),event_delta,false),true)}
-    else {(expected,delta,false)}
+/// One native return relocation, fenced from reports already queued in Quartz.
+/// Unlike a debounce, this never drops or delays physical movement.
+#[derive(Clone,Copy)]
+pub(super) struct ReturnWarp { origin:Point, target:Point, destination:Point, cutoff:u64 }
+impl ReturnWarp {
+    pub fn new(origin:Point,destination:Point,cutoff:u64)->Self {
+        Self {origin,target:destination,destination,cutoff}
+    }
+    pub fn consume(&mut self,timestamp:u64,native:Point,report:Point)->(Point,Point,bool) {
+        if timestamp<=self.cutoff {
+            self.origin=native;
+            self.destination=Point::new(self.destination.x+report.x,self.destination.y+report.y);
+            return (self.destination,report,false);
+        }
+        let delta=Point::new(report.x-(self.target.x-self.origin.x),report.y-(self.target.y-self.origin.y));
+        // Absolute native position is authoritative once the relocation has
+        // reached Quartz. Fractional relocation must not enter app deltas.
+        (native,delta,true)
+    }
 }
 
 /// Position-only native hooks must explicitly rebase after a programmatic
@@ -52,6 +62,14 @@ impl PositionReference {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn return_relocation_is_removed_once_without_losing_accelerated_motion() {
+        let mut warp=ReturnWarp::new(Point::new(3840.0,720.0),Point::new(3712.0,529.0),100);
+        let (_,queued,settled)=warp.consume(99,Point::new(3842.0,723.0),Point::new(2.0,3.0));
+        assert_eq!(queued,Point::new(2.0,3.0));assert!(!settled);
+        let (native,delta,settled)=warp.consume(101,Point::new(3717.0,535.0),Point::new(-125.0,-188.0));
+        assert_eq!(delta,Point::new(5.0,6.0));assert!(settled);assert_eq!(native,Point::new(3717.0,535.0));
+    }
     #[test]
     fn programmatic_receiver_positions_do_not_become_source_motion() {
         let mut reference=PositionReference::default();reference.rebase((100,100));
@@ -118,19 +136,24 @@ mod tests {
         assert_eq!(screen_delta(edge,Some(edge),Point::new(10.0,0.0),false),Point::new(10.0,0.0));
     }
     #[test]
-    fn queued_remote_reports_preserve_distance_after_return_without_teleporting() {
-        let mut destination=Point::new(2700.25,140.25);
-        let mut previous=Point::new(3840.25,920.25);
-        for n in 1..100 {
-            let old_basis=Point::new(3840.25+n as f64,920.25);
-            let (point,delta,settled)=after_local_warp(old_basis,Some(previous),Point::new(1.0,0.0),destination);
-            assert!(!settled);assert_eq!(delta,Point::new(1.0,0.0));
-            assert_eq!(point.x,2700.25+n as f64);
-            destination=point;previous=old_basis;
+    fn real_hardware_queue_before_return_warp_does_not_become_an_815_pixel_move() {
+        let mut warp=ReturnWarp::new(Point::new(3913.609375,0.0),Point::new(3098.609375,19.0),2269930767500000);
+        let (_,delta,settled)=warp.consume(2269930765800250,Point::new(3913.609375,0.0),Point::new(-7.0,6.0));
+        assert!(!settled);assert_eq!(delta,Point::new(-7.0,6.0));
+        let (_,delta,settled)=warp.consume(2269930767226458,Point::new(3907.85546875,6.7109375),Point::new(-6.0,7.0));
+        assert!(!settled);assert_eq!(delta,Point::new(-6.0,7.0));
+        let (_,delta,settled)=warp.consume(2269930767886416,Point::new(3092.24609375,25.7109375),Point::new(-815.0,19.0));
+        assert!(settled);assert_eq!(delta,Point::new(-5.75390625,6.7109375));
+    }
+    #[test]
+    fn return_warp_preserves_fast_reversal_and_fractional_origin() {
+        for motion in [Point::new(100.0,-70.0),Point::new(-100.0,70.0),Point::default()] {
+            let origin=Point::new(3367.25,14.5);let destination=Point::new(2700.5,529.25);
+            let mut warp=ReturnWarp::new(origin,destination,100);
+            let report=Point::new(destination.x-origin.x+motion.x,destination.y-origin.y+motion.y);
+            let (_,delta,settled)=warp.consume(101,Point::new(destination.x+motion.x,destination.y+motion.y),report);
+            assert!(settled);assert_eq!(delta,motion);
         }
-        let native=Point::new(destination.x+1.0,destination.y);
-        let (point,delta,settled)=after_local_warp(native,Some(previous),Point::new(1.0,0.0),destination);
-        assert!(settled);assert_eq!(point,native);assert_eq!(delta,Point::new(1.0,0.0));
     }
 
 }

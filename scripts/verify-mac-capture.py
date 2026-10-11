@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Opt-in native capture test. Moves the cursor on the running paired devices.
 Only marker-tagged synthetic motion is observed; no keys or clipboard are read.
+Remote synthetic posts keep their absolute position at the entry anchor: an
+external absolute CGEventPost can move a cursor even while hardware is detached.
+This fixture verifies delivery and no remote warp, not physical immobilization.
 Requires an idle local source and a known connected seam.
 This tests synthetic event delivery only; it cannot validate physical mouse
 acceleration or establish crossing acceptance. 0.3.9 was withdrawn.
@@ -60,13 +63,13 @@ def verify_roundtrip():
  s=move(*args.exit,*args.exit_delta,remote);assert s['forwarding'],'seam did not cross'
  with urllib.request.urlopen('http://127.0.0.1:24818/api/status',timeout=3) as r:delivery=json.load(r)['mouse_delivery']
  assert delivery['cursor_detached_requested'] and delivery['association_error']==0,'source freeze was not established'
- park=s['native_cursor'];hidden=not cg.CGCursorIsVisible();s=move(park[0]+12.5,park[1]+20.25,12,20,remote2)
+ park=s['native_cursor'];hidden=not cg.CGCursorIsVisible();s=move(*park,12,20,remote2)
  assert s['forwarding'],'concurrent physical input returned control during this fixture'
  assert s['native_cursor']==park,('native drift',s['native_cursor'],park,s['navigation'])
  zero=0x54455306;physical_zero=0x54455307
- s=move(park[0]+.25,park[1]-.25,0,0,zero)
+ s=move(*park,0,0,zero)
  assert s['forwarding'] and s['native_cursor']==park,'zero-input native reposition escaped containment'
- s=move(park[0]+.25,park[1]-.25,0,0,physical_zero,-1.0)
+ s=move(*park,0,0,physical_zero,-1.0)
  assert s['forwarding'] and s['native_cursor']==park,'quantized physical zero escaped containment'
  s=move(park[0]+args.return_delta[0],park[1]+args.return_delta[1],*args.return_delta,back);assert not s['forwarding'],'return failed'
  with urllib.request.urlopen('http://127.0.0.1:24818/api/status',timeout=3) as r:delivery=json.load(r)['mouse_delivery']
