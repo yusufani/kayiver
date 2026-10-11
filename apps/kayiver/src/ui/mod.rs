@@ -86,10 +86,10 @@ pub fn present_quick_share(peer: String, offer: kayiver_core::proto::QuickShareO
     }
 }
 
-pub fn complete_quick_share_file(id: u64, success: bool, message: Option<String>) {
+pub fn complete_quick_share_file(peer:&str,id: u64, success: bool, message: Option<String>) {
     let mut s = live().lock().unwrap();
     if let Some(qs) = &mut s.quick_share {
-        if qs.id == id {
+        if qs.id == id && qs.peer==peer {
             qs.status = if success { "done".into() } else { "error".into() };
             qs.message = message.clone();
             let item = qs.clone();
@@ -1229,7 +1229,7 @@ fn api_save_layout(body: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn api_quickshare_action(body: &[u8]) -> Result<()> {
+pub(crate) fn api_quickshare_action(body: &[u8]) -> Result<()> {
     let v: serde_json::Value = serde_json::from_slice(body).context("invalid json")?;
     let action = v["action"].as_str().context("missing action field")?;
     let qs = live().lock().unwrap().quick_share.clone().context("no active quick share")?;

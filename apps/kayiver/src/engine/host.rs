@@ -217,10 +217,13 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     {
         let sessions_c = sessions.clone();
         crate::engine::clipsync::watch(clip.clone(), move |message| {
-            let s = sessions_c.lock().unwrap();
-            for (_, tx) in s.values() {
-                let _ = tx.send(message.clone());
+            let targets:Vec<_>=sessions_c.lock().unwrap().values().map(|(_,tx)|tx.clone()).collect();
+            for tx in &targets {
+                if matches!(message,Msg::ClipboardImageChunk {..}) {
+                    tx.send_image_blocking(message.clone()).map_err(str::to_string)?;
+                } else {tx.send(message.clone()).map_err(|_|"clipboard connection closed".to_string())?;}
             }
+            Ok(targets.len())
         });
     }
 
@@ -342,15 +345,17 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
                 }
                 Some(crate::ui::UiCmd::QuickShareAccept { peer, id }) => {
                     info!("sending QuickShareAccept #{id} to {peer}");
-                    if let Some(qs) = crate::ui::get_quick_share() {
-                        if qs.id == id {
-                            if let kayiver_core::proto::QuickSharePayload::File { name, size, .. } = &qs.payload {
-                                if let Err(e) = crate::engine::quickshare::engine().prepare_inbound_transfer(id, name, *size) {
-                                    warn!("failed to prepare inbound file transfer: {e:#}");
+                    let mut accepted=false;
+                    if let Some(qs)=crate::ui::get_quick_share() {
+                        if qs.id==id && qs.peer==peer {
+                            if let kayiver_core::proto::QuickSharePayload::File {name,size,..}=&qs.payload {
+                                if let Some(scope)=router.sessions.lock().unwrap().get(&peer).map(|(session,_)|*session) {
+                                    accepted=crate::engine::quickshare::engine().prepare_inbound_transfer(&peer,scope,id,name,*size).is_ok();
                                 }
                             }
                         }
                     }
+                    if !accepted {continue;}
                     router.send_to(&peer, Msg::QuickShareAccept { id });
                 }
                 Some(crate::ui::UiCmd::QuickShareDismiss) => {
@@ -862,6 +867,9 @@ impl Router {
             | Msg::UseAddr { .. }
             | Msg::QuickShareOffer(_)
             | Msg::QuickShareAccept { .. }
+            | Msg::ImageFrame {..}
+            | Msg::FileFrame {..}
+            | Msg::DataReceipt {..}
             | Msg::QuickShareChunk { .. }
             | Msg::QuickShareStatus { .. } => debug!("not router business, from {name}"),
         }
@@ -1893,6 +1901,32 @@ async fn run_session(
         let _ = writer.send(&Msg::Bye).await;
     });
 
+    // Receipt-controlled source sends one frame at a time. Slow filesystem
+    // work stays off the network reader and the pointer/control router.
+    let (file_tx,mut file_rx)=mpsc::channel::<(Option<u64>,u64,u64,Vec<u8>,bool)>(1);
+    let file_out=out_tx.clone();
+    let file_peer=name.clone();
+    let file_worker=tokio::spawn(async move {
+        while let Some((token,id,offset,data,is_eof))=file_rx.recv().await {
+            let peer=file_peer.clone();
+            let result=tokio::task::spawn_blocking(move || crate::engine::quickshare::engine().handle_inbound_chunk(&peer,session_id,id,offset,&data,is_eof)).await
+                .unwrap_or_else(|_|Err(anyhow::anyhow!("file worker failed")));
+            if let Some(token)=token {let _=file_out.send(Msg::DataReceipt {token,accepted:result.is_ok()});}
+            match result {
+                Ok(Some(path))=>{
+                    crate::platform::reveal_path(&path.to_string_lossy());
+                    crate::ui::complete_quick_share_file(&file_peer,id,true,Some(path.display().to_string()));
+                    let _=file_out.send(Msg::QuickShareStatus {id,success:true,message:None});
+                },
+                Ok(None)=>{},
+                Err(e)=>{
+                    crate::ui::complete_quick_share_file(&file_peer,id,false,Some(e.to_string()));
+                    let _=file_out.send(Msg::QuickShareStatus {id,success:false,message:Some(e.to_string())});
+                }
+            }
+        }
+    });
+
     let mut clipboard_image = crate::engine::clipsync::ImageTransfer::default();
     // Reader loop with a liveness watchdog.
     let result: Result<()> = async {
@@ -1922,6 +1956,12 @@ async fn run_session(
                 }
                 Msg::Clipboard { text } => crate::engine::clipsync::apply_remote(&clip, &text),
                 Msg::ClipboardImageBegin { id, bytes } => { clipboard_image.begin(id, bytes as usize); }
+                Msg::ImageFrame {token,id,offset,data}=>{
+                    let result=if data.len()<=super::outbound::DATA_CHUNK_SIZE {clipboard_image.chunk_checked(id,offset as usize,&data)} else {Err(())};
+                    let accepted=result.is_ok();
+                    if let Ok(Some(png))=result {crate::engine::clipsync::apply_remote_image(&clip,png);}
+                    let _=out_tx.send(Msg::DataReceipt {token,accepted});
+                }
                 Msg::ClipboardImageChunk { id, offset, data } => {
                     if let Some(png) = clipboard_image.chunk(id, offset as usize, &data) {
                         crate::engine::clipsync::apply_remote_image(&clip, png);
@@ -1950,22 +1990,17 @@ async fn run_session(
                         let _ = out_tx.send(Msg::QuickShareStatus { id, success: false, message: Some("Dosya bulunamadı".into()) });
                     }
                 }
-                Msg::QuickShareChunk { id, offset, data, is_eof } => {
-                    match crate::engine::quickshare::engine().handle_inbound_chunk(id, offset, &data, is_eof) {
-                        Ok(Some(final_path)) => {
-                            info!("quickshare: file #{id} received successfully: {}", final_path.display());
-                            crate::platform::reveal_path(&final_path.to_string_lossy());
-                            crate::ui::complete_quick_share_file(id, true, Some(final_path.display().to_string()));
-                            let _ = out_tx.send(Msg::QuickShareStatus { id, success: true, message: None });
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            warn!("quickshare error writing chunk #{id}: {e:#}");
-                            crate::ui::complete_quick_share_file(id, false, Some(e.to_string()));
-                            let _ = out_tx.send(Msg::QuickShareStatus { id, success: false, message: Some(e.to_string()) });
-                        }
+                Msg::DataReceipt {token,accepted}=>out_tx.acknowledge(token,accepted),
+                Msg::FileFrame {token,id,offset,data,is_eof}=>{
+                    if data.len()>super::outbound::DATA_CHUNK_SIZE || file_tx.try_send((Some(token),id,offset,data,is_eof)).is_err() {
+                        let _=out_tx.send(Msg::DataReceipt {token,accepted:false});
                     }
-                }
+                },
+                Msg::QuickShareChunk {id,offset,data,is_eof}=>{
+                    if data.len()>32768 || file_tx.try_send((None,id,offset,data,is_eof)).is_err() {
+                        let _=out_tx.send(Msg::QuickShareStatus {id,success:false,message:Some("file receiver busy".into())});
+                    }
+                },
                 Msg::QuickShareStatus { id, success, message } => {
                     info!("{name}: quick share status #{id}: success={success}, msg={message:?}");
                 }
@@ -2013,6 +2048,8 @@ async fn run_session(
     // old one dies afterwards it must not mark the peer offline or fire
     // Disconnected: that tore down the live session's portals/focus and left
     // the editor showing a red dot while input still flowed.
+    let cleanup_peer=name.clone();
+    tokio::task::spawn_blocking(move ||crate::engine::quickshare::engine().close_session(&cleanup_peer,session_id));
     let still_current = {
         let mut s = sessions.lock().unwrap();
         match s.get(&name) {
@@ -2031,6 +2068,8 @@ async fn run_session(
     ping_task.abort();
     geo_task.abort();
     writer_task.abort();
+    drop(file_tx);
+    file_worker.abort(); // A started disk job may finish; it cannot update input control.
     result
 }
 

@@ -1917,3 +1917,33 @@ fn image_clipboard_is_bidirectional_chunked_and_never_echoes() {
     std::thread::sleep(Duration::from_millis(800));
     assert_eq!(client.ctl(serde_json::json!({"op":"clipboard_state"}))["sequence"].as_u64(),Some(client_sequence));
 }
+
+#[test]
+fn slow_file_disk_does_not_block_motion_or_corrupt_transfer() {
+    let (mut host,mut client)=desk("file-credit-slow-disk",8030);
+    give_panel_to_client(&mut host);
+    let bytes:Vec<u8>=(0..(3*8192+13)).map(|n|((n*71)%251) as u8).collect();
+    let source=host.cfg_dir.join("credit-fixture.bin");std::fs::write(&source,&bytes).unwrap();
+    client.ctl(serde_json::json!({"op":"set_file_write_delay","ms":800}));
+    host.ctl(serde_json::json!({"op":"set_clipboard_text","text":source.to_str().unwrap()}));
+    std::thread::sleep(Duration::from_millis(250));
+    cross_diagonally(&mut host,&mut client);
+    wait_until("file offer at recipient",Duration::from_secs(3),||!client.ctl(serde_json::json!({"op":"quickshare_state"})).is_null());
+    assert_eq!(client.ctl(serde_json::json!({"op":"quickshare_accept"}))["ok"],true);
+    wait_until("disk worker actively blocked",Duration::from_secs(3),||client.ctl(serde_json::json!({"op":"file_io_state"}))["active"]==true);
+    client.injected();
+    let motion_started=Instant::now();
+    for _ in 0..20 {
+        host.ctl(serde_json::json!({"op":"input_move","dx":100,"dy":0}));
+        host.ctl(serde_json::json!({"op":"input_move","dx":-100,"dy":0}));
+    }
+    let mut events=Vec::new();
+    wait_until("all reversals while disk is slow",Duration::from_millis(500),||{events.extend(client.injected());events.iter().filter(|e|e["kind"]=="mouse_to").count()>=40});
+    println!("40 reversals applied during 800ms disk stall in {:?}",motion_started.elapsed());
+    assert_eq!(client.ctl(serde_json::json!({"op":"file_io_state"}))["active"],true);
+    assert_ne!(client.ctl(serde_json::json!({"op":"quickshare_state"}))["status"],"done","motion should arrive before the delayed disk finishes");
+    let points:Vec<_>=events.iter().filter(|e|e["kind"]=="mouse_to").map(|e|e["x"].as_i64().unwrap()).collect();
+    assert!(points.windows(2).all(|p|p[0]!=p[1]),"reversal must remain distinct");
+    wait_until("accepted file completes",Duration::from_secs(8),||client.ctl(serde_json::json!({"op":"quickshare_state"}))["status"]=="done");
+    assert_eq!(std::fs::read(client.cfg_dir.join("test-downloads/credit-fixture.bin")).unwrap(),bytes);
+}

@@ -12,7 +12,7 @@ use std::{
 const MAX_PNG: usize = 16 * 1024 * 1024;
 const MAX_RGBA: usize = 64 * 1024 * 1024;
 const CHUNK: usize = 32 * 1024; // Accept protocol-17 peers using the original size.
-const SEND_CHUNK: usize = 8 * 1024;
+const SEND_CHUNK: usize = super::outbound::DATA_CHUNK_SIZE;
 const RETRIES: usize = 6;
 #[derive(Clone, PartialEq, Eq)]
 struct Image {
@@ -275,7 +275,7 @@ fn apply_image(state: &ClipState, png: &[u8]) -> anyhow::Result<()> {
     s.error = None;
     Ok(())
 }
-pub fn watch(state: ClipState, send: impl Fn(Msg) + Send + 'static) {
+pub fn watch(state: ClipState, send: impl Fn(Msg) -> Result<usize,String> + Send + 'static) {
     let _ = ACTIVE.set(state.clone());
     std::thread::Builder::new()
         .name("kayiver-clip".into())
@@ -372,31 +372,31 @@ pub fn watch(state: ClipState, send: impl Fn(Msg) + Send + 'static) {
                 }
                 if let Some(image) = image {
                     let fingerprint = image_fingerprint(&image);
-                    if !replay && state.lock().unwrap().last.as_ref() == Some(&fingerprint) {
+                    if !replay && {let s=state.lock().unwrap();s.last.as_ref()==Some(&fingerprint) && s.error.is_none()} {
                         continue;
                     }
                     match encode_image(&image) {
                         Ok(png) => {
                             transfer = transfer.wrapping_add(1);
-                            send(Msg::ClipboardImageBegin {
-                                id: transfer,
-                                bytes: png.len() as u32,
-                            });
+                            let begin=send(Msg::ClipboardImageBegin {id:transfer,bytes:png.len() as u32});
+                            let mut delivered=matches!(begin,Ok(n) if n>0);
+                            if let Err(error)=begin {state.lock().unwrap().error=Some(error);}
                             for (index, chunk) in png.chunks(SEND_CHUNK).enumerate() {
-                                send(Msg::ClipboardImageChunk {
+                                if !delivered {break;}
+                                if platform::clipboard_seq()!=sequence {delivered=false;break;}
+                                if let Err(error)=send(Msg::ClipboardImageChunk {
                                     id: transfer,
                                     offset: (index * SEND_CHUNK) as u32,
                                     data: chunk.to_vec(),
-                                });
+                                }) {state.lock().unwrap().error=Some(error);delivered=false;break;}
                                 // Yield between bounded chunks; input events can be enqueued
                                 // between them without holding the session/capture locks.
                                 std::thread::sleep(Duration::from_millis(2));
                             }
                             let mut s = state.lock().unwrap();
-                            s.last = Some(fingerprint);
-                            s.sent_images += 1;
+                            if platform::clipboard_seq()==sequence {s.last=Some(fingerprint);}
+                            if delivered {s.sent_images+=1;s.error=None;}
                             s.image_size = Some((image.width, image.height));
-                            s.error = None;
                         }
                         Err(error) => state.lock().unwrap().error = Some(error.to_string()),
                     }
@@ -407,7 +407,7 @@ pub fn watch(state: ClipState, send: impl Fn(Msg) + Send + 'static) {
                         s.last = Some(fingerprint);
                         s.error = None;
                         drop(s);
-                        send(Msg::Clipboard { text });
+                        if let Err(error)=send(Msg::Clipboard {text}) {state.lock().unwrap().error=Some(error);}
                     }
                 }
             }
@@ -435,7 +435,10 @@ impl ImageTransfer {
             None
         };
     }
-    pub fn chunk(&mut self, id: u64, offset: usize, data: &[u8]) -> Option<Vec<u8>> {
+    pub fn chunk(&mut self,id:u64,offset:usize,data:&[u8])->Option<Vec<u8>> {
+        self.chunk_checked(id,offset,data).ok().flatten()
+    }
+    pub fn chunk_checked(&mut self,id:u64,offset:usize,data:&[u8])->Result<Option<Vec<u8>>,()> {
         let valid = self
             .pending
             .as_ref()
@@ -449,14 +452,15 @@ impl ImageTransfer {
             });
         if !valid {
             self.pending = None;
-            return None;
+            return Err(());
         }
-        let (_, total, buf, _) = self.pending.as_mut()?;
+        let (_,total,buf,progress)=self.pending.as_mut().ok_or(())?;
+        *progress=Instant::now();
         buf.extend_from_slice(data);
         if buf.len() == *total {
-            return self.pending.take().map(|(_, _, buf, _)| buf);
+            return Ok(self.pending.take().map(|(_,_,buf,_)|buf));
         }
-        None
+        Ok(None)
     }
 }
 #[cfg(test)]

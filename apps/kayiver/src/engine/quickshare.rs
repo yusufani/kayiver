@@ -21,7 +21,7 @@ use tracing::{debug, info, warn};
 /// Maximum age of a copied item to be offered upon crossing (10 minutes).
 const OFFER_MAX_AGE: Duration = Duration::from_secs(600);
 /// Short frames limit the wire interval before the next control event.
-const CHUNK_SIZE: usize = 8 * 1024;
+const CHUNK_SIZE: usize = super::outbound::DATA_CHUNK_SIZE;
 
 static NEXT_OFFER_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -29,8 +29,6 @@ static NEXT_OFFER_ID: AtomicU64 = AtomicU64::new(1);
 struct QuickShareInner {
     latest_candidate: Option<(QuickShareOffer, Instant)>,
     offered_ids: HashSet<u64>,
-    /// Currently running inbound file transfers: id -> (temp_path, final_filename, total_bytes)
-    inbound_transfers: std::collections::HashMap<u64, InboundTransfer>,
 }
 
 struct InboundTransfer {
@@ -38,12 +36,13 @@ struct InboundTransfer {
     file_name: String,
     expected_size: u64,
     received_bytes: u64,
-    file: std::fs::File,
+    file: Option<std::fs::File>,
 }
 
 #[derive(Clone)]
 pub struct QuickShareEngine {
     inner: Arc<Mutex<QuickShareInner>>,
+    inbound: Arc<Mutex<std::collections::HashMap<(String,u64,u64),Arc<Mutex<InboundTransfer>>>>>,
 }
 
 static ENGINE: OnceLock<QuickShareEngine> = OnceLock::new();
@@ -51,6 +50,7 @@ static ENGINE: OnceLock<QuickShareEngine> = OnceLock::new();
 pub fn engine() -> &'static QuickShareEngine {
     ENGINE.get_or_init(|| QuickShareEngine {
         inner: Arc::new(Mutex::new(QuickShareInner::default())),
+        inbound: Arc::new(Mutex::new(std::collections::HashMap::new())),
     })
 }
 
@@ -190,7 +190,7 @@ impl QuickShareEngine {
                 if offset < total_size { anyhow::bail!("source file was truncated during transfer"); }
                 // If the file was 0 bytes, send an empty EOF chunk
                 if offset == 0 {
-                    out_tx.send_file(Msg::QuickShareChunk {
+                    out_tx.send_data(Msg::QuickShareChunk {
                         id,
                         offset: 0,
                         data: Vec::new(),
@@ -210,7 +210,7 @@ impl QuickShareEngine {
                 is_eof,
             };
 
-            if out_tx.send_file(chunk_msg).await.is_err() {
+            if out_tx.send_data(chunk_msg).await.is_err() {
                 warn!("quickshare: peer connection closed during file transfer #{id}");
                 anyhow::bail!("peer connection closed during file transfer");
             }
@@ -230,28 +230,25 @@ impl QuickShareEngine {
     /// Prepare to receive an incoming file for an accepted offer.
     pub fn prepare_inbound_transfer(
         &self,
-        id: u64,
+        peer:&str, session:u64, id: u64,
         file_name: &str,
         expected_size: u64,
     ) -> Result<()> {
-        let downloads = dirs::download_dir()
-            .or_else(dirs::desktop_dir)
-            .unwrap_or_else(|| PathBuf::from("."));
-
-        let temp_path = downloads.join(format!("{file_name}.part_{id}"));
-        let file = std::fs::File::create(&temp_path)
-            .with_context(|| format!("cannot create temp file {}", temp_path.display()))?;
-
-        let mut inner = self.inner.lock().unwrap();
-        inner.inbound_transfers.insert(
-            id,
-            InboundTransfer {
-                temp_path,
+        if file_name.is_empty() || file_name.contains('/') || file_name.contains('\\') || file_name=="." || file_name==".." {
+            anyhow::bail!("invalid offered file name");
+        }
+        let key=(peer.to_string(),session,id);
+        let mut inner = self.inbound.lock().unwrap();
+        if inner.contains_key(&key) {return Ok(());}
+        inner.insert(
+            key,
+            Arc::new(Mutex::new(InboundTransfer {
+                temp_path:PathBuf::new(),
                 file_name: file_name.to_string(),
                 expected_size,
                 received_bytes: 0,
-                file,
-            },
+                file:None,
+            })),
         );
 
         Ok(())
@@ -260,32 +257,38 @@ impl QuickShareEngine {
     /// Process an incoming file chunk; returns `Some(final_path)` when completed.
     pub fn handle_inbound_chunk(
         &self,
-        id: u64,
-        _offset: u64,
+        peer:&str, session:u64, id: u64,
+        offset: u64,
         data: &[u8],
         is_eof: bool,
     ) -> Result<Option<PathBuf>> {
         use std::io::Write;
 
-        let mut inner = self.inner.lock().unwrap();
-        if !inner.inbound_transfers.contains_key(&id) {
-            if let Some(qs) = crate::ui::get_quick_share() {
-                if qs.id == id {
-                    if let kayiver_core::proto::QuickSharePayload::File { name, size, .. } = qs.payload {
-                        drop(inner);
-                        self.prepare_inbound_transfer(id, &name, size)?;
-                        inner = self.inner.lock().unwrap();
-                    }
+        let key=(peer.to_string(),session,id);
+        let state=self.inbound.lock().unwrap().get(&key).cloned().context("file transfer was not accepted for this session")?;
+        let mut transfer=state.lock().unwrap();
+        if offset!=transfer.received_bytes {anyhow::bail!("file offset out of order");}
+        if data.len() as u64 > transfer.expected_size.saturating_sub(transfer.received_bytes) {anyhow::bail!("file exceeds declared size");}
+        if is_eof && transfer.received_bytes+data.len() as u64 != transfer.expected_size {anyhow::bail!("incomplete file at EOF");}
+
+        #[cfg(feature="sim")]
+        crate::platform::simulate_file_write_delay();
+        if transfer.file.is_none() {
+            let downloads=download_directory();
+            std::fs::create_dir_all(&downloads)?;
+            // Never truncate a previous partial transfer or an unrelated file.
+            for nonce in 0..1000u32 {
+                let path=downloads.join(format!("{}.part_{session}_{id}_{nonce}",transfer.file_name));
+                match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                    Ok(file)=>{transfer.temp_path=path;transfer.file=Some(file);break;},
+                    Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>{},
+                    Err(e)=>return Err(e.into()),
                 }
             }
+            if transfer.file.is_none() {anyhow::bail!("no available partial file destination");}
         }
-
-        let Some(transfer) = inner.inbound_transfers.get_mut(&id) else {
-            anyhow::bail!("no active inbound transfer for offer #{id}");
-        };
-
         if !data.is_empty() {
-            transfer.file.write_all(data)?;
+            transfer.file.as_mut().unwrap().write_all(data)?;
             transfer.received_bytes += data.len() as u64;
             if transfer.expected_size > 0 {
                 let _pct = (transfer.received_bytes as f64 / transfer.expected_size as f64 * 100.0) as u32;
@@ -293,13 +296,11 @@ impl QuickShareEngine {
         }
 
         if is_eof {
-            transfer.file.flush()?;
-            let transfer = inner.inbound_transfers.remove(&id).unwrap();
-            drop(transfer.file);
+            transfer.file.as_mut().unwrap().flush()?;
+            self.inbound.lock().unwrap().remove(&key);
+            transfer.file.take();
 
-            let downloads = dirs::download_dir()
-                .or_else(dirs::desktop_dir)
-                .unwrap_or_else(|| PathBuf::from("."));
+            let downloads=download_directory();
 
             let final_path = unique_destination(&downloads, &transfer.file_name);
             std::fs::rename(&transfer.temp_path, &final_path).with_context(|| {
@@ -319,6 +320,17 @@ impl QuickShareEngine {
             Ok(None)
         }
     }
+    pub fn close_session(&self,peer:&str,session:u64) {
+        self.inbound.lock().unwrap().retain(|(p,s,_),_|p!=peer || *s!=session);
+    }
+
+}
+
+fn download_directory()->PathBuf {
+    #[cfg(feature="sim")]
+    {return kayiver_core::config::Config::path().parent().unwrap().join("test-downloads");}
+    #[cfg(not(feature="sim"))]
+    {dirs::download_dir().or_else(dirs::desktop_dir).unwrap_or_else(||PathBuf::from("."))}
 }
 
 /// Generate a unique destination path in `dir` by appending `(1)`, `(2)`, etc. if needed.
@@ -383,6 +395,7 @@ mod tests {
     fn offer_dedup_on_multiple_crossings() {
         let engine = QuickShareEngine {
             inner: Arc::new(Mutex::new(QuickShareInner::default())),
+        inbound: Arc::new(Mutex::new(std::collections::HashMap::new())),
         };
 
         engine.update_candidate(QuickSharePayload::Url {
@@ -420,7 +433,7 @@ mod stream_tests {
     }
     impl Drop for Fixture { fn drop(&mut self) { let _=std::fs::remove_file(&self.0); } }
     fn isolated_engine() -> QuickShareEngine {
-        QuickShareEngine { inner: Arc::new(Mutex::new(QuickShareInner::default())) }
+        QuickShareEngine { inner: Arc::new(Mutex::new(QuickShareInner::default())), inbound:Arc::new(Mutex::new(std::collections::HashMap::new())) }
     }
     #[tokio::test]
     async fn bounded_file_stream_preserves_bytes_offsets_and_eof() {
@@ -429,17 +442,18 @@ mod stream_tests {
             let fixture = Fixture::new(&expected);
             let path = fixture.0.to_string_lossy().to_string();
             let (tx, mut rx) = super::super::outbound::channel();
+            let receipts=tx.clone();
             let task = tokio::spawn(async move { isolated_engine().stream_file(17,path,tx).await });
             let mut actual = Vec::new();
             loop {
                 let frame = tokio::time::timeout(Duration::from_secs(2),rx.recv()).await.unwrap().unwrap();
                 let eof = match &frame.message {
-                    Msg::QuickShareChunk {id,offset,data,is_eof} => {
+                    Msg::FileFrame {id,offset,data,is_eof,..} => {
                         assert_eq!(*id,17); assert_eq!(*offset,actual.len() as u64);
                         assert!(data.len()<=CHUNK_SIZE); actual.extend_from_slice(data); *is_eof
                     }, _ => panic!("unexpected stream message"),
                 };
-                drop(frame); // A real writer drops after encrypted socket send.
+                if let Msg::FileFrame {token,..}=frame.message {receipts.acknowledge(token,true);}
                 if eof {break;}
             }
             task.await.unwrap().unwrap();
@@ -457,4 +471,18 @@ mod stream_tests {
         assert!(tokio::time::timeout(Duration::from_secs(2),task).await.unwrap().unwrap().is_err());
         drop(held);
     }
+    #[test]
+    fn file_acceptance_is_scoped_and_invalid_offsets_never_open_a_file() {
+        let engine=isolated_engine();
+        engine.prepare_inbound_transfer("peer-a",1,7,"fixture.bin",100).unwrap();
+        assert!(engine.handle_inbound_chunk("peer-b",1,7,0,&[1],false).is_err());
+        assert!(engine.handle_inbound_chunk("peer-a",2,7,0,&[1],false).is_err());
+        assert!(engine.handle_inbound_chunk("peer-a",1,7,1,&[1],false).is_err());
+        assert!(engine.handle_inbound_chunk("peer-a",1,7,0,&[1],true).is_err());
+        assert!(engine.inbound.lock().unwrap().values().all(|f|f.lock().unwrap().file.is_none()));
+        engine.close_session("peer-a",1);
+        assert!(engine.inbound.lock().unwrap().is_empty());
+        assert!(engine.prepare_inbound_transfer("peer-a",1,8,"../escape",100).is_err());
+    }
+
 }

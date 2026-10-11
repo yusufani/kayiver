@@ -366,6 +366,10 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             if width.checked_mul(height).and_then(|n|n.checked_mul(4))!=Some(rgba.len()) || rgba.is_empty() {return serde_json::json!({"ok":false});}
             set_clipboard_image(width,height,rgba);ok
         }
+        "file_io_state"=>serde_json::json!({"active":FILE_IO_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)>0}),
+        "set_file_write_delay"=>{FILE_WRITE_DELAY_MS.store(cmd["ms"].as_u64().unwrap_or(0),std::sync::atomic::Ordering::Relaxed);ok},
+        "quickshare_state"=>{match crate::ui::get_quick_share(){Some(q)=>serde_json::json!({"id":q.id,"status":q.status,"peer":q.peer}),None=>serde_json::Value::Null}},
+        "quickshare_accept"=>{match crate::ui::api_quickshare_action(br#"{"action":"accept"}"#){Ok(_)=>ok,Err(e)=>serde_json::json!({"error":e.to_string()})}},
         "set_clipboard_text" => {set_clipboard(cmd["text"].as_str().unwrap_or(""));ok}
         "clipboard_state" => {
             use std::hash::{Hash,Hasher};
@@ -524,3 +528,9 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
         other => serde_json::json!({ "ok": false, "error": format!("unknown op '{other}'") }),
     }
 }
+
+static FILE_WRITE_DELAY_MS: std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+pub fn file_write_delay_ms()->u64 {FILE_WRITE_DELAY_MS.load(std::sync::atomic::Ordering::Relaxed)}
+
+static FILE_IO_ACTIVE: std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+pub fn simulate_file_write_delay() {let ms=file_write_delay_ms();if ms>0 {FILE_IO_ACTIVE.fetch_add(1,std::sync::atomic::Ordering::Relaxed);std::thread::sleep(std::time::Duration::from_millis(ms));FILE_IO_ACTIVE.fetch_sub(1,std::sync::atomic::Ordering::Relaxed);}}

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::layout::Edge;
 
 /// Bumped on incompatible changes. Peers with different versions refuse to talk.
-pub const PROTOCOL_VERSION: u16 = 17;
+pub const PROTOCOL_VERSION: u16 = 18;
 
 /// A rectangle in a machine's own desktop coordinate space (bounding box of
 /// all its monitors). Origin is top-left on every platform: platform backends
@@ -169,6 +169,9 @@ pub enum Msg {
     /// Bounded PNG clipboard transfer. Separate from URL/file Quick Share.
     ClipboardImageBegin { id: u64, bytes: u32 },
     ClipboardImageChunk { id: u64, offset: u32, data: Vec<u8> },
+    FileFrame { token:u64, id:u64, offset:u64, data:Vec<u8>, is_eof:bool },
+    DataReceipt {token:u64,accepted:bool},
+    ImageFrame {token:u64,id:u64,offset:u32,data:Vec<u8>},
 
 }
 
@@ -246,6 +249,10 @@ mod tests {
             Msg::CursorRelease {stamp:crate::motion::Stamp::default()},
             Msg::ControlledInput {stamp:crate::motion::Stamp::default(),event:InputEvent::Key{key:0x04,pressed:false}},
             Msg::NavigationRejected {stamp:crate::motion::Stamp::default(),reason:"display gone".into()},
+            Msg::FileFrame {token:3,id:4,offset:8192,data:vec![1,2,3],is_eof:true},
+            Msg::ImageFrame {token:5,id:6,offset:8192,data:vec![4,5,6]},
+            Msg::DataReceipt {token:3,accepted:true},
+            Msg::DataReceipt {token:4,accepted:false},
             Msg::MonitorIdentity {monitors:vec![("stable-id".into(),Rect{x:-100,y:0,w:100,h:100})]},
         ];
         for m in msgs {

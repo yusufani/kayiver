@@ -235,3 +235,20 @@ using real TCP and Noise. It pauses the receiver while four 8 KiB frames are
 sent, then queues +100/-100 motion and verifies the 32 KiB already ahead of
 those events. This exploratory probe reports a limitation and should become
 an acceptance regression when receiver-aware flow control is implemented.
+
+### Protocol 18 receiver-aware data credits
+
+See PERFORMANCE-0.3.16.md. The sender-only 0.3.15 budget has been replaced by
+one receiver-consumed image/file payload credit per connection. Control never
+waits for it. `receiver_credit_bounds_real_tcp_bulk_ahead_of_motion` is the
+real TCP/Noise acceptance regression. Tests also cover stale/duplicate receipts,
+cancellation closing uncertain data credit while input continues, disconnect,
+peer/epoch file acceptance, invalid offsets and EOF before disk creation.
+
+`slow_file_disk_does_not_block_motion_or_corrupt_transfer` now deliberately
+blocks the file worker for 800 ms, waits until that stall is active, then requires
+40 reversing inputs to arrive within 500 ms while disk work is still active.
+The simulated download directory is confined to each test's config directory;
+normal user Downloads is never used by these test processes. This makes the
+old synchronous-reader disk path fail rather than merely confirming eventual
+file completion. Native physical acceptance remains a separate gate.
