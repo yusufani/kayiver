@@ -36,7 +36,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_XUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetClipCursor, GetCursorPos, GetMessageW, GetSystemMetrics, PostMessageW,
+    CallNextHookEx, GetCursorPos, GetMessageW, GetSystemMetrics, PostMessageW,
     SetCursorPos, SetWindowsHookExW, HWND_BROADCAST, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
     SC_MONITORPOWER, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
     WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
@@ -856,8 +856,9 @@ pub fn warp_cursor(x: i32, y: i32) {
 }
 
 /// Call before allowing local physical reports after remote injection/parking.
-pub fn rebase_native_capture() {
-    if let Some(s)=STATE.get() {s.last_native.lock().unwrap().rebase(cursor_pos());}
+pub fn rebase_native_capture() { rebase_native_capture_at(cursor_pos()); }
+fn rebase_native_capture_at(position: (i32, i32)) {
+    if let Some(s)=STATE.get() {s.last_native.lock().unwrap().rebase(position);}
 }
 
 /// Windows has no post-warp event suppression; identical to `warp_cursor`.
@@ -1099,14 +1100,20 @@ enum InjectionCommand {
 struct NativeWorker { desktop: InjectionDesktop, native: NativeInjector }
 impl NativeWorker {
     fn apply(&mut self, command: InjectionCommand) -> bool {
-        if !self.desktop.follow_input() { return false; }
-        match command {
+        let started = Instant::now();
+        let attached = self.desktop.follow_input();
+        INJECTION_METRICS.desktop_us.fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+        if !attached { return false; }
+        let started = Instant::now();
+        let result = match command {
             InjectionCommand::Move {x,y,dx,dy} => self.native.mouse_to(x,y,dx,dy),
             InjectionCommand::Button(b,p) => { self.native.button(b,p); true },
             InjectionCommand::Wheel(dx,dy) => { self.native.wheel(dx,dy); true },
             InjectionCommand::Key(k,p) => { self.native.key(k,p); true },
             InjectionCommand::Release => { self.native.release_all(); true },
-        }
+        };
+        INJECTION_METRICS.native_us.fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+        result
     }
 }
 impl Drop for NativeWorker {
@@ -1144,11 +1151,17 @@ struct InjectionMetrics {
     total_us: std::sync::atomic::AtomicU64,
     max_us: std::sync::atomic::AtomicU64,
     over_2ms: std::sync::atomic::AtomicU64,
+    desktop_us: std::sync::atomic::AtomicU64,
+    native_us: std::sync::atomic::AtomicU64,
+    position_fallbacks: std::sync::atomic::AtomicU64,
 }
 static INJECTION_METRICS: InjectionMetrics = InjectionMetrics {
     count: std::sync::atomic::AtomicU64::new(0), failed: std::sync::atomic::AtomicU64::new(0),
     total_us: std::sync::atomic::AtomicU64::new(0), max_us: std::sync::atomic::AtomicU64::new(0),
     over_2ms: std::sync::atomic::AtomicU64::new(0),
+    desktop_us: std::sync::atomic::AtomicU64::new(0),
+    native_us: std::sync::atomic::AtomicU64::new(0),
+    position_fallbacks: std::sync::atomic::AtomicU64::new(0),
 };
 impl InjectionMetrics {
     fn record(&self, duration: Duration, success: bool) {
@@ -1165,7 +1178,10 @@ pub fn injection_status() -> serde_json::Value {
     serde_json::json!({"commands":count,"failed":INJECTION_METRICS.failed.load(Ordering::Relaxed),
         "mean_us": if count == 0 {0.0} else {INJECTION_METRICS.total_us.load(Ordering::Relaxed) as f64 / count as f64},
         "max_us":INJECTION_METRICS.max_us.load(Ordering::Relaxed),
-        "over_2ms":INJECTION_METRICS.over_2ms.load(Ordering::Relaxed)})
+        "over_2ms":INJECTION_METRICS.over_2ms.load(Ordering::Relaxed),
+        "desktop_mean_us": if count == 0 {0.0} else {INJECTION_METRICS.desktop_us.load(Ordering::Relaxed) as f64 / count as f64},
+        "native_mean_us": if count == 0 {0.0} else {INJECTION_METRICS.native_us.load(Ordering::Relaxed) as f64 / count as f64},
+        "position_fallbacks":INJECTION_METRICS.position_fallbacks.load(Ordering::Relaxed)})
 }
 
 struct InjectionDesktop {
@@ -1292,7 +1308,7 @@ impl NativeInjector {
         }
     }
 
-    fn send_mouse(&mut self, flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, data: i32) {
+    fn send_mouse(&mut self, flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, data: i32) -> bool {
         let input = INPUT {
             r#type: INPUT_MOUSE,
             Anonymous: INPUT_0 {
@@ -1311,6 +1327,7 @@ impl NativeInjector {
             let err = unsafe { windows::Win32::Foundation::GetLastError() };
             self.log_issue(format!("SendInput({flags:?}) injected nothing: {err:?}"));
         }
+        sent == 1
     }
 
     /// Move the injected cursor. Two channels on purpose:
@@ -1327,44 +1344,37 @@ impl NativeInjector {
     pub fn rebase_position(&mut self, _x: i32, _y: i32) {}
     pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) -> bool {
         self.wake_display();
-        if dx != 0 || dy != 0 {
-            self.send_mouse(MOUSEEVENTF_MOVE, dx, dy, 0);
+        let absolute = dx == 0 && dy == 0;
+        let sent = if !absolute {
+            self.send_mouse(MOUSEEVENTF_MOVE, dx, dy, 0)
         } else {
-            // CursorFrames are absolute positions, not relative deltas.
-            // SendInput also updates the pointer-input stream that Terminal
-            // uses to restore its cursor after typing; SetCursorPos alone
-            // only updates legacy mouse messages. ABSOLUTE bypasses EPP.
+            // Native pointer input restores Terminal's hidden cursor without
+            // applying pointer acceleration a second time.
             let bounds = desktop_bounds();
             self.send_mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
                 absolute_mouse_axis(x, bounds.x, bounds.w),
-                absolute_mouse_axis(y, bounds.y, bounds.h), 0);
-        }
+                absolute_mouse_axis(y, bounds.y, bounds.h), 0)
+        };
         unsafe {
-            let warp = SetCursorPos(x, y);
-            if warp.is_err() {
-                self.log_issue(format!("SetCursorPos failed on active input desktop: {warp:?}"));
-                return false;
-            }
-            if dx == 0 && dy == 0 {
-                let mut p = POINT::default();
-                let _ = GetCursorPos(&mut p);
-                if (p.x - x).abs() > 4 || (p.y - y).abs() > 4 {
-                    let mut clip = windows::Win32::Foundation::RECT::default();
-                    let _ = GetClipCursor(&mut clip);
-                    let retried = SetCursorPos(x, y);
-                    let mut q = POINT::default();
-                    let _ = GetCursorPos(&mut q);
-                    self.log_issue(format!(
-                        "warp to ({x},{y}) landed at ({},{}) [warp_ok={} clip={:?} \
-                         retry_ok={} now=({},{})]",
-                        p.x, p.y, warp.is_ok(), clip, retried.is_ok(), q.x, q.y
-                    ));
-                    rebase_native_capture();
-                    return retried.is_ok() && (q.x-x).abs()<=4 && (q.y-y).abs()<=4;
+            // Absolute input already pins the cursor. Avoid a second native
+            // warp unless readback proves it is needed; retain exact warps
+            // for relative/raw-input events and failed SendInput calls.
+            if !absolute || !sent { if SetCursorPos(x,y).is_err() { return false; } }
+            let mut actual = POINT::default();
+            if GetCursorPos(&mut actual).is_err() { return false; }
+            if absolute && (actual.x != x || actual.y != y) {
+                INJECTION_METRICS.position_fallbacks.fetch_add(1, Ordering::Relaxed);
+                if SetCursorPos(x,y).is_err() || GetCursorPos(&mut actual).is_err() { return false; }
+                if (i64::from(actual.x)-i64::from(x)).abs()>4 || (i64::from(actual.y)-i64::from(y)).abs()>4 {
+                    self.log_issue(format!("cursor landing clipped: requested=({x},{y}) actual=({},{})", actual.x,actual.y));
+                    rebase_native_capture_at((actual.x,actual.y));
+                    return false;
                 }
             }
+            // Reuse the authoritative readback instead of querying Windows a
+            // second time solely to reset the physical capture reference.
+            rebase_native_capture_at((actual.x,actual.y));
         }
-        rebase_native_capture();
         true
     }
 

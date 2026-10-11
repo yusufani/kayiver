@@ -202,3 +202,12 @@ on the wire are unchanged. The legacy-framing interoperability test exercises
 1,000 alternating movement/bulk messages and checks stable buffer capacity
 after warmup; an oversized message is rejected without consuming a nonce.
 Oversized plaintext frames are rejected before any socket write as well.
+
+The Windows absolute move path first uses SendInput and reads the actual
+cursor once. SetCursorPos is a fallback when that readback differs from the
+target, or when relative/raw input needs an exact pin. Capture rebasing uses
+that authoritative readback, avoiding a duplicate GetCursorPos call.
+`injection.desktop_mean_us` and `native_mean_us` separate desktop tracking
+from native event application; `position_fallbacks` counts absolute moves
+that required the additional exact warp. Monitor origins, rounding and
+clipping must still satisfy the same cursor-landing contract.
