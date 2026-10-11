@@ -67,3 +67,11 @@ This stage has not been installed yet. Application queue backpressure does
 not bound bytes already accepted by TCP or synchronous inbound disk writes.
 Further slow-receiver testing is required before making an end-to-end latency
 claim or adding receiver credits/a separate data path.
+
+The explicit encrypted-socket slow-reader probe demonstrated 32,768 bytes
+already buffered ahead of newly queued +100/-100 motion events even with the
+one-frame application file budget. This is a verified limitation, not a failed
+nonce/order test: both movement events retained their order. The probe pauses
+the receiver until four chunks have reached the socket, then queues motion and
+resumes reading. Further data flow must account for receiver consumption or
+separate bulk traffic; application send completion is insufficient proof.

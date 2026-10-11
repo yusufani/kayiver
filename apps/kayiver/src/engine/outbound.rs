@@ -148,4 +148,96 @@ mod tests {
         .unwrap();
         assert!(matches!(rx.recv().await.unwrap().message, Msg::Ping(3)));
     }
+    #[tokio::test]
+    #[ignore = "explicit slow-receiver probe; documents kernel buffering outside the application budget"]
+    async fn encrypted_socket_probe_reports_bulk_already_ahead_of_motion() {
+        use kayiver_core::secure::{handshake_initiator, handshake_responder};
+        use tokio::sync::{oneshot, Notify};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (begin_tx, begin_rx) = oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            stream.set_nodelay(true).unwrap();
+            let (mut reader, _writer) = handshake_responder(stream, &[13; 32]).await.unwrap();
+            begin_rx.await.unwrap();
+            let mut bulk_bytes = 0;
+            let mut motion = Vec::new();
+            while motion.len() < 2 {
+                match reader.recv().await.unwrap() {
+                    Msg::QuickShareChunk { data, .. } => bulk_bytes += data.len(),
+                    Msg::Input(InputEvent::MouseMove { dx, .. }) => motion.push(dx),
+                    _ => panic!("unexpected probe message"),
+                }
+            }
+            (bulk_bytes, motion)
+        });
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.set_nodelay(true).unwrap();
+        let (_reader, mut writer) = handshake_initiator(stream, &[13; 32]).await.unwrap();
+        let (tx, mut rx) = channel();
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let resume = Arc::new(Notify::new());
+        let gate = resume.clone();
+        let writer_task = tokio::spawn(async move {
+            let mut ready = Some(ready_tx);
+            let mut files = 0;
+            let mut moves = 0;
+            while let Some(frame) = rx.recv().await {
+                writer.send(&frame.message).await.unwrap();
+                match frame.message {
+                    Msg::QuickShareChunk { .. } => {
+                        files += 1;
+                        if files == 4 {
+                            ready.take().unwrap().send(()).unwrap();
+                            gate.notified().await;
+                        }
+                    }
+                    Msg::Input(_) => {
+                        moves += 1;
+                        if moves == 2 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let producer = tx.clone();
+        let file = tokio::spawn(async move {
+            for offset in 0..20 {
+                if producer
+                    .send_file(Msg::QuickShareChunk {
+                        id: 8,
+                        offset,
+                        data: vec![7; 8192],
+                        is_eof: false,
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        tx.send(Msg::Input(InputEvent::MouseMove { dx: 100, dy: 0 }))
+            .unwrap();
+        tx.send(Msg::Input(InputEvent::MouseMove { dx: -100, dy: 0 }))
+            .unwrap();
+        begin_tx.send(()).unwrap();
+        resume.notify_one();
+        let (bytes, motion) = tokio::time::timeout(std::time::Duration::from_secs(5), peer)
+            .await
+            .unwrap()
+            .unwrap();
+        writer_task.await.unwrap();
+        file.await.unwrap();
+        assert_eq!(motion, vec![100, -100]);
+        assert_eq!(bytes, 4 * 8192);
+        println!("Kernel/peer buffering ahead of newly queued motion: {bytes} bytes despite a one-frame application budget");
+    }
 }

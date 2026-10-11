@@ -228,3 +228,10 @@ and empty-file EOF. This bounds the application queue, not TCP's kernel send
 buffer or the peer's disk-processing time. Slow-link/slow-receiver acceptance
 must measure those independently; do not claim this alone eliminates all
 motion latency during transfer.
+
+Run `encrypted_socket_probe_reports_bulk_already_ahead_of_motion` explicitly
+with `--ignored --nocapture` to reproduce the remaining kernel-buffer limit
+using real TCP and Noise. It pauses the receiver while four 8 KiB frames are
+sent, then queues +100/-100 motion and verifies the 32 KiB already ahead of
+those events. This exploratory probe reports a limitation and should become
+an acceptance regression when receiver-aware flow control is implemented.
