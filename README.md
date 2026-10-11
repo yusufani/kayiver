@@ -215,6 +215,7 @@ desk has a regression scenario there. See [docs/TESTING.md](docs/TESTING.md).
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — components, threads, the crossing state machine, latency design
+- [docs/PRODUCT-DESIGN.md](docs/PRODUCT-DESIGN.md) — device visuals, unknown-hardware fallback, free placement and desktop notification contract
 - [docs/TESTING.md](docs/TESTING.md) — the simulated two-machine test desk
 - [docs/PROTOCOL.md](docs/PROTOCOL.md) — wire protocol specification
 - [docs/SECURITY.md](docs/SECURITY.md) — threat model, pairing & session crypto

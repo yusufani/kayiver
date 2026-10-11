@@ -679,6 +679,7 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
 
     match (method, path) {
         ("GET", "/") => ("200 OK", "text/html; charset=utf-8", INDEX_HTML.replace("__KAYIVER_VERSION__",env!("CARGO_PKG_VERSION")).into_bytes()),
+        ("GET", "/assets/alpine-blue.png") => ("200 OK", "image/png", include_bytes!("assets/alpine-blue.png").to_vec()),
         ("GET", "/api/state") => match api_state() {
             Ok(json) => ("200 OK", "application/json", json.into_bytes()),
             Err(e) => ("500 Internal Server Error", "text/plain", e.to_string().into_bytes()),
@@ -1167,12 +1168,34 @@ fn api_save_layout(body: &[u8]) -> Result<()> {
         anyhow::ensure!(known(&l.from) && known(&l.to), "unknown machine in link {} -> {}", l.from, l.to);
         anyhow::ensure!(l.from != l.to, "self-link on {}", l.from);
     }
-    cfg.layout.links = links;
-    cfg.save()?;
+    // Validate the entire payload before persisting any part of the layout.
+    let mut validated = Vec::new();
     for (machine, rects) in arrangements {
         anyhow::ensure!(known(&machine), "unknown machine in arrangement: {machine}");
         let monitors: Vec<kayiver_core::proto::Rect> =
             serde_json::from_value(rects).with_context(|| format!("invalid arrangement for {machine}"))?;
+        anyhow::ensure!(!monitors.is_empty() && monitors.iter().all(|r| r.w>0 && r.h>0),"invalid screen size for {machine}");
+        for (i,a) in monitors.iter().enumerate() {
+            for b in &monitors[i+1..] {
+                let overlaps=(a.x as i64)<b.x as i64+b.w as i64 && (b.x as i64)<a.x as i64+a.w as i64
+                    && (a.y as i64)<b.y as i64+b.h as i64 && (b.y as i64)<a.y as i64+a.h as i64;
+                anyhow::ensure!(!overlaps,"screens overlap on {machine}");
+            }
+        }
+        let current=if machine==cfg.name {crate::platform::monitors()} else {cfg.peer(&machine).unwrap().screens.clone()};
+        let mut current_sizes:Vec<_>=current.iter().map(|r|(r.w,r.h)).collect();
+        let mut desired_sizes:Vec<_>=monitors.iter().map(|r|(r.w,r.h)).collect();
+        current_sizes.sort();desired_sizes.sort();
+        anyhow::ensure!(current_sizes==desired_sizes,"screen inventory changed on {machine}; reload the layout");
+        let state=live().lock().unwrap();
+        anyhow::ensure!(state.cmd.is_some(),"host not running");
+        if machine!=cfg.name {anyhow::ensure!(state.peers.get(&machine).is_some_and(|p|p.connected),"{machine} offline — arrangement not sent");}
+        drop(state);
+        validated.push((machine,monitors));
+    }
+    cfg.layout.links = links;
+    cfg.save()?;
+    for (machine,monitors) in validated {
         if !send_cmd(UiCmd::Arrange { machine: machine.clone(), monitors }) {
             anyhow::bail!("host not running — arrangement for {machine} not sent");
         }

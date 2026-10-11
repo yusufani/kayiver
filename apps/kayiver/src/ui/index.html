@@ -311,6 +311,59 @@
     footer { padding: 8px 16px 10px; }
     .card { padding: 8px 12px; }
   }
+  /* Device bodies are presentation only: .mon remains the exact screen rect. */
+  :root { --hardware-accent: #68b4ff; --wallpaper: radial-gradient(ellipse at 70% 10%, #35569e, transparent 55%), linear-gradient(155deg,#040b19 20%,#102c5a 50%,#5781bf 51%,#142948 62%,#060c18); }
+  :root[data-look="gallery"] { --a1:#ffb955; --a2:#ffb955; --hardware-accent:#ffb955; --accent-grad:linear-gradient(135deg,#ffc46a,#ed992e); --wallpaper:radial-gradient(ellipse at 80% 20%,#ae621f,transparent 55%),linear-gradient(150deg,#090b13 25%,#3e241f 49%,#efb66b 50%,#633f2c 59%,#111522); }
+  :root[data-theme="light"][data-look="gallery"] { --a1:#9f5809; --a2:#9f5809; --accent-grad:linear-gradient(135deg,#bd711d,#a85b0d); }
+  body { background:radial-gradient(ellipse at 50% 0,var(--panel),var(--bg) 65%); }
+  header { border-bottom:1px solid var(--line); padding-bottom:16px; }
+  .brand h1 { color:var(--text); background:none; }
+  .workspace { flex:1 0 300px; min-height:300px; display:flex; margin:16px 22px 4px; border:1px solid var(--line); border-radius:16px; background:var(--bg2); overflow:hidden; }
+  #canvas { flex:1; min-width:0; margin:0; border:0; border-radius:0; min-height:350px; background:radial-gradient(ellipse at 50% 35%,var(--panel),var(--field) 85%); }
+  .mon { background:#11141b; border:0; overflow:visible; border-radius:5px; box-shadow:0 8px 14px rgba(0,0,0,.35); transition:box-shadow 160ms ease-out; }
+  .mon::before { inset:-5px; background:linear-gradient(130deg,#626a75,#161a21 20%,#0b0e13 65%,#77818a); border-radius:8px; box-shadow:inset 0 0 0 1px #858e98,0 12px 25px rgba(0,0,0,.4); z-index:-1; }
+  .device-glass { position:absolute; inset:0; overflow:hidden; border-radius:4px; background:var(--wallpaper); background-image:linear-gradient(180deg,rgba(4,10,24,.08),rgba(4,10,24,.3)),url('/assets/alpine-blue.png'); background-size:cover; background-position:center; pointer-events:none; }
+  .device-glass::after { content:''; position:absolute; inset:0; background:linear-gradient(140deg,rgba(255,255,255,.12),transparent 45%); }
+  :root[data-look="gallery"] .device-glass { background-image:linear-gradient(150deg,rgba(20,10,4,.2),rgba(65,35,10,.15)),url('/assets/alpine-blue.png'); }
+  .device-foot { position:absolute; top:calc(100% + 5px); left:50%; width:24%; height:26px; transform:translateX(-50%); background:linear-gradient(90deg,#333a45,#a5adb5 48%,#414955); clip-path:polygon(38% 0,62% 0,66% 66%,100% 79%,100% 100%,0 100%,0 79%,34% 66%); pointer-events:none; }
+  .mon.laptop { border-radius:5px; border-bottom:0; }
+  .mon.laptop .device-foot { width:112%; height:26px; background:linear-gradient(#59616c 0%,#202731 55%,#b7bfc8 85%,#747e89 100%); clip-path:polygon(5% 0,95% 0,100% 80%,98% 100%,2% 100%,0 80%); }
+  .mon.laptop .device-foot::after { content:''; position:absolute; top:4px; left:15%; width:70%; height:9px; background:repeating-linear-gradient(90deg,#121820 0 5px,#69717a 5px 6px); border-radius:2px; }
+  .mon .ltr { inset:auto; top:7px; left:7px; min-width:27px; height:27px; padding:0 6px; border-radius:7px; font-size:16px; color:#fff; opacity:1; background:rgba(8,14,25,.76); border:1px solid rgba(255,255,255,.22); z-index:3; }
+  .mon .name { top:auto; bottom:5px; left:7px; color:#f5f7fc; padding:2px 6px; max-width:calc(100% - 52px); border-radius:4px; background:rgba(8,14,25,.8); font-size:11px; z-index:3; }
+  .mon .res { display:none; }
+  .mon .kind { right:5px; left:auto; bottom:5px; min-width:25px; height:25px; border:1px solid rgba(255,255,255,.3); border-radius:5px; color:#fff; background:#141c2a; font-size:11px; z-index:4; padding:0; }
+  .mon .sdot { top:10px; right:9px; z-index:4; box-shadow:0 0 0 3px rgba(0,0,0,.4); }
+  .mon.compact .name,.mon.compact .kind,.mon.compact .segname { display:none; }
+  .mon.compact .ltr { top:4px; left:4px; font-size:12px; min-width:21px; height:21px; }
+  .mon.compact .segpick { display:none; }
+  .mon.compact .panel-badge { font-size:10px; bottom:3px; }
+  #inspectorKind { margin-top:12px; padding:6px 10px; font:inherit; font-size:12px; color:var(--text); background:var(--bg2); border:1px solid var(--line2); border-radius:7px; }
+  .mon.selected { outline:2px solid var(--hardware-accent); outline-offset:5px; }
+  .mon.focus { animation:none; }
+  .mon.snapped { box-shadow:0 8px 14px rgba(0,0,0,.35); }
+  .mon.livefocus { box-shadow:0 0 0 2px var(--hardware-accent),0 8px 14px rgba(0,0,0,.35); }
+  .splitseg { background:rgba(8,14,25,.54); }
+  .splitseg .segname,.splitseg .segpick { color:#fff; font-size:11px; }
+  .splitseg .segltr { color:#fff; }
+  .panel-badge { font-size:11px; bottom:6px; color:#102030; }
+  #snapGuide { animation:none; }
+  #deviceInspector { flex:0 0 228px; padding:22px; border-left:1px solid var(--line); min-width:0; }
+  #deviceInspector h2 { font-size:35px; margin:0 0 4px; letter-spacing:-1px; }
+  #deviceInspector .inspector-kicker { color:var(--muted); font-size:11px; letter-spacing:1px; text-transform:uppercase; }
+  #inspectorMachine { overflow-wrap:anywhere; margin-bottom:24px; color:var(--muted); }
+  #deviceInspector dl { display:grid; grid-template-columns:1fr; gap:5px; }
+  #deviceInspector dt { color:var(--muted); font-size:12px; margin-top:12px; }
+  #deviceInspector dd { font-size:13px; overflow-wrap:anywhere; }
+  .inspector-note { border-top:1px solid var(--line); margin-top:26px; padding-top:16px; color:var(--muted); font-size:12px; }
+  #lookSelect { background:var(--bg2); color:var(--text); font:inherit; font-size:12px; border:1px solid var(--line2); padding:8px; border-radius:8px; }
+  .snap-option { display:flex; gap:7px; align-items:center; color:var(--muted); font-size:12px; white-space:nowrap; }
+  footer { flex-wrap:wrap; }
+  #msg { flex:1 1 180px; font-size:12px; }
+  button:focus-visible,.mon:focus-visible { outline:2px solid var(--a1); outline-offset:4px; }
+  @media(max-width:900px) { #deviceInspector { flex-basis:185px; padding:17px; } }
+  @media(max-width:650px) { .workspace { flex-direction:column; margin:12px 12px 0; } #canvas { flex-basis:320px; min-height:320px; } #deviceInspector { flex-basis:auto; border-left:0; border-top:1px solid var(--line); padding:14px 18px; } #deviceInspector h2 { font-size:24px; } #inspectorMachine { margin-bottom:8px; } #deviceInspector dl { grid-template-columns:repeat(2,minmax(0,1fr)); } #deviceInspector .inspector-note { margin-top:14px; padding-top:10px; } }
+  @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none!important; transition:none!important; } }
 </style>
 </head>
 <body>
@@ -335,6 +388,7 @@
     </div>
   </div>
   <div class="statusbar" id="statusbar">
+    <select id="lookSelect" aria-label="Görünüm / Appearance"><option value="precision">Precision · Blue</option><option value="gallery">Gallery · Amber</option></select>
     <div class="legend" id="legend"></div>
     <div class="stat"><span class="dot" id="hostDot"></span><span id="hostTxt">connecting…</span></div>
     <div class="stat" id="linkStat" style="display:none;gap:6px;align-items:center">
@@ -357,21 +411,14 @@
      color: var(--danger); font-size: 12.5px;"></div>
 
 <button id="permissionsBanner" style="display:none"></button>
-<div id="canvas"><button id="sharedBtn"></button><div id="zoomBox"><button id="zoomOut" title="Zoom out">−</button><span id="zoomLbl">100%</span><button id="zoomIn" title="Zoom in">+</button><button id="zoomReset" title="Reset">⟲</button></div></div>
+<div class="workspace"><div id="canvas"><button id="sharedBtn"></button><div id="zoomBox"><button id="zoomOut" title="Zoom out">−</button><span id="zoomLbl">100%</span><button id="zoomIn" title="Zoom in">+</button><button id="zoomReset" title="Reset">⟲</button></div></div>
+<aside id="deviceInspector" aria-label="Seçili ekran"><div class="inspector-kicker" id="inspectorTitle">Ekran</div><h2 id="inspectorLetter">—</h2><div id="inspectorMachine">—</div><dl><dt id="resolutionTitle">Çözünürlük</dt><dd id="inspectorResolution">—</dd><dt id="typeTitle">Cihaz türü</dt><dd id="inspectorType">—</dd><dt id="positionTitle">Konum</dt><dd id="inspectorPosition">—</dd><dt id="sharingTitle">Paylaşım</dt><dd id="inspectorSharing">—</dd></dl><button id="inspectorKind" type="button">Laptop / Monitör</button><p class="inspector-note" id="inspectorHint">Ekranları sürükleyerek yerleştir. Yalnızca birleşen ekran kenarları geçiş oluşturur.</p></aside></div>
 
-<div id="qsBanner" style="display:none; position:fixed; bottom:64px; right:24px; z-index:99; background:rgba(24,24,28,.95); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,.16); border-radius:14px; box-shadow:0 12px 30px rgba(0,0,0,.5); padding:10px 14px; align-items:center; gap:12px; max-width:360px; color:#fff;">
-  <div id="qsIcon" style="width:42px; height:42px; border-radius:50%; background:linear-gradient(135deg, rgba(37,99,235,.35), rgba(29,78,216,.20)); border:1.5px solid rgba(96,165,250,.45); box-shadow:0 0 16px rgba(37,99,235,.35); display:flex; align-items:center; justify-content:center; flex-shrink:0;"></div>
-  <div style="flex:1; min-width:0;">
-    <div id="qsTitle" style="font-size:12.5px; font-weight:600; color:#f4f4f5;">Quick Share</div>
-    <div id="qsDetail" style="font-size:11px; color:#a1a1aa; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
-  </div>
-  <button id="qsActBtn" style="background:#2563eb; color:#fff; border:none; border-radius:8px; font-size:11.5px; font-weight:600; padding:6px 12px; cursor:pointer; white-space:nowrap;"></button>
-  <button id="qsCloseBtn" style="background:none; border:none; color:#71717a; cursor:pointer; padding:4px; font-size:13px;">✕</button>
-</div>
 
 <footer>
   <div id="msg">drag each monitor; touching edges become crossings</div>
   <button id="save">Kaydet</button>
+  <label class="snap-option"><input id="snapEnabled" type="checkbox" checked><span id="snapLabel">Hizalama yardımı</span></label>
   <span class="dock-sep"></span>
   <div id="ownerDock" style="display:flex;align-items:center;gap:8px;min-width:0"></div>
   <div style="flex:1"></div>
@@ -567,7 +614,7 @@ function applyStaticI18n() {
   renderPermissions(lastPermissions);
 }
 function hk() { return /Mac/.test(navigator.platform) ? '⌘⌥M' : 'Ctrl+Alt+M'; }
-function setLang(l) { lang = l; localStorage.setItem('kayiver-lang', l); applyStaticI18n(); renderLegend(); renderDock(); }
+function setLang(l) { lang = l; localStorage.setItem('kayiver-lang', l); applyStaticI18n(); renderLegend(); renderDock(); selectScreen(); }
 
 const SNAP = 16;
 const OVERLAP_MIN = 0.30;
@@ -586,6 +633,40 @@ let sharedLive = {};
 let dockPanelOpen = false;
 let settings = {};
 let candidate = null;
+let selectedScreen = null;
+let draftPositions = null;
+let draftGeometry = '';
+const geometrySignature = s => JSON.stringify([s.machines.map(m => [m.name,m.monitors]),s.shared_monitor]);
+const screenKey = t => t.machine + ':' + t.idx;
+const lookSelect = document.getElementById('lookSelect');
+try { lookSelect.value = localStorage.getItem('kayiver-look') === 'gallery' ? 'gallery' : 'precision'; } catch (_) {}
+document.documentElement.dataset.look = lookSelect.value;
+lookSelect.addEventListener('change', () => {
+  document.documentElement.dataset.look = lookSelect.value;
+  try { localStorage.setItem('kayiver-look',lookSelect.value); } catch (_) {}
+});
+function selectScreen(tile) {
+  if (tile) selectedScreen = screenKey(tile);
+  for (const m of mons) m.el.classList.toggle('selected',screenKey(m) === selectedScreen);
+  const tileNow = mons.find(m => screenKey(m) === selectedScreen && m.el.style.display !== 'none');
+  const english = lang === 'en';
+  document.getElementById('inspectorTitle').textContent = english ? 'Selected screen' : 'Seçili ekran';
+  document.getElementById('resolutionTitle').textContent = english ? 'Resolution' : 'Çözünürlük';
+  document.getElementById('typeTitle').textContent = english ? 'Device type' : 'Cihaz türü';
+  document.getElementById('positionTitle').textContent = english ? 'Position' : 'Konum';
+  document.getElementById('sharingTitle').textContent = english ? 'Sharing' : 'Paylaşım';
+  document.getElementById('snapLabel').textContent = english ? 'Snap nearby edges' : 'Hizalama yardımı';
+  document.getElementById('inspectorHint').textContent = english ? 'Drag to arrange. Only touching screen edges create crossings. Generic device artwork; no model lookup required.' : 'Sürükleyerek yerleştir. Yalnızca birleşen ekran kenarları geçiş oluşturur. Cihaz görseli temsilidir; model eşleşmesi gerekmez.';
+  document.getElementById('inspectorLetter').textContent = tileNow ? tileNow.letter : '—';
+  document.getElementById('inspectorMachine').textContent = tileNow ? tileNow.machine : (english ? 'Select a screen' : 'Bir ekran seç');
+  document.getElementById('inspectorResolution').textContent = tileNow ? tileNow.realW + ' × ' + tileNow.realH : '—';
+  document.getElementById('inspectorType').textContent = tileNow ? (tileNow.el.classList.contains('laptop') ? 'Laptop' : tileNow.realH > tileNow.realW ? (english ? 'Portrait monitor' : 'Dikey monitör') : tileNow.realW / tileNow.realH > 2 ? 'Ultrawide' : (english ? 'Monitor' : 'Monitör')) : '—';
+  const arranged=tileNow ? peerArrangements()[tileNow.machine]?.[tileNow.idx] : null;
+  document.getElementById('inspectorPosition').textContent = tileNow ? (arranged?.x ?? tileNow.realX) + ', ' + (arranged?.y ?? tileNow.realY) : '—';
+  document.getElementById('inspectorSharing').textContent = tileNow ? (tileNow.el.classList.contains('panel') ? (english ? 'Shared screen' : 'Ortak ekran') : (tileNow.me ? (english ? 'Local' : 'Yerel') : (english ? 'Peer' : 'Diğer bilgisayar'))) : '—';
+  const kindButton=document.getElementById('inspectorKind');kindButton.disabled=!tileNow || tileNow.el.classList.contains('panel');kindButton.textContent=english?'Change device appearance':'Cihaz görünümünü değiştir';
+}
+document.getElementById('inspectorKind').addEventListener('click',()=>mons.find(m=>screenKey(m)===selectedScreen)?.el.querySelector('.kind').click());
 const canvas = document.getElementById('canvas');
 const msgEl = document.getElementById('msg');
 const sharedBtn = document.getElementById('sharedBtn');
@@ -606,6 +687,7 @@ if (!/Mac/.test(navigator.platform)) {
 function setMsg(m, cls) { msgEl.textContent = m; msgEl.className = cls || ''; }
 
 function bbox(rects) {
+  if (!rects.length) return {x:0,y:0,w:1,h:1};
   const x = Math.min(...rects.map(r => r.x));
   const y = Math.min(...rects.map(r => r.y));
   return { x, y, w: Math.max(...rects.map(r => r.x + r.w)) - x, h: Math.max(...rects.map(r => r.y + r.h)) - y };
@@ -638,10 +720,12 @@ canvas.addEventListener('pointerdown', e => {
   const end=()=>{canvas.removeEventListener('pointermove',move);canvas.removeEventListener('pointerup',end);canvas.removeEventListener('pointercancel',end);refreshSnap();};
   canvas.addEventListener('pointermove',move);canvas.addEventListener('pointerup',end);canvas.addEventListener('pointercancel',end);
 });
-function stateSignature(s) { return JSON.stringify([s.machines.map(m => [m.name, m.me, m.monitors, m.builtin]), s.shared_monitor]); }
+function stateSignature(s) { return JSON.stringify([s.machines.map(m => [m.name, m.me, m.monitors, m.builtin]), s.shared_monitor,s.links]); }
 
 let lastBuiltState = null; // kept so a window resize can re-fit the whole map
 function buildFromState(s) {
+  const geometry = geometrySignature(s);
+  if (draftPositions && geometry !== draftGeometry) draftPositions = null;
   lastBuiltState = s;
   document.querySelectorAll('.mon').forEach(e => e.remove());
   sharedBtn.style.display = 'none'; candidate = null;
@@ -672,7 +756,7 @@ function buildFromState(s) {
         machine: m.name, me: m.me, idx,
         realW: mon.w, realH: mon.h, realX: mon.x, realY: mon.y,
         builtin: !!(m.builtin || [])[idx],
-        w: Math.max(46, mon.w * scale), h: Math.max(32, mon.h * scale),
+        w: mon.w * scale, h: mon.h * scale,
         x: clusterPos[m.name].x + (mon.x - bb.x) * scale,
         y: clusterPos[m.name].y + (mon.y - bb.y) * scale,
       });
@@ -698,9 +782,13 @@ function buildFromState(s) {
   }
   applySaved();
   mergeShared();
+  applyDraftPositions();
   fitArrangement();
   mons.forEach(pos);
   refreshSnap(); renderLegend(); renderDock();
+  const visible = mons.filter(t => t.el.style.display !== 'none');
+  if (!visible.some(t => screenKey(t) === selectedScreen)) selectedScreen = visible.length ? screenKey(visible[0]) : null;
+  selectScreen();
 }
 
 // One affine transform preserves adjacency; individually clamping tiles destroys it.
@@ -762,12 +850,15 @@ function makeTile(t) {
   el.style.setProperty('--mg', col.g);
   el.style.width = t.w + 'px'; el.style.height = t.h + 'px';
   el.innerHTML =
+    '<div class="device-glass"></div><div class="device-foot" aria-hidden="true"></div>' +
     '<span class="badge">ortak</span>' +
     '<span class="ltr">' + t.letter + '</span>' +
-    '<span class="name">' + t.machine + '</span>' +
+    '<span class="name"></span>' +
     '<span class="sdot"></span>' +
     '<span class="res">' + t.realW + '×' + t.realH + '</span>' +
-    '<span class="kind" title="Ekran türü: laptop / monitör"></span>';
+    '<button type="button" class="kind" aria-label="Ekran türü: laptop / monitör"></button>';
+  // Machine names are untrusted network data, not HTML.
+  el.querySelector('.name').textContent = t.machine;
   const kindKey = 'kayiver-kind:' + t.machine + ':' + t.idx + ':' + t.realW + 'x' + t.realH;
   const kindEl = el.querySelector('.kind');
   const paintKind = () => {
@@ -780,15 +871,21 @@ function makeTile(t) {
   paintKind();
   kindEl.addEventListener('pointerdown', ev => {
     ev.stopPropagation();
+  });
+  kindEl.addEventListener('click', ev => {
+    ev.stopPropagation();
     try { localStorage.setItem(kindKey, el.classList.contains('laptop') ? 'monitor' : 'laptop'); } catch (_) {}
     paintKind();
+    selectScreen(t);
   });
   canvas.appendChild(el);
   t.el = el; t.sdot = el.querySelector('.sdot');
 
   el.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || e.target.closest('button')) return;
     if (t.el.style.display === 'none') return; // hidden peer half of a panel
     el.setPointerCapture(e.pointerId);
+    selectScreen(t);
     const sp = sharedPair();
     // Grabbing the split panel pans the whole arrangement (it's the shared
     // screen — everything hangs off it). Grabbing any other monitor moves just
@@ -817,22 +914,31 @@ function makeTile(t) {
       }
       refreshSnap(); updateOverlap();
     };
-    const up = () => {
+    const up = (ev) => {
       group.forEach(g => g.el.classList.remove('dragging'));
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', cancel);
       hideSnapGuide();
       // A tap (no real drag) on the shared panel opens/closes the owner picker
       // in the dock. Done here — not via a child 'click' listener — because the
       // tile's pointer capture swallows synthetic clicks on the segments.
       if (isPanel && !moved) { dockPanelOpen = !dockPanelOpen; renderDock(); }
-      if (!isPanel && !candidate) resolveTile(t);
+      if (moved && !panOnly && !candidate && document.getElementById('snapEnabled').checked && !ev.altKey) resolveTile(t);
+      if (panOnly && moved) { pan.x += t.x - a0.x; pan.y += t.y - a0.y; }
       pos(t);
       savePositions();
       refreshSnap(); updateOverlap();
+      selectScreen(t);
+    };
+    const cancel = () => {
+      start.forEach(s => { s.g.x=s.x; s.g.y=s.y; pos(s.g); s.g.el.classList.remove('dragging'); });
+      el.removeEventListener('pointermove',move);el.removeEventListener('pointerup',up);el.removeEventListener('pointercancel',cancel);
+      hideSnapGuide();refreshSnap();updateOverlap();
     };
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', cancel);
   });
 }
 
@@ -894,8 +1000,8 @@ function mergeShared() {
     // ends up smaller than the seam it should sit flush against, leaving a
     // visible gap above the panel (C floating detached). Same scale on both
     // axes keeps it touching the panel edge, exactly as it does physically.
-    o.w = Math.max(46, o.realW * sc.x);
-    o.h = Math.max(32, o.realH * sc.y);
+    o.w = o.realW * sc.x;
+    o.h = o.realH * sc.y;
     o.el.style.width = o.w + 'px'; o.el.style.height = o.h + 'px';
     pos(o);
   }
@@ -930,8 +1036,9 @@ function renderSplit(a, b) {
     seg.style.setProperty('--sg', col.g);
     seg.innerHTML =
       '<span class="segltr">' + s.ltr + '</span>' +
-      '<span class="segname">' + s.name + '</span>' +
+      '<span class="segname"></span>' +
       '<span class="segpick">' + t('activate') + '</span>';
+    seg.querySelector('.segname').textContent=s.name;
     wrap.appendChild(seg);
   }
   a.el.appendChild(wrap);
@@ -1001,10 +1108,26 @@ function showSnapGuide(t) {
 let gScale = 1;
 try { localStorage.removeItem('kayiver-pos-v1'); } catch (_) {}
 const savedHas = () => false;
-function savePositions() {}
+function savePositions() {
+  const visible=mons.filter(t=>t.el.style.display!=='none');
+  const anchor=sharedPair()?.a || visible[0];
+  if (!anchor || !lastBuiltState) return;
+  draftGeometry=geometrySignature(lastBuiltState);
+  draftPositions={anchor:screenKey(anchor),positions:visible.map(t=>({key:screenKey(t),x:(t.x-anchor.x)/gScale,y:(t.y-anchor.y)/gScale}))};
+}
+function applyDraftPositions() {
+  if (!draftPositions) return;
+  const anchor=mons.find(t=>screenKey(t)===draftPositions.anchor);
+  if (!anchor) {draftPositions=null;return;}
+  for (const p of draftPositions.positions) {
+    const t=mons.find(t=>screenKey(t)===p.key);
+    if (t) {t.x=anchor.x+p.x*gScale;t.y=anchor.y+p.y*gScale;}
+  }
+  const sp=sharedPair();if(sp){sp.b.x=sp.a.x;sp.b.y=sp.a.y;}
+}
 function applySaved() {}
 
-function pos(t) { t.el.style.left = t.x + 'px'; t.el.style.top = t.y + 'px'; }
+function pos(t) { t.el.style.left = t.x + 'px'; t.el.style.top = t.y + 'px'; t.el.classList.toggle('compact',t.w<120 || t.h<80); }
 function clamp(t) {
   t.x = Math.max(0, Math.min(canvas.clientWidth - t.w, t.x));
   t.y = Math.max(0, Math.min(canvas.clientHeight - t.h, t.y));
@@ -1012,10 +1135,7 @@ function clamp(t) {
 function vOver(a, b) { return Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y); }
 function hOver(a, b) { return Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x); }
 
-// Resolve a dropped tile to a VALID spot: flush against the nearest edge of
-// some other monitor, never overlapping one. A monitor can't float free or sit
-// inside another — if the user didn't line it up, it magnets to the closest
-// edge. Called on drop for any individually-moved tile.
+// Snap only nearby edges. Distant drops and disconnected screens stay put.
 function resolveTile(t) {
   const solids = mons.filter(o => o !== t && o.el.style.display !== 'none');
   if (!solids.length) { clamp(t); pos(t); return; }
@@ -1035,7 +1155,7 @@ function resolveTile(t) {
     if (c.x < 0 || c.y < 0 || c.x + t.w > canvas.clientWidth || c.y + t.h > canvas.clientHeight) continue;
     if (overlapsAny(c.x, c.y)) continue;
     const d = (c.x - t.x) ** 2 + (c.y - t.y) ** 2;
-    if (d < bestD) { bestD = d; best = c; }
+    if (d <= SNAP * SNAP && d < bestD) { bestD = d; best = c; }
   }
   if (best) { t.x = best.x; t.y = best.y; }
   clamp(t); pos(t);
@@ -1054,6 +1174,10 @@ function currentLinks() {
 }
 
 function refreshSnap() {
+  for (const t of mons) {
+    const foot=t.el.querySelector('.device-foot');
+    if (foot) foot.hidden=mons.some(o=>o!==t && o.el.style.display!=='none' && o.y>=t.y+t.h-1 && o.y<t.y+t.h+34 && hOver(t,o)>0);
+  }
   const linked = new Set();
   for (const l of currentLinks()) { linked.add(l.from); linked.add(l.to); }
   // highlight the monitors actually touching another machine
@@ -1506,71 +1630,9 @@ document.getElementById('linkGo').addEventListener('click', async () => {
 });
 
 let pollN = 0;
-let currentQs = null;
-
-async function pollQuickShare() {
-  try {
-    const res = await fetch('/api/quickshare');
-    if (!res.ok) return;
-    const qs = await res.json();
-    currentQs = qs;
-    const banner = document.getElementById('qsBanner');
-    if (!qs || qs.status === 'done') {
-      banner.style.display = 'none';
-      return;
-    }
-    banner.style.display = 'flex';
-    const isUrl = qs.payload && qs.payload.Url !== undefined;
-    const iconEl = document.getElementById('qsIcon');
-    const titleEl = document.getElementById('qsTitle');
-    const detailEl = document.getElementById('qsDetail');
-    const actBtn = document.getElementById('qsActBtn');
-
-    if (isUrl) {
-      iconEl.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>';
-      iconEl.style.background = 'linear-gradient(135deg, rgba(37,99,235,.35), rgba(29,78,216,.20))';
-      iconEl.style.borderColor = 'rgba(96,165,250,.45)';
-      iconEl.style.boxShadow = '0 0 16px rgba(37,99,235,.35)';
-      titleEl.textContent = 'Web Bağlantısı (' + qs.peer + ')';
-      detailEl.textContent = qs.payload.Url.url;
-      actBtn.textContent = 'Tarayıcıda Aç';
-    } else {
-      iconEl.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>';
-      iconEl.style.background = 'linear-gradient(135deg, rgba(16,185,129,.35), rgba(5,150,105,.20))';
-      iconEl.style.borderColor = 'rgba(52,211,153,.45)';
-      iconEl.style.boxShadow = '0 0 16px rgba(16,185,129,.35)';
-      titleEl.textContent = 'Dosya Paylaşımı (' + qs.peer + ')';
-      detailEl.textContent = qs.payload && qs.payload.File ? qs.payload.File.name : '';
-      actBtn.textContent = 'Aktar';
-    }
-  } catch (_) {}
-}
-
-document.getElementById('qsActBtn').addEventListener('click', async () => {
-  if (!currentQs) return;
-  const isUrl = currentQs.payload && currentQs.payload.Url !== undefined;
-  await fetch('/api/quickshare', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: isUrl ? 'open' : 'accept' }),
-  });
-  if (isUrl) document.getElementById('qsBanner').style.display = 'none';
-  else document.getElementById('qsActBtn').textContent = 'Aktarılıyor…';
-});
-
-document.getElementById('qsCloseBtn').addEventListener('click', async () => {
-  document.getElementById('qsBanner').style.display = 'none';
-  await fetch('/api/quickshare', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'dismiss' }),
-  });
-});
-
 async function poll() {
   if (++pollN % 4 === 0) await refreshStateIfChanged();
   if (pollN % 4 === 2) pollAndroid();
-  if (pollN % 2 === 0) pollQuickShare();
   try {
     const st = await (await fetch('/api/status')).json();
     renderPermissions(st.permissions);
@@ -1614,34 +1676,30 @@ async function poll() {
 // into a wall. Only when something was actually moved off its real spot.
 function peerArrangements() {
   const out = {};
-  const sp = sharedPair(); if (!sp) return out;
-  const { a, b } = sp;
-  const sx = a.w / (b.realW || 1), sy = a.h / (b.realH || 1);
-  const tol = Math.ceil(SNAP * 2 / Math.min(sx, sy)); // tile drops snap on canvas px, not real px
-  const rects = []; let moved = false;
-  for (const o of mons) {
-    if (o.machine !== b.machine) continue;
-    if (o === b) { rects.push({ x: b.realX, y: b.realY, w: b.realW, h: b.realH }); continue; }
-    let x = Math.round(b.realX + (o.x - b.x) / sx), y = Math.round(b.realY + (o.y - b.y) / sy);
-    // flush against the panel copy's edges where the tile touches it
-    if (Math.abs(x + o.realW - b.realX) <= tol) x = b.realX - o.realW;
-    if (Math.abs(x - (b.realX + b.realW)) <= tol) x = b.realX + b.realW;
-    if (Math.abs(y + o.realH - b.realY) <= tol) y = b.realY - o.realH;
-    if (Math.abs(y - (b.realY + b.realH)) <= tol) y = b.realY + b.realH;
-    if (x !== o.realX || y !== o.realY) moved = true;
-    rects.push({ x, y, w: o.realW, h: o.realH });
+  const sp = sharedPair();
+  for (const machine of machines) {
+    const tiles=mons.filter(t=>t.machine===machine.name);
+    if (!tiles.length) continue;
+    const anchor=sp ? (machine.name===sp.a.machine ? sp.a : machine.name===sp.b.machine ? sp.b : tiles[0]) : tiles[0];
+    const sx=anchor.w/anchor.realW, sy=anchor.h/anchor.realH;
+    const rects=[]; let moved=false;
+    for (const tile of tiles) {
+      const x=Math.round(anchor.realX+(tile.x-anchor.x)/sx);
+      const y=Math.round(anchor.realY+(tile.y-anchor.y)/sy);
+      moved ||= Math.abs(x-tile.realX)>1 || Math.abs(y-tile.realY)>1;
+      rects.push({x,y,w:tile.realW,h:tile.realH});
+    }
+    if(moved) out[machine.name]=rects;
   }
-  if (moved) out[b.machine] = rects;
   return out;
 }
 
 document.getElementById('save').addEventListener('click', async () => {
   const links = currentLinks();
-  if (machines.length > 1 && links.length === 0) { setMsg(t('noTouch'), 'err'); return; }
   const body = { links, arrangements: peerArrangements() };
   const r = await fetch('/api/layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   savePositions();
-  setMsg(r.ok ? t('saved') : t('saveFail') + await r.text(), r.ok ? 'ok' : 'err');
+  setMsg(r.ok ? (Object.keys(body.arrangements).length ? (lang==='en' ? 'Arrangement sent to the computers; platform errors appear in connection status.' : 'Yerleşim bilgisayarlara gönderildi; sistem reddederse bağlantı durumunda gösterilir.') : t('saved')) : t('saveFail') + await r.text(), r.ok ? 'ok' : 'err');
 });
 
 // -------------------------------------------------------------- settings ----

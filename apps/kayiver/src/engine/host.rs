@@ -119,6 +119,7 @@ fn reapply_arrangement(desired: &[kayiver_core::proto::Rect]) -> bool {
         Ok(false) => false,
         Err(e) => {
             warn!("could not apply desk arrangement: {e:#}");
+            crate::ui::set_link_error(Some(format!("display arrangement failed: {e:#}")));
             false
         }
     }
@@ -509,6 +510,12 @@ impl Router {
     /// match it now (and again every time it forgets, see `reapply_arrangement`).
     fn adopt_arrangement(&mut self, monitors: Vec<kayiver_core::proto::Rect>) {
         info!("desk arrangement received: {monitors:?}");
+        if let Err(error)=platform::apply_arrangement(&monitors) {
+            warn!("desk arrangement rejected: {error:#}");
+            crate::ui::set_link_error(Some(format!("display arrangement failed: {error:#}")));
+            // Do not persist an impossible layout and retry it every poll.
+            return;
+        }
         match Config::load_or_init() {
             Ok(mut c) => {
                 if c.arrangement != monitors {
@@ -520,7 +527,6 @@ impl Router {
             }
             Err(e) => warn!("could not load config to persist arrangement: {e:#}"),
         }
-        reapply_arrangement(&monitors);
     }
 
     /// Send to a named peer regardless of focus — used while we are the one

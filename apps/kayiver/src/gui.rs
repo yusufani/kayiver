@@ -265,8 +265,8 @@ fn run_shell(open_window_now: bool) -> Result<()> {
                 } else if let Some((_, wv)) = &quick_share {
                     let msg = qs.message.as_deref().unwrap_or("");
                     let _ = wv.evaluate_script(&format!(
-                        "window.updateStatus&&updateStatus('{}', '{}')",
-                        qs.status, msg
+                        "window.updateStatus&&updateStatus({}, {})",
+                        serde_json::to_string(&qs.status).unwrap(), serde_json::to_string(msg).unwrap()
                     ));
                 }
             }
@@ -442,7 +442,7 @@ html, body {
   align-items: center;
   gap: 12px;
   width: 100%;
-  height: 100%;
+  height: 82px;
   padding: 10px 14px;
   background: rgba(24, 24, 28, 0.96);
   backdrop-filter: blur(24px);
@@ -453,26 +453,29 @@ html, body {
   color: #fff;
 }
 .icon-box {
-  width: 44px;
-  height: 44px;
+  position: absolute;
+  right: 2px;
+  top: 100px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.35), rgba(29, 78, 216, 0.20));
-  border: 1.5px solid rgba(96, 165, 250, 0.45);
-  box-shadow: 0 0 16px rgba(37, 99, 235, 0.35);
+  background: #121925;
+  border: 1px solid #465a71;
+  box-shadow: 0 4px 12px rgba(0,0,0,.25);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
 .icon-box svg {
-  width: 22px;
-  height: 22px;
+  width: 34px;
+  height: 34px;
   display: block;
 }
 .icon-box.file {
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.35), rgba(5, 150, 105, 0.20));
-  border-color: rgba(52, 211, 153, 0.45);
-  box-shadow: 0 0 16px rgba(16, 185, 129, 0.35);
+  background: #121925;
+  border-color: #465a71;
+  box-shadow: 0 4px 12px rgba(0,0,0,.25);
 }
 .content {
   flex: 1;
@@ -485,7 +488,7 @@ html, body {
   margin-bottom: 2px;
 }
 .detail {
-  font-size: 11px;
+  font-size: 12px;
   color: #a1a1aa;
   white-space: nowrap;
   overflow: hidden;
@@ -496,13 +499,12 @@ html, body {
   background: #2563eb;
   color: #fff;
   border: none;
-  outline: none;
   font-size: 12px;
   font-weight: 600;
   padding: 7px 13px;
   border-radius: 8px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: transform 160ms ease-out;
   white-space: nowrap;
 }
 .btn-action:hover {
@@ -530,6 +532,7 @@ html, body {
   left: 0;
   height: 3px;
   width: 100%;
+  transform-origin: left;
   background: linear-gradient(90deg, #3b82f6, #60a5fa);
   border-bottom-left-radius: 14px;
   border-bottom-right-radius: 14px;
@@ -574,7 +577,7 @@ function tick() {
       doClose();
       return;
     }
-    prog.style.width = ((remaining / totalMs) * 100) + '%';
+    prog.style.transform = 'scaleX(' + (remaining / totalMs) + ')';
   }
   lastTick = now;
   requestAnimationFrame(tick);
@@ -623,7 +626,7 @@ fn html_escape(s: &str) -> String {
 }
 
 fn render_quickshare_html(qs: &crate::ui::ActiveQuickShare) -> String {
-    let (icon, icon_class, title, detail, action_text, is_file) = match &qs.payload {
+    let (_icon, icon_class, title, detail, action_text, is_file) = match &qs.payload {
         kayiver_core::proto::QuickSharePayload::Url { url, title: _ } => {
             let domain = url
                 .strip_prefix("https://")
@@ -640,7 +643,7 @@ fn render_quickshare_html(qs: &crate::ui::ActiveQuickShare) -> String {
     };
 
     QUICKSHARE_TEMPLATE
-        .replace("${ICON}", icon)
+        .replace("${ICON}", include_str!("../../../assets/logo/kayiver-mark.svg"))
         .replace("${ICON_CLASS}", icon_class)
         .replace("${TITLE}", title)
         .replace("${DETAIL}", &html_escape(&detail))
@@ -654,7 +657,7 @@ fn open_quick_share_bubble(
     qs: &crate::ui::ActiveQuickShare,
 ) -> Result<(Window, WebView)> {
     let mon = target.primary_monitor().or_else(|| target.available_monitors().next());
-    let (w, h) = (350.0, 84.0);
+    let (w, h) = (350.0, 160.0);
     let pos = match &mon {
         Some(m) => {
             let size = m.size().to_logical::<f64>(m.scale_factor());
@@ -684,6 +687,14 @@ fn open_quick_share_bubble(
         if !ns.is_null() {
             let _: () = msg_send![ns, setLevel: 2_147_483_631i64];
             let _: () = msg_send![ns, setCollectionBehavior: 1u64 << 0 | 1u64 << 4];
+            // Native work area excludes the Dock/menu bar and preserves
+            // negative display origins. AppKit remains on the GUI thread.
+            let screen: *mut objc2::runtime::AnyObject = msg_send![ns, screen];
+            if !screen.is_null() {
+                let frame: objc2_foundation::NSRect = msg_send![screen, visibleFrame];
+                let origin=objc2_foundation::NSPoint::new(frame.origin.x+(frame.size.width-w-24.0).max(0.0),frame.origin.y+24.0);
+                let _: () = msg_send![ns,setFrameOrigin:origin];
+            }
         }
     }
 

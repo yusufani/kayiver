@@ -6,9 +6,8 @@
 
 #![allow(non_snake_case)]
 
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
 
 use kayiver_core::proto::QuickSharePayload;
 use windows::core::PCWSTR;
@@ -16,16 +15,16 @@ use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, W
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect,
     GetMonitorInfoW, InvalidateRect, LineTo, MonitorFromPoint, MoveToEx, Polygon, RoundRect,
-    SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE,
+    SelectObject, SetBkMode, SetTextColor, CreateFontW, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, SetMapMode, SetWindowExtEx, SetViewportExtEx, MM_ANISOTROPIC, DT_CENTER, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE,
     DT_VCENTER, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, GetMessageW,
     KillTimer, PostMessageW, RegisterClassW, SetLayeredWindowAttributes,
-    SetTimer, SetWindowPos, ShowWindow, HWND_TOPMOST, LWA_ALPHA, MSG, SWP_NOACTIVATE,
-    SW_HIDE, SW_SHOWNOACTIVATE, WM_APP, WM_LBUTTONUP, WM_PAINT, WM_TIMER, WNDCLASSW,
-    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SetTimer, SetWindowPos, ShowWindow, HWND_TOPMOST, LWA_COLORKEY, MSG, SWP_NOACTIVATE,
+    SW_HIDE, SW_SHOWNOACTIVATE, WM_APP, WM_LBUTTONUP, WM_PAINT, WM_TIMER, WM_NCHITTEST, HTTRANSPARENT, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_NOACTIVATE, WS_POPUP,
 };
 
 use crate::ui::ActiveQuickShare;
@@ -36,12 +35,12 @@ const TIMER_PROGRESS: usize = 101;
 const TIMER_DISMISS: usize = 102;
 const TOTAL_DURATION_MS: u32 = 8000;
 
+static POPUP_SCALE: AtomicU32 = AtomicU32::new(1000);
 static HWND_VAL: AtomicIsize = AtomicIsize::new(0);
 static CURRENT_SHARE: OnceLock<Mutex<Option<ShareState>>> = OnceLock::new();
 
 struct ShareState {
     share: ActiveQuickShare,
-    started_at: Instant,
     elapsed_ms: u32,
     transferring: bool,
     done: bool,
@@ -69,7 +68,6 @@ pub fn present(qs: ActiveQuickShare) {
     if qs.status == "pending" {
         *cur = Some(ShareState {
             share: qs,
-            started_at: Instant::now(),
             elapsed_ms: 0,
             transferring: false,
             done: false,
@@ -119,16 +117,16 @@ unsafe fn run() {
 
     let name = to_wide("Kayıver Quick Share");
     let hwnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
         PCWSTR(class.as_ptr()),
         PCWSTR(name.as_ptr()),
         WS_POPUP,
-        0, 0, 360, 84,
+        0, 0, 360, 160,
         None, None, Some(hinst.into()), None,
     );
     let Ok(hwnd) = hwnd else { return };
 
-    let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 244, LWA_ALPHA);
+    let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_COLORKEY);
     HWND_VAL.store(hwnd.0 as isize, Ordering::Relaxed);
 
     position_and_show(hwnd);
@@ -140,6 +138,7 @@ unsafe fn run() {
 }
 
 unsafe fn position_and_show(hwnd: HWND) {
+    let _ = KillTimer(Some(hwnd), TIMER_DISMISS);
     let mut pt = POINT::default();
     let _ = GetCursorPos(&mut pt);
 
@@ -150,9 +149,25 @@ unsafe fn position_and_show(hwnd: HWND) {
     };
     let _ = GetMonitorInfoW(hmon, &mut mi);
 
-    let (w, h) = (360, 84);
-    let x = mi.rcWork.right - w - 24;
-    let y = mi.rcWork.bottom - h - 36;
+    let (mut dpi_x,mut dpi_y)=(96,96);
+    let _=windows::Win32::UI::HiDpi::GetDpiForMonitor(hmon,windows::Win32::UI::HiDpi::MDT_EFFECTIVE_DPI,&mut dpi_x,&mut dpi_y);
+    let scale=(dpi_x as f64/96.0).min((mi.rcWork.right-mi.rcWork.left-24).max(1) as f64/360.0).min((mi.rcWork.bottom-mi.rcWork.top-24).max(1) as f64/160.0).max(0.1);
+    POPUP_SCALE.store((scale*1000.0) as u32,Ordering::Relaxed);
+    let (w,h)=((360.0*scale).round() as i32,(160.0*scale).round() as i32);
+    // A real window region leaves the gap click-through even when the window
+    // behind the popup belongs to another process (HTTRANSPARENT alone cannot).
+    use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn,CreateEllipticRgn,CombineRgn,SetWindowRgn,RGN_OR};
+    let px=|v:f64|(v*scale).round() as i32;
+    let region=CreateRoundRectRgn(0,0,w,px(84.0),px(16.0),px(16.0));
+    let circle=CreateEllipticRgn(px(306.0),px(100.0),px(354.0),px(148.0));
+    if !region.0.is_null() && !circle.0.is_null() {
+        let combined=CombineRgn(Some(region),Some(region),Some(circle),RGN_OR);
+        if combined.0==0 || SetWindowRgn(hwnd,Some(region),true)==0 {let _=DeleteObject(region.into());}
+        // Successful SetWindowRgn transfers ownership of `region` to Windows.
+    } else if !region.0.is_null() {let _=DeleteObject(region.into());}
+    if !circle.0.is_null() {let _=DeleteObject(circle.into());}
+    let x = mi.rcWork.right - w - (12.0*scale) as i32;
+    let y = mi.rcWork.bottom - h - (12.0*scale) as i32;
 
     let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -163,6 +178,14 @@ unsafe fn position_and_show(hwnd: HWND) {
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        WM_NCHITTEST => {
+            let mut pt=POINT::default();let _=GetCursorPos(&mut pt);
+            let mut bounds=RECT::default();let _=windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd,&mut bounds);
+            let scale=POPUP_SCALE.load(Ordering::Relaxed) as f64/1000.0;
+            let x=(pt.x-bounds.left) as f64/scale;let y=(pt.y-bounds.top) as f64/scale;
+            if y>84.0 && !((x-330.0).powi(2)+(y-124.0).powi(2)<=24.0f64.powi(2)) {return LRESULT(HTTRANSPARENT as isize)}
+            DefWindowProcW(hwnd,msg,wparam,lparam)
+        }
         WM_SHOW_SHARE => {
             position_and_show(hwnd);
             LRESULT(0)
@@ -214,8 +237,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            let x = (lparam.0 & 0xffff) as i32;
-            let y = ((lparam.0 >> 16) & 0xffff) as i32;
+            let scale=POPUP_SCALE.load(Ordering::Relaxed) as f64/1000.0;
+            let x = ((lparam.0 & 0xffff) as i16 as f64/scale) as i32;
+            let y = (((lparam.0 >> 16) & 0xffff) as i16 as f64/scale) as i32;
 
             // Close button: x: 330..356, y: 6..28
             if x >= 330 && y <= 30 {
@@ -262,7 +286,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let mut rc = RECT::default();
             let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rc);
 
-            // Dark card background
+            // Clear the gap between the action bubble and its temporary mark.
+            let transparent=CreateSolidBrush(COLORREF(0));FillRect(hdc,&rc,transparent);let _=DeleteObject(transparent.into());
+            let pixel_w=rc.right;let pixel_h=rc.bottom;
+            SetMapMode(hdc,MM_ANISOTROPIC);let _ = SetWindowExtEx(hdc,360,160,None);let _ = SetViewportExtEx(hdc,pixel_w,pixel_h,None);
+            rc=RECT{left:0,top:0,right:360,bottom:84};
+            let font_name=to_wide("Segoe UI");
+            let font=CreateFontW(-13,0,0,0,500,0,0,0,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,0,PCWSTR(font_name.as_ptr()));
+            let previous_font=SelectObject(hdc,font.into());
+            // Dark action bubble above the circular Kayiver mark.
             let bg = CreateSolidBrush(COLORREF(0x001C_1818));
             let border_pen = CreatePen(PS_SOLID, 1, COLORREF(0x003A_3636));
             let old_brush = SelectObject(hdc, bg.into());
@@ -275,68 +307,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                 let is_url = matches!(state.share.payload, QuickSharePayload::Url { .. });
 
-                // Circular icon badge
-                let (cx, cy, radius) = (36, 42, 22);
-                let (circle_bg_color, border_color) = if is_url {
-                    (COLORREF(0x007A_3218), COLORREF(0x00FA_A560)) // Blue gradient fill & border in BGR
-                } else {
-                    (COLORREF(0x003A_6B12), COLORREF(0x0099_D334)) // Emerald green fill & border in BGR
-                };
-
-                let circle_brush = CreateSolidBrush(circle_bg_color);
-                let circle_pen = CreatePen(PS_SOLID, 2, border_color);
-                let prev_b = SelectObject(hdc, circle_brush.into());
-                let prev_p = SelectObject(hdc, circle_pen.into());
-                let _ = Ellipse(hdc, cx - radius, cy - radius, cx + radius, cy + radius);
-                let _ = SelectObject(hdc, prev_b);
-                let _ = SelectObject(hdc, prev_p);
-                let _ = DeleteObject(circle_brush.into());
-                let _ = DeleteObject(circle_pen.into());
-
-                // Draw vector icon inside circle
-                let white_pen = CreatePen(PS_SOLID, 2, COLORREF(0x00FF_FF_FF));
-                let old_pen_icon = SelectObject(hdc, white_pen.into());
-
-                if is_url {
-                    // Globe: outer circle + equator + central meridian
-                    let r = 11;
-                    let null_brush = windows::Win32::Graphics::Gdi::GetStockObject(windows::Win32::Graphics::Gdi::NULL_BRUSH);
-                    let old_b = SelectObject(hdc, null_brush);
-                    let _ = Ellipse(hdc, cx - r, cy - r, cx + r, cy + r);
-                    // Equator line
-                    let _ = MoveToEx(hdc, cx - r, cy, None);
-                    let _ = LineTo(hdc, cx + r, cy);
-                    // Central vertical line
-                    let _ = MoveToEx(hdc, cx, cy - r, None);
-                    let _ = LineTo(hdc, cx, cy + r);
-                    // Meridian ellipse
-                    let _ = Ellipse(hdc, cx - 5, cy - r, cx + 5, cy + r);
-                    let _ = SelectObject(hdc, old_b);
-                } else {
-                    // Folder icon
-                    let white_brush = CreateSolidBrush(COLORREF(0x00FF_FF_FF));
-                    let old_b = SelectObject(hdc, white_brush.into());
-                    let null_pen = windows::Win32::Graphics::Gdi::GetStockObject(windows::Win32::Graphics::Gdi::NULL_PEN);
-                    let _ = SelectObject(hdc, null_pen);
-
-                    // Folder tab + body
-                    let tab_pts = [
-                        POINT { x: cx - 11, y: cy - 3 },
-                        POINT { x: cx - 11, y: cy - 7 },
-                        POINT { x: cx - 3, y: cy - 7 },
-                        POINT { x: cx, y: cy - 3 },
-                    ];
-                    let _ = Polygon(hdc, &tab_pts);
-
-                    // Folder main rectangle
-                    let _ = RoundRect(hdc, cx - 11, cy - 3, cx + 12, cy + 9, 3, 3);
-
-                    let _ = SelectObject(hdc, old_b);
-                    let _ = DeleteObject(white_brush.into());
-                }
-
-                let _ = SelectObject(hdc, old_pen_icon);
-                let _ = DeleteObject(white_pen.into());
+                // Always the Kayiver brand mark, never a globe/folder mascot.
+                let (cx,cy,radius)=(330,124,24);
+                let circle_brush=CreateSolidBrush(COLORREF(0x0025_1912));
+                let circle_pen=CreatePen(PS_SOLID,1,COLORREF(0x0071_5A46));
+                let saved_brush=SelectObject(hdc,circle_brush.into());let saved_pen=SelectObject(hdc,circle_pen.into());
+                let _ = Ellipse(hdc,cx-radius,cy-radius,cx+radius,cy+radius);
+                SelectObject(hdc,saved_brush);SelectObject(hdc,saved_pen);
+                let _ = DeleteObject(circle_brush.into());let _ = DeleteObject(circle_pen.into());
+                let portal=CreatePen(PS_SOLID,2,COLORREF(0x00B4_EA5E));
+                let old_portal=SelectObject(hdc,portal.into());let _ = MoveToEx(hdc,cx-2,cy-17,None);let _ = LineTo(hdc,cx-2,cy+17);
+                SelectObject(hdc,old_portal);let _ = DeleteObject(portal.into());
+                let cursor_brush=CreateSolidBrush(COLORREF(0x00FA_F0EA));let b=SelectObject(hdc,cursor_brush.into());
+                let cursor=[POINT{x:cx+2,y:cy-9},POINT{x:cx+2,y:cy+7},POINT{x:cx+7,y:cy+3},POINT{x:cx+10,y:cy+11},POINT{x:cx+13,y:cy+9},POINT{x:cx+9,y:cy+2},POINT{x:cx+16,y:cy+2}];
+                let _ = Polygon(hdc,&cursor);SelectObject(hdc,b);let _ = DeleteObject(cursor_brush.into());
 
                 // Title and details
                 let (title_str, detail_str) = match &state.share.payload {
@@ -350,12 +334,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     }
                 };
 
-                let mut title_rc = RECT { left: 64, top: 18, right: 240, bottom: 38 };
+                let mut title_rc = RECT { left: 16, top: 18, right: 240, bottom: 38 };
                 SetTextColor(hdc, COLORREF(0x00F5_F4F4));
                 let mut title_w = to_wide(&title_str);
                 DrawTextW(hdc, &mut title_w, &mut title_rc, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
 
-                let mut detail_rc = RECT { left: 64, top: 40, right: 240, bottom: 62 };
+                let mut detail_rc = RECT { left: 16, top: 40, right: 240, bottom: 62 };
                 SetTextColor(hdc, COLORREF(0x00A0_9B98));
                 let mut detail_w = to_wide(&detail_str);
                 DrawTextW(hdc, &mut detail_w, &mut detail_rc, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
@@ -376,9 +360,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                 let btn_brush = CreateSolidBrush(btn_color);
                 let btn_pen = CreatePen(PS_SOLID, 1, btn_color);
-                let _ = SelectObject(hdc, btn_brush.into());
-                let _ = SelectObject(hdc, btn_pen.into());
+                let btn_old_b = SelectObject(hdc, btn_brush.into());
+                let btn_old_p = SelectObject(hdc, btn_pen.into());
                 let _ = RoundRect(hdc, btn_rc.left, btn_rc.top, btn_rc.right, btn_rc.bottom, 10, 10);
+                SelectObject(hdc,btn_old_b);SelectObject(hdc,btn_old_p);
                 let _ = DeleteObject(btn_brush.into());
                 let _ = DeleteObject(btn_pen.into());
 
@@ -409,6 +394,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let _ = DeleteObject(bg.into());
             let _ = DeleteObject(border_pen.into());
 
+            SelectObject(hdc,previous_font);let _ = DeleteObject(font.into());
             let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
 

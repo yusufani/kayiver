@@ -94,6 +94,8 @@ extern "C" {
     fn CGGetActiveDisplayList(max: u32, ids: *mut u32, count: *mut u32) -> i32;
     fn CGGetOnlineDisplayList(max: u32, ids: *mut u32, count: *mut u32) -> i32;
     fn CGDisplayBounds(id: u32) -> CGRect;
+    fn CGConfigureDisplayOrigin(config: *mut c_void, id: u32, x: i32, y: i32) -> i32;
+    fn CGCancelDisplayConfiguration(config: *mut c_void) -> i32;
     fn CGDisplayIsInMirrorSet(display: u32) -> u32;
     fn CGDisplayIsBuiltin(display: u32) -> u32;
     fn CGBeginDisplayConfiguration(config: *mut *mut c_void) -> i32;
@@ -203,9 +205,27 @@ const SOURCE_HID_STATE: i32 = 1; // kCGEventSourceStateHIDSystemState
 // ------------------------------------------------------------- helpers ----
 
 /// Every physical display, in global top-left-origin coordinates.
-/// macOS keeps its arrangement itself (System Settings); nothing to re-apply.
-pub fn apply_arrangement(_desired: &[Rect]) -> Result<bool> {
-    Ok(false)
+/// Apply explicit editor positions as one Quartz transaction. Device artwork
+/// and vendor/model data never participate in display matching.
+pub fn apply_arrangement(desired: &[Rect]) -> Result<bool> {
+    let ids=online_display_ids();
+    let current:Vec<_>=ids.iter().map(|&id| unsafe {cgrect_to_rect(CGDisplayBounds(id))}).collect();
+    let Some(target)=kayiver_core::layout::arranged(&current,desired) else {return Ok(false)};
+    unsafe {
+        let mut config=std::ptr::null_mut();
+        let begin=CGBeginDisplayConfiguration(&mut config);
+        anyhow::ensure!(begin==0 && !config.is_null(), "starting display arrangement failed: {begin}");
+        for (&id,rect) in ids.iter().zip(&target) {
+            let error=CGConfigureDisplayOrigin(config,id,rect.x,rect.y);
+            if error!=0 {CGCancelDisplayConfiguration(config);anyhow::bail!("display arrangement rejected: {error}");}
+        }
+        // Session scope: persisted desired coordinates remain Kayiver's config.
+        let error=CGCompleteDisplayConfiguration(config,1);
+        anyhow::ensure!(error==0,"applying display arrangement failed: {error}");
+        let applied:Vec<_>=ids.iter().map(|&id|cgrect_to_rect(CGDisplayBounds(id))).collect();
+        anyhow::ensure!(applied==target,"macOS adjusted the layout; disconnected gaps or overlaps may not be supported");
+    }
+    Ok(true)
 }
 
 /// Rescue standard windows off the locally hidden shared panel using AX.

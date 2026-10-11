@@ -1,0 +1,37 @@
+// Exercise the editor's geometry functions without touching desktop displays.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const html = fs.readFileSync(path.join(__dirname,'../apps/kayiver/src/ui/index.html'),'utf8');
+function source(name,next) {
+  const start=html.indexOf(`function ${name}(`), end=html.indexOf(next,start);
+  assert.ok(start>=0 && end>start,`missing ${name}`);
+  return html.slice(start,end);
+}
+const geometry=source('clamp','// machine-level links');
+const solve=new Function('mons','SNAP','canvas','pos',geometry+';return resolveTile;');
+const tile=(x,y,w=100,h=100)=>({x,y,w,h,el:{style:{display:''}}});
+const a=tile(0,0), b=tile(300,0);
+const resolve=solve([a,b],16,{clientWidth:1000,clientHeight:1000},()=>{});
+resolve(b); assert.equal(b.x,300,'a disconnected screen must stay disconnected');
+b.x=109;resolve(b);assert.equal(b.x,100,'a nearby edge can snap');
+b.x=117;resolve(b);assert.equal(b.x,117,'a distant edge must not attract a drop');
+b.x=0;b.y=300;resolve(b);assert.equal(b.y,300,'vertical free gaps must survive');
+const arrangement=source('peerArrangements',"document.getElementById('save').addEventListener");
+const me={...tile(50,40,200,100),machine:'unrecognized-laptop',realX:0,realY:0,realW:2000,realH:1000};
+const portrait={...tile(250,40,100,200),machine:me.machine,realX:2000,realY:0,realW:1000,realH:2000};
+const remote={...tile(600,40,300,100),machine:'unknown-brand-screen',realX:0,realY:0,realW:3000,realH:1000};
+const make=new Function('mons','machines','sharedPair',arrangement+';return peerArrangements;');
+const arrange=make([me,portrait,remote],[{name:me.machine},{name:remote.machine}],()=>null);
+assert.deepEqual(arrange(),{},'unchanged physical screens need no OS arrangement');
+portrait.x=280;
+assert.deepEqual(arrange()[me.machine][1],{x:2300,y:0,w:1000,h:2000},'free placement must retain the gap in native coordinates');
+me.x+=100;portrait.x+=100;remote.x+=100;
+assert.equal(arrange()[me.machine][1].x,2300,'viewport translation must not alter layout');
+const shadow={...remote,machine:'receiver',realW:1500,realH:500,w:300,h:100,x:me.x,y:me.y};
+const upper={...shadow,realX:0,realY:-500,realW:1500,realH:500,x:shadow.x,y:shadow.y-100};
+const shared=make([me,shadow,upper],[{name:me.machine},{name:'receiver'}],()=>({a:me,b:shadow}));
+assert.deepEqual(shared(),{},'shared aliases must use the receiver scale');
+upper.y-=20;
+assert.equal(shared().receiver[1].y,-600,'shared alias offsets must preserve native units');
+console.log('Free gaps, proximity snapping, unknown devices, portrait ratios, pan and mixed-scale shared aliases verified.');

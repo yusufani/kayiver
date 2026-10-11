@@ -40,6 +40,10 @@ sağda gelen beyaz imleç.
 
 ## Renkler
 
+Yeni cihaz tabanlı editörün ürün kuralları ve Precision/Gallery renk yönleri
+[PRODUCT-DESIGN.md](PRODUCT-DESIGN.md) içinde tanımlanır. Aşağıdaki logo renkleri
+uygulama işaretinin kimliğidir; editör vurgusu bunlarla sınırlı değildir.
+
 | Rol | Değer |
 |---|---|
 | Accent (başlangıç) | `#5eead4` (teal) |

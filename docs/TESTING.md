@@ -63,6 +63,18 @@ config dirs), so they parallelize under plain `cargo test`.
 
 ## Unit tests
 
+Editor device/placement checks (no desktop input injection):
+
+```sh
+node scripts/verify-device-layout.cjs
+node scripts/verify-cursor-preview.cjs
+```
+
+These exercise distant free drops, proximity snapping, unknown device names,
+portrait/ultrawide ratios, viewport pan, mixed-scale shared aliases and cursor
+projection. The device design browser preview was checked at desktop and 360px
+widths. Native popup placement, DPI and focus still require platform acceptance.
+
 ```sh
 cargo test            # geometry/logic unit tests (fast, no processes)
 ```
