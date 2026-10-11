@@ -357,7 +357,7 @@
   #deviceInspector dt { color:var(--muted); font-size:12px; margin-top:12px; }
   #deviceInspector dd { font-size:13px; overflow-wrap:anywhere; }
   .inspector-note { border-top:1px solid var(--line); margin-top:26px; padding-top:16px; color:var(--muted); font-size:12px; }
-  #lookSelect { background:var(--bg2); color:var(--text); font:inherit; font-size:12px; border:1px solid var(--line2); padding:8px; border-radius:8px; }
+  #lookSelect, #setTheme { background:var(--bg2); color:var(--text); font:inherit; font-size:12px; border:1px solid var(--line2); padding:8px; border-radius:8px; }
   .snap-option { display:flex; gap:7px; align-items:center; color:var(--muted); font-size:12px; white-space:nowrap; }
   footer { flex-wrap:wrap; }
   #msg { flex:1 1 180px; font-size:12px; }
@@ -417,7 +417,6 @@
     </div>
   </div>
   <div class="statusbar" id="statusbar">
-    <select id="lookSelect" aria-label="Görünüm / Appearance"><option value="precision">Precision · Blue</option><option value="gallery">Gallery · Amber</option></select>
     <div class="legend" id="legend"></div>
     <div class="stat"><span class="dot" id="hostDot"></span><span id="hostTxt">connecting…</span></div>
     <div class="stat" id="linkStat" style="display:none;gap:6px;align-items:center">
@@ -425,7 +424,6 @@
       <select id="linkSel" title="Connection path"></select>
       <button class="iconbtn" id="linkGo" title="Move the session to this address" style="font-size:13px;width:auto;padding:0 8px">switch</button>
     </div>
-    <button class="iconbtn" id="themeBtn" title="Theme" aria-label="Theme" style="font-size:15px">☾</button>
     <button class="iconbtn" id="gear" title="Settings" aria-label="Settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3"/>
@@ -460,6 +458,15 @@
   <div id="settings">
     <h2 id="settingsH2">Settings</h2>
     <div class="subttl" id="setSub">—</div>
+    <div class="srow">
+      <div class="lbl"><label for="lookSelect" id="appearanceLbl">Görünüm</label></div>
+      <select id="lookSelect"><option value="precision">Precision · Blue</option><option value="gallery">Gallery · Amber</option></select>
+    </div>
+    <div class="srow">
+      <div class="lbl"><label for="setTheme" id="themeLbl">Tema</label></div>
+      <select id="setTheme"><option value="dark" id="darkOption">Koyu</option><option value="light" id="lightOption">Açık</option></select>
+    </div>
+
     <section id="permissionsSection" style="display:none">
       <h3 id="permissionsTitle" style="margin:0;font-size:14px"></h3>
       <div id="permissionRows"></div>
@@ -625,6 +632,10 @@ function applyStaticI18n() {
   document.querySelector('#settings h2').textContent = t('settings');
   const byId = (id, txt) => { const e = document.getElementById(id); if (e) e.textContent = txt; };
   byId('langLbl', t('language'));
+  byId('appearanceLbl', lang === 'en' ? 'Appearance' : 'Görünüm');
+  byId('themeLbl', lang === 'en' ? 'Theme' : 'Tema');
+  byId('darkOption', lang === 'en' ? 'Dark' : 'Koyu');
+  byId('lightOption', lang === 'en' ? 'Light' : 'Açık');
   byId('hkShortLbl', t('hkShort'));
   byId('hkDescS', t('hkDesc'));
   byId('dwellLbl', t('dwell'));
@@ -1830,12 +1841,10 @@ document.getElementById('setModCtrl').addEventListener('change', e => saveSettin
 function applyTheme(th) {
   document.documentElement.setAttribute('data-theme', th);
   localStorage.setItem('kayiver-theme', th);
-  document.getElementById('themeBtn').textContent = th === 'dark' ? '☾' : '☀';
+  document.getElementById('setTheme').value = th;
 }
 applyTheme(localStorage.getItem('kayiver-theme') || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
-document.getElementById('themeBtn').addEventListener('click', () => {
-  applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
-});
+document.getElementById('setTheme').addEventListener('change', event => applyTheme(event.target.value));
 document.getElementById('liveBtn').addEventListener('click', () => setLive(!liveOn));
 document.getElementById('gear').addEventListener('click', openSettings);
 document.getElementById('setClose').addEventListener('click', closeSettings);
