@@ -132,6 +132,8 @@ pub struct LiveState {
     pub shared_error: Option<String>,
     /// Client: last connection failure details (None while connected).
     pub link_error: Option<String>,
+    /// Successful local recovery is a temporary notice, not a broken link.
+    control_notice: Option<(String, std::time::Instant)>,
     /// Channel into the router; present while a host is running.
     pub cmd: Option<tokio::sync::mpsc::UnboundedSender<UiCmd>>,
     /// Client: the host's editor view (StateSync payload). The client's
@@ -371,6 +373,14 @@ pub fn set_shared_error(err: Option<String>) {
 /// (which addresses were tried). None = connected / not applicable.
 pub fn set_link_error(err: Option<String>) {
     live().lock().unwrap().link_error = err;
+}
+
+pub fn set_control_notice(reason: &str) {
+    live().lock().unwrap().control_notice = Some((reason.to_owned(), std::time::Instant::now() + std::time::Duration::from_secs(6)));
+}
+
+fn current_control_notice(notice: &Option<(String, std::time::Instant)>, now: std::time::Instant) -> Option<&str> {
+    notice.as_ref().filter(|(_, expires)| now < *expires).map(|(message, _)| message.as_str())
 }
 
 pub fn url() -> String {
@@ -1113,6 +1123,7 @@ fn api_status() -> String {
         "peers": peers,
         "host_addrs": host_addrs,
         "link_error": s.link_error,
+        "control_notice": current_control_notice(&s.control_notice, std::time::Instant::now()),
         "shared": {
             "configured": s.shared_configured,
             "peer": s.shared_peer,
@@ -1235,6 +1246,19 @@ fn api_quickshare_action(body: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn successful_recovery_notice_expires_without_mutating_connection_error() {
+        let now = std::time::Instant::now();
+        let state = super::LiveState {
+            link_error: Some("connection lost".into()),
+            control_notice: Some(("active display changed".into(), now + std::time::Duration::from_secs(6))),
+            ..Default::default()
+        };
+        assert_eq!(super::current_control_notice(&state.control_notice, now), Some("active display changed"));
+        assert_eq!(super::current_control_notice(&state.control_notice, now + std::time::Duration::from_secs(6)), None);
+        assert_eq!(state.link_error.as_deref(), Some("connection lost"));
+    }
+
     use super::*;
 
     #[test]

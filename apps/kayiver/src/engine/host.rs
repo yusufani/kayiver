@@ -1383,7 +1383,11 @@ impl Router {
         if let Some(r)=self.local_screens.iter().find(|r|Some(**r)!=blocked) {
             platform::warp_cursor_settled(r.x+r.w/2,r.y+r.h/2);
         }
-        crate::ui::set_link_error(Some(reason.into()));
+        if matches!(reason, "active display changed" | "escape shortcut restored local control") {
+            crate::ui::set_control_notice(reason);
+        } else {
+            crate::ui::set_link_error(Some(reason.into()));
+        }
     }
 
     fn on_motion_frame(&mut self, frame:platform::navigation::Frame) {
