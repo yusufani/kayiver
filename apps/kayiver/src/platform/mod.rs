@@ -40,6 +40,8 @@ pub fn clamp_monitor_move(monitors: &[Rect], from: (i32, i32), to: (i32, i32)) -
 
 #[cfg(any(target_os = "windows", test))]
 mod ordered_worker;
+#[cfg(any(target_os = "windows", test))]
+mod pointer_dispatch;
 pub mod navigation;
 mod cursor_parking;
 mod source_motion;

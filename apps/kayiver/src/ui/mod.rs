@@ -571,12 +571,20 @@ fn try_app_window(url: &str) -> bool {
     // An isolated app profile prevents normal Edge sessions/extensions from
     // swallowing app-mode launches or restoring the editor off-screen.
     let profile=std::path::PathBuf::from(&local).join("kayiver").join("ui-browser");
-    let screen=crate::platform::monitors().into_iter().next().unwrap_or(kayiver_core::proto::Rect{x:0,y:0,w:1280,h:800});
+    #[cfg(not(feature="sim"))]
+    let screens=crate::platform::editor_screens();
+    #[cfg(feature="sim")]
+    let screens=crate::platform::monitors();
+    let cursor=crate::platform::cursor_pos();
+    let Some(screen)=screens.iter().find(|r|kayiver_core::layout::point_in(**r,cursor.0,cursor.1)).or(screens.first()).copied() else {
+        warn!("no visible local monitor for the layout editor");
+        return false;
+    };
     let width=(screen.w-32).clamp(600,980);let height=(screen.h-64).clamp(400,680);
     let position=format!("--window-position={},{}",screen.x+(screen.w-width)/2,screen.y+(screen.h-height)/2);
     for c in candidates {
         if Path::new(&c).exists() {
-            return std::process::Command::new(&c)
+            let launched=std::process::Command::new(&c)
                 .arg(format!("--app={url}"))
                 .arg(format!("--user-data-dir={}",profile.display()))
                 .arg("--no-first-run")
@@ -588,6 +596,16 @@ fn try_app_window(url: &str) -> bool {
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .is_ok();
+            if launched {
+                // Chromium can reuse an existing process and ignore startup
+                // position. Repair the actual editor once it becomes ready.
+                for _ in 0..20 {
+                    #[cfg(not(feature="sim"))]
+                    if crate::platform::raise_editor_if_present() { break; }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+            return launched;
         }
     }
     false
@@ -1079,9 +1097,10 @@ fn api_status() -> String {
     // Never hold the UI mutex while acquiring capture locks.
     let capture = live().lock().unwrap().capture.clone();
     let capture = capture.as_ref().map(|ctl| {
-        // Read control, navigation and native position from one capture frame.
-        // Otherwise a fast physical return can report a local cursor together
-        // with the next remote frame's forwarding flag.
+        // Native APIs may synchronize with mouse hooks. Never call them while
+        // holding the gate those hooks acquire. Logical fields remain one
+        // consistent snapshot; the native cursor is a separate diagnostic.
+        let native_cursor=crate::platform::cursor_pos();
         let _motion=ctl.motion_gate.lock().unwrap();
         serde_json::json!({
             "navigation": ({
@@ -1089,7 +1108,7 @@ fn api_status() -> String {
                 let control=match &nav.control {crate::platform::navigation::Control::Local=>"local",crate::platform::navigation::Control::Remote(_)=>"remote",crate::platform::navigation::Control::Driven(_)=>"driven",crate::platform::navigation::Control::Recovering=>"recovering"};
                 serde_json::json!({"revision":nav.topology.revision,"generation":nav.generation,"sequence":nav.sequence,"control":control,"location":nav.location,"surfaces":nav.topology.surfaces.len(),"seams":nav.topology.seams.len()})
             }),
-            "native_cursor": crate::platform::cursor_pos(),
+            "native_cursor": native_cursor,
             "bounds": ctl.bounds(),
             "blocked": *ctl.blocked.read().unwrap(),
             "forwarding": ctl.forwarding.load(std::sync::atomic::Ordering::SeqCst),
@@ -1119,6 +1138,7 @@ fn api_status() -> String {
     serde_json::json!({
         "clipboard": crate::engine::clipsync::status(),
         "version": env!("CARGO_PKG_VERSION"),
+        "input_queue":crate::engine::host::input_queue_status(),
         "editor": ({
             #[cfg(all(target_os="windows",not(feature="sim")))] {crate::platform::editor_status()}
             #[cfg(not(all(target_os="windows",not(feature="sim"))))] {serde_json::Value::Null}
@@ -1166,9 +1186,10 @@ fn cursor_snapshot(nav:&crate::platform::navigation::Navigation,native:kayiver_c
 fn api_cursor() -> String {
     let (capture,focus)={let s=live().lock().unwrap();(s.capture.clone(),s.focus.clone())};
     if let Some(ctl)=capture {
+        let (x,y)=crate::platform::cursor_pos();
         let _gate=ctl.motion_gate.lock().unwrap();
         if ctl.tablet_forwarding.load(std::sync::atomic::Ordering::SeqCst) {return serde_json::json!({"focus":"tablet","machine":"tablet","visible":true}).to_string();}
-        let (x,y)=crate::platform::cursor_pos();let nav=ctl.navigation.lock().unwrap();
+        let nav=ctl.navigation.lock().unwrap();
         return cursor_snapshot(&nav,kayiver_core::motion::Point::new(x as f64,y as f64)).to_string();
     }
     let (x,y)=crate::platform::cursor_pos();

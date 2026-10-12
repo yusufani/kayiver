@@ -87,9 +87,19 @@ enum SessionEvent {
     SharedRequest { name: String, owner: String },
     /// Anything the session reader didn't consume itself, handed to the router
     /// — this is where being DRIVEN by a peer is handled (Enter/Input/Leave).
-    Inbound { name: String, msg: Msg, connection:u64 },
+    Inbound { name: String, msg: Msg, connection:u64, queued_at:std::time::Instant },
     LayoutChanged,
     LocalMonitorsChanged,
+}
+
+static INPUT_QUEUE_COUNT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+static INPUT_QUEUE_US:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+static INPUT_QUEUE_MAX_US:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+static INPUT_QUEUE_OVER_8MS:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+pub fn input_queue_status()->serde_json::Value {
+    let n=INPUT_QUEUE_COUNT.load(Ordering::Relaxed);
+    serde_json::json!({"frames":n,"mean_us":if n==0 {0.0} else {INPUT_QUEUE_US.load(Ordering::Relaxed) as f64/n as f64},
+        "max_us":INPUT_QUEUE_MAX_US.load(Ordering::Relaxed),"over_8ms":INPUT_QUEUE_OVER_8MS.load(Ordering::Relaxed)})
 }
 
 /// "ctrl"/"alt"/"win" → left-modifier HID; anything else falls back.
@@ -1174,7 +1184,14 @@ impl Router {
                 info!("{name} asked for shared panel -> {owner}");
                 self.set_shared_owner(&owner);
             }
-            SessionEvent::Inbound { name, msg, connection } => {
+            SessionEvent::Inbound { name, msg, connection, queued_at } => {
+                if matches!(msg,Msg::CursorFrame {..}) {
+                    let us=queued_at.elapsed().as_micros().min(u64::MAX as u128) as u64;
+                    INPUT_QUEUE_COUNT.fetch_add(1,Ordering::Relaxed);
+                    INPUT_QUEUE_US.fetch_add(us,Ordering::Relaxed);
+                    INPUT_QUEUE_MAX_US.fetch_max(us,Ordering::Relaxed);
+                    if us>8000 {INPUT_QUEUE_OVER_8MS.fetch_add(1,Ordering::Relaxed);}
+                }
                 let current=self.sessions.lock().unwrap().get(&name).is_some_and(|(id,_)|*id==connection);
                 if current {self.on_inbound(name,msg);}
             },
@@ -2037,7 +2054,7 @@ async fn run_session(
                 // Everything else is router business — notably Enter/Input/
                 // Leave, i.e. this peer driving US.
                 other => {
-                    let _ = evt_tx.send(SessionEvent::Inbound { name: name.clone(), msg: other,connection:session_id });
+                    let _ = evt_tx.send(SessionEvent::Inbound { name: name.clone(), msg: other,connection:session_id,queued_at:std::time::Instant::now() });
                 }
             }
         }

@@ -513,38 +513,10 @@ pub fn init() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
-    // Attach this thread to the session's *input* desktop. Without this, a
-    // kayiver launched from a service / scheduled task runs on a
-    // non-interactive desktop and its SendInput never reaches the visible
-    // cursor — even though everything reports success. The client injects on
-    // this same thread (single-threaded tokio runtime), so binding it here is
-    // what makes remote-launched kayiver actually move the cursor.
-    attach_input_desktop();
+    // The launcher places the engine/editor on winsta0\default. Only the
+    // windowless injection worker follows the input desktop. Binding this
+    // GUI thread to Winlogon during UAC would strand browser/notice windows.
     super::quickshare_windows::init();
-}
-
-/// (Re)bind the calling thread to the current input desktop. The input
-/// desktop is not stable: a lock screen or UAC prompt switches it, and a
-/// thread bound to the old handle keeps "succeeding" while its SendInput
-/// reaches nothing visible. Called at startup and again whenever a warp
-/// readback shows the cursor didn't actually move. GENERIC_ALL = 0x10000000.
-fn attach_input_desktop() -> bool {
-    use windows::Win32::System::StationsAndDesktops::{
-        OpenInputDesktop, SetThreadDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS,
-    };
-    unsafe {
-        match OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_ACCESS_FLAGS(0x1000_0000)) {
-            Ok(hdesk) => {
-                let ok = SetThreadDesktop(hdesk).is_ok();
-                tracing::info!("input-desktop attach: opened=true set_thread_desktop={ok}");
-                ok
-            }
-            Err(e) => {
-                tracing::info!("input-desktop attach: OpenInputDesktop failed: {e:?}");
-                false
-            }
-        }
-    }
 }
 
 /// Move every app window that is stranded on `blocked` — this machine's copy
@@ -942,6 +914,12 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         return CallNextHookEx(None, code, wparam, lparam);
     }
 
+    // SetCursorPos notifications need not carry the injected flag. While
+    // Driven we swallow physical/warp echoes without waiting on capture:
+    // a diagnostic or handoff may own that gate while querying native state.
+    // Recheck under the gate below to cover a concurrent Local -> Driven.
+    if state.ctl.driven.load(Ordering::SeqCst) {return LRESULT(1);}
+
     let _motion=state.ctl.motion_gate.lock().unwrap();
     let forwarding = state.ctl.forwarding.load(Ordering::SeqCst);
     if msg==WM_MOUSEMOVE {
@@ -1101,9 +1079,11 @@ struct NativeWorker { desktop: InjectionDesktop, native: NativeInjector }
 impl NativeWorker {
     fn apply(&mut self, command: InjectionCommand) -> bool {
         let started = Instant::now();
+        let previous=self.desktop.attached;
         let attached = self.desktop.follow_input();
         INJECTION_METRICS.desktop_us.fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
         if !attached { return false; }
+        if self.desktop.attached!=previous {self.native.pointer.invalidate();}
         let started = Instant::now();
         let result = match command {
             InjectionCommand::Move {x,y,dx,dy} => self.native.mouse_to(x,y,dx,dy),
@@ -1154,6 +1134,9 @@ struct InjectionMetrics {
     desktop_us: std::sync::atomic::AtomicU64,
     native_us: std::sync::atomic::AtomicU64,
     position_fallbacks: std::sync::atomic::AtomicU64,
+    sendinput_us: std::sync::atomic::AtomicU64,
+    readback_us: std::sync::atomic::AtomicU64,
+    direct_moves: std::sync::atomic::AtomicU64,
 }
 static INJECTION_METRICS: InjectionMetrics = InjectionMetrics {
     count: std::sync::atomic::AtomicU64::new(0), failed: std::sync::atomic::AtomicU64::new(0),
@@ -1162,6 +1145,9 @@ static INJECTION_METRICS: InjectionMetrics = InjectionMetrics {
     desktop_us: std::sync::atomic::AtomicU64::new(0),
     native_us: std::sync::atomic::AtomicU64::new(0),
     position_fallbacks: std::sync::atomic::AtomicU64::new(0),
+    sendinput_us: std::sync::atomic::AtomicU64::new(0),
+    readback_us: std::sync::atomic::AtomicU64::new(0),
+    direct_moves: std::sync::atomic::AtomicU64::new(0),
 };
 impl InjectionMetrics {
     fn record(&self, duration: Duration, success: bool) {
@@ -1176,6 +1162,9 @@ impl InjectionMetrics {
 pub fn injection_status() -> serde_json::Value {
     let count = INJECTION_METRICS.count.load(Ordering::Relaxed);
     serde_json::json!({"commands":count,"failed":INJECTION_METRICS.failed.load(Ordering::Relaxed),
+        "direct_moves":INJECTION_METRICS.direct_moves.load(Ordering::Relaxed),
+        "sendinput_mean_us": if count==0 {0.0} else {INJECTION_METRICS.sendinput_us.load(Ordering::Relaxed) as f64/count as f64},
+        "readback_mean_us": if count==0 {0.0} else {INJECTION_METRICS.readback_us.load(Ordering::Relaxed) as f64/count as f64},
         "mean_us": if count == 0 {0.0} else {INJECTION_METRICS.total_us.load(Ordering::Relaxed) as f64 / count as f64},
         "max_us":INJECTION_METRICS.max_us.load(Ordering::Relaxed),
         "over_2ms":INJECTION_METRICS.over_2ms.load(Ordering::Relaxed),
@@ -1261,6 +1250,7 @@ fn absolute_mouse_axis(pixel: i32, origin: i32, extent: i32) -> i32 {
 }
 
 struct NativeInjector {
+    pointer:super::pointer_dispatch::PointerDispatch,
     down_keys: Vec<u16>,
     down_buttons: Vec<MouseButton>,
     /// Last time an injection problem was logged, to keep the log readable
@@ -1273,6 +1263,7 @@ struct NativeInjector {
 impl NativeInjector {
     pub fn new() -> Result<Self> {
         Ok(NativeInjector {
+            pointer:Default::default(),
             down_keys: Vec::new(),
             down_buttons: Vec::new(),
             last_issue_log: None,
@@ -1345,20 +1336,25 @@ impl NativeInjector {
     pub fn mouse_to(&mut self, x: i32, y: i32, dx: i32, dy: i32) -> bool {
         self.wake_display();
         let absolute = dx == 0 && dy == 0;
+        let now=Instant::now();
+        let notify_native=!absolute || self.pointer.needs_native(now) || !self.down_buttons.is_empty();
+        let started=Instant::now();
         let sent = if !absolute {
             self.send_mouse(MOUSEEVENTF_MOVE, dx, dy, 0)
-        } else {
+        } else if notify_native {
             // Native pointer input restores Terminal's hidden cursor without
             // applying pointer acceleration a second time.
             let bounds = desktop_bounds();
             self.send_mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
                 absolute_mouse_axis(x, bounds.x, bounds.w),
                 absolute_mouse_axis(y, bounds.y, bounds.h), 0)
-        };
+        } else {false};
+        INJECTION_METRICS.sendinput_us.fetch_add(started.elapsed().as_micros() as u64,Ordering::Relaxed);
+        let started=Instant::now();
         unsafe {
-            // Absolute input already pins the cursor. Avoid a second native
-            // warp unless readback proves it is needed; retain exact warps
-            // for relative/raw-input events and failed SendInput calls.
+            // Steady absolute motion uses exact placement. Native pointer
+            // events restore Terminal after typing/idle and remain enabled
+            // for every drag/raw-input movement. No position is discarded.
             if !absolute || !sent { if SetCursorPos(x,y).is_err() { return false; } }
             let mut actual = POINT::default();
             if GetCursorPos(&mut actual).is_err() { return false; }
@@ -1375,6 +1371,9 @@ impl NativeInjector {
             // second time solely to reset the physical capture reference.
             rebase_native_capture_at((actual.x,actual.y));
         }
+        INJECTION_METRICS.readback_us.fetch_add(started.elapsed().as_micros() as u64,Ordering::Relaxed);
+        self.pointer.applied(now,sent);
+        if !notify_native {INJECTION_METRICS.direct_moves.fetch_add(1,Ordering::Relaxed);}
         true
     }
 
@@ -1387,6 +1386,7 @@ impl NativeInjector {
     }
 
     pub fn button(&mut self, b: MouseButton, pressed: bool) {
+        self.pointer.invalidate();
         if pressed {
             self.wake_display();
             if !self.down_buttons.contains(&b) {
@@ -1409,6 +1409,7 @@ impl NativeInjector {
     }
 
     pub fn wheel(&mut self, dx: i32, dy: i32) {
+        self.pointer.invalidate();
         if dy != 0 {
             self.send_mouse(MOUSEEVENTF_WHEEL, 0, 0, dy);
         }
@@ -1418,6 +1419,7 @@ impl NativeInjector {
     }
 
     pub fn key(&mut self, hid: u16, pressed: bool) {
+        self.pointer.invalidate();
         let Some(vk) = keymap::hid_to_native(hid) else { return };
         if pressed {
             self.wake_display();
@@ -1453,6 +1455,7 @@ impl NativeInjector {
     }
 
     pub fn release_all(&mut self) {
+        self.pointer.invalidate();
         for hid in std::mem::take(&mut self.down_keys) {
             self.key(hid, false);
         }
@@ -1602,6 +1605,7 @@ pub fn launch_editor_in_user_session() -> Result<()> {
         CreateProcessAsUserW, CREATE_UNICODE_ENVIRONMENT, NORMAL_PRIORITY_CLASS,
         PROCESS_INFORMATION, STARTUPINFOW,
     };
+    if raise_editor_if_present() { return Ok(()); }
     let exe = std::env::current_exe()?;
     unsafe {
         let session = WTSGetActiveConsoleSessionId();
@@ -1658,7 +1662,8 @@ pub fn clipboard_seq() -> u64 {
 /// Find only Kayiver editor windows, never expose other application titles.
 fn editor_window() -> Option<windows::Win32::Foundation::HWND> {
     use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows,GetClassNameW,GetWindowTextW};
+    use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW,GetWindowTextW};
+    use windows::Win32::System::StationsAndDesktops::{OpenDesktopW,EnumDesktopWindows,CloseDesktop,DESKTOP_CONTROL_FLAGS,DESKTOP_READOBJECTS};
     unsafe extern "system" fn each(hwnd:HWND,data:LPARAM)->windows::core::BOOL {
         let mut class=[0u16;64];let n=GetClassNameW(hwnd,&mut class);
         if !String::from_utf16_lossy(&class[..n.max(0) as usize]).starts_with("Chrome_WidgetWin_") {return true.into();}
@@ -1668,7 +1673,22 @@ fn editor_window() -> Option<windows::Win32::Foundation::HWND> {
         }
         true.into()
     }
-    let mut found=None;unsafe{let _=EnumWindows(Some(each),LPARAM(&mut found as *mut Option<HWND> as isize));}found
+    let mut found=None;
+    unsafe {
+        // HTTP requests can run on a thread created while a secure desktop
+        // was active. The editor always belongs to Default, not that thread.
+        let desktop=OpenDesktopW(windows::core::w!("default"),DESKTOP_CONTROL_FLAGS(0),false,DESKTOP_READOBJECTS.0).ok()?;
+        let _=EnumDesktopWindows(Some(desktop),Some(each),LPARAM(&mut found as *mut Option<HWND> as isize));
+        let _=CloseDesktop(desktop);
+    }
+    found
+}
+pub fn editor_screens() -> Vec<Rect> {
+    let cfg=kayiver_core::config::Config::load_or_init().ok();
+    let blocked=cfg.as_ref().and_then(|c| if c.shared_monitor.last_owner.as_deref().is_some_and(|o|o!=c.name) {
+        super::resolve_shared_local(&c.shared_monitor).map(|(_,r)|r)
+    } else {None});
+    monitors().into_iter().filter(|r|blocked.is_none_or(|b|!rects_overlap_mostly(*r,b))).collect()
 }
 pub fn editor_status()->serde_json::Value {
     use windows::Win32::UI::WindowsAndMessaging::{IsWindowVisible,IsIconic,GetWindowRect};
@@ -1679,9 +1699,7 @@ pub fn editor_status()->serde_json::Value {
 pub fn raise_editor_if_present()->bool {
     use windows::Win32::UI::WindowsAndMessaging::{ShowWindow,SetForegroundWindow,IsIconic,GetWindowRect,SetWindowPos,SW_RESTORE,SW_SHOW,SWP_NOZORDER,SWP_NOACTIVATE};
     let Some(hwnd)=editor_window() else {return false;};
-    let cfg=kayiver_core::config::Config::load_or_init().ok();
-    let blocked=cfg.as_ref().and_then(|c|if c.shared_monitor.last_owner.as_deref().is_some_and(|owner|owner!=c.name) {c.shared_monitor.local_rect}else{None});
-    let screens:Vec<_>=monitors().into_iter().filter(|r|Some(*r)!=blocked).collect();
+    let screens=editor_screens();
     unsafe {
         let _=ShowWindow(hwnd,if IsIconic(hwnd).as_bool(){SW_RESTORE}else{SW_SHOW});
         let mut r=windows::Win32::Foundation::RECT::default();
