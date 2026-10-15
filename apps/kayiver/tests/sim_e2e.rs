@@ -1969,3 +1969,20 @@ fn slow_file_disk_does_not_block_motion_or_corrupt_transfer() {
     wait_until("accepted file completes",Duration::from_secs(8),||client.ctl(serde_json::json!({"op":"quickshare_state"}))["status"]=="done");
     assert_eq!(std::fs::read(client.cfg_dir.join("test-downloads/credit-fixture.bin")).unwrap(),bytes);
 }
+
+#[test]
+fn accepting_a_file_after_disconnect_reports_failure() {
+    let (mut host, mut client) = desk("file-accept-offline", 8040);
+    give_panel_to_client(&mut host);
+    let source = host.cfg_dir.join("offline-fixture.bin");
+    std::fs::write(&source, b"quick share fixture").unwrap();
+    host.ctl(serde_json::json!({"op":"set_clipboard_text","text":source.to_str().unwrap()}));
+    std::thread::sleep(Duration::from_millis(250));
+    cross_diagonally(&mut host, &mut client);
+    wait_until("file offer arrives", Duration::from_secs(3), || !client.ctl(serde_json::json!({"op":"quickshare_state"})).is_null());
+    drop(host);
+    wait_until("peer disconnect is processed", Duration::from_secs(5), || client.log_text().contains("client disconnected: simhost"));
+    assert_eq!(client.ctl(serde_json::json!({"op":"quickshare_accept"}))["ok"], true);
+    wait_until("failed accept leaves a terminal error", Duration::from_secs(3), || client.ctl(serde_json::json!({"op":"quickshare_state"}))["status"] == "error");
+    assert!(!client.cfg_dir.join("test-downloads/offline-fixture.bin").exists());
+}

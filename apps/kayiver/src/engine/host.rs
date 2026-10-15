@@ -362,17 +362,28 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
                 Some(crate::ui::UiCmd::QuickShareAccept { peer, id }) => {
                     info!("sending QuickShareAccept #{id} to {peer}");
                     let mut accepted=false;
+                    let mut failure = "Aktarım başlatılamadı; bağlantıyı kontrol edip yeniden kopyalayın.".to_string();
                     if let Some(qs)=crate::ui::get_quick_share() {
                         if qs.id==id && qs.peer==peer {
                             if let kayiver_core::proto::QuickSharePayload::File {name,size,..}=&qs.payload {
                                 if let Some(scope)=router.sessions.lock().unwrap().get(&peer).map(|(session,_)|*session) {
-                                    accepted=crate::engine::quickshare::engine().prepare_inbound_transfer(&peer,scope,id,name,*size).is_ok();
+                                    match crate::engine::quickshare::engine().prepare_inbound_transfer(&peer,scope,id,name,*size) {
+                                        Ok(()) => accepted = true,
+                                        Err(error) => failure = error.to_string(),
+                                    }
                                 }
                             }
                         }
                     }
-                    if !accepted {continue;}
-                    router.send_to(&peer, Msg::QuickShareAccept { id });
+                    if !accepted {
+                        crate::ui::complete_quick_share_file(&peer,id,false,Some(failure));
+                        continue;
+                    }
+                    let sent = router.sessions.lock().unwrap().get(&peer)
+                        .is_some_and(|(_, tx)| tx.send(Msg::QuickShareAccept { id }).is_ok());
+                    if !sent {
+                        crate::ui::complete_quick_share_file(&peer,id,false,Some("Bağlantı kesildi. Yeniden kopyalayıp deneyin.".into()));
+                    }
                 }
                 Some(crate::ui::UiCmd::QuickShareDismiss) => {
                     crate::ui::dismiss_quick_share();
@@ -1192,6 +1203,12 @@ impl Router {
                 // A replacement may have connected while this event waited
                 // in the router queue. Do not tear its control state down.
                 if self.session_exists(&name) { return; }
+                if let Some(share) = crate::ui::get_quick_share() {
+                    if share.peer == name && share.status == "pending" {
+                        crate::ui::complete_quick_share_file(&name, share.id, false,
+                            Some("Bağlantı kesildi. Yeniden kopyalayıp deneyin.".into()));
+                    }
+                }
                 self.motion_receivers.remove(&name);
                 self.monitor_identities.remove(&name);
                 info!("client disconnected: {name}");

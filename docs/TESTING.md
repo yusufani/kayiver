@@ -118,6 +118,19 @@ pointer acceleration or real application drag behavior. Perform native desktop,
 taskbar, rescue, startup/reopen, and source-mouse acceptance separately on both
 platforms. Secure desktop and raw-input games are separate platform gates.
 
+Windows Quick Share regressions: run the native test binary with filter
+`quickshare_windows` and `--test-threads=1` in the signed-in console session.
+The popup lifecycle test creates only its own window and checks that showing
+it preserves foreground focus, fits the monitor work area, leaves the gap
+click-through, hides on dismissal, and leaks no GDI objects over 300 paints.
+State tests cover duplicate/stale offers and hover-paused offer/completion
+expiry. Set `KAYIVER_POPUP_RENDER_DIR` to export synthetic GDI fixtures for
+file, URL, receiving, success, error and long names at 100%, 125% and 200%.
+These are generated render fixtures, not desktop screenshots or proof of
+physical copy/crossing smoothness. The SSH service session is insufficient
+for window visibility/focus acceptance. Simulation regressions also cover
+accepting a file after disconnect and receiving a file during slow disk I/O.
+
 Device presentation regression: exercise 320×568, 480×640 and 957×664
 windows with long adapter labels. Header controls must wrap without horizontal
 page overflow; the narrow inspector must retain all fields through page scroll.
