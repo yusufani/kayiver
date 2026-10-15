@@ -150,6 +150,16 @@ impl Topology {
     }
     /// Each native report stays ordered. Never sum direction reversals before this call.
     pub fn advance(&self, at: &Location, delta: Point) -> Option<Step> {
+        self.advance_with_barrier(at, delta, 0.0)
+    }
+
+    /// Advance with an optional corner deadzone (`corner_barrier` pixels) on cross-machine seams.
+    pub fn advance_with_barrier(
+        &self,
+        at: &Location,
+        delta: Point,
+        corner_barrier: f64,
+    ) -> Option<Step> {
         if !at.point.x.is_finite()
             || !at.point.y.is_finite()
             || !delta.x.is_finite()
@@ -162,6 +172,11 @@ impl Topology {
         let mut d = delta;
         let mut path = vec![at.surface.clone()];
         let mut wall = false;
+        let barrier = if corner_barrier.is_finite() && corner_barrier > 0.0 {
+            corner_barrier
+        } else {
+            0.0
+        };
         for _ in 0..256 {
             let rect = self.surface(&at.surface)?.rect;
             if rect.w <= 0
@@ -196,7 +211,7 @@ impl Topology {
             at.point.y += d.y * t;
             let Some(edge) = hit else {
                 return Some(Step {
-                    local_delta: Point::new(at.point.x-entry.x, at.point.y-entry.y),
+                    local_delta: Point::new(at.point.x - entry.x, at.point.y - entry.y),
                     location: at,
                     path,
                     wall,
@@ -215,7 +230,21 @@ impl Topology {
                     s.from == at.surface && s.edge == edge && along >= s.start && along < s.end
                 })
                 .collect();
-            if candidates.len() == 1 {
+            let in_corner_deadzone = if candidates.len() == 1 && barrier > 0.0 {
+                let s = candidates[0];
+                let cross_machine = self.surface(&s.from).map(|a| &a.machine)
+                    != self.surface(&s.to).map(|b| &b.machine);
+                let (edge_lo, edge_hi) = match edge {
+                    Edge::Left | Edge::Right => (rect.y as f64, rect.bottom() as f64),
+                    _ => (rect.x as f64, rect.right() as f64),
+                };
+                cross_machine
+                    && (edge_hi - edge_lo) > barrier * 2.0
+                    && (along < edge_lo + barrier || along >= edge_hi - barrier)
+            } else {
+                false
+            };
+            if candidates.len() == 1 && !in_corner_deadzone {
                 let s = candidates[0];
                 let target = self.surface(&s.to)?.rect;
                 let ratio = (along - s.start) / (s.end - s.start);
@@ -246,7 +275,7 @@ impl Topology {
             if d.x == 0.0 && d.y == 0.0 {
                 at.point = interior(self.surface(&at.surface)?.rect, at.point);
                 return Some(Step {
-                    local_delta: Point::new(at.point.x-entry.x, at.point.y-entry.y),
+                    local_delta: Point::new(at.point.x - entry.x, at.point.y - entry.y),
                     location: at,
                     path,
                     wall,
@@ -349,6 +378,25 @@ mod tests {
         assert!(a.wall);
         let a = t.advance(&a.location, Point::new(1.0, 0.0)).unwrap();
         assert!((a.location.point.x - 1.0).abs() < 1e-5);
+    }
+    #[test]
+    fn corner_barrier_blocks_corner_crossings_and_allows_middle() {
+        let t = desk();
+        // Top-right corner within 32px deadzone stays on A
+        let top_corner = t.locate("mac", Point::new(2550.0, 12.0)).unwrap();
+        let step_top = t.advance_with_barrier(&top_corner, Point::new(50.0, 0.0), 32.0).unwrap();
+        assert!(step_top.wall);
+        assert_eq!(step_top.location.surface, "A");
+        // Bottom-right corner within 32px deadzone stays on A
+        let bot_corner = t.locate("mac", Point::new(2550.0, 1430.0)).unwrap();
+        let step_bot = t.advance_with_barrier(&bot_corner, Point::new(50.0, 0.0), 32.0).unwrap();
+        assert!(step_bot.wall);
+        assert_eq!(step_bot.location.surface, "A");
+        // Outside the 32px deadzone crosses normally to D
+        let mid = t.locate("mac", Point::new(2550.0, 700.0)).unwrap();
+        let step_mid = t.advance_with_barrier(&mid, Point::new(50.0, 0.0), 32.0).unwrap();
+        assert!(!step_mid.wall);
+        assert_eq!(step_mid.location.surface, "D");
     }
     #[test]
     fn stale_and_duplicate_frames_are_rejected() {

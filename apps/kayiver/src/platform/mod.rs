@@ -71,6 +71,10 @@ pub struct CaptureCtl {
     pub tablet_edge: RwLock<Option<Edge>>,
     /// macOS host: remap Mac modifiers while a Windows peer has focus.
     pub mac_shortcuts: AtomicBool,
+    /// Lock cursor to local screen when a fullscreen app is active.
+    pub fullscreen_lock: AtomicBool,
+    /// Corner deadzone size in pixels along cross-machine portal edges.
+    pub corner_barrier_px: std::sync::atomic::AtomicU32,
     /// Target LEFT-hid for (⌃, ⌥, ⌘) on Windows peers (right = left+4).
     pub win_mods: RwLock<(u16, u16, u16)>,
     bounds: RwLock<Rect>,
@@ -98,6 +102,8 @@ impl CaptureCtl {
             blocked: RwLock::new(None),
             tablet_edge: RwLock::new(None),
             mac_shortcuts: AtomicBool::new(true),
+            fullscreen_lock: AtomicBool::new(false),
+            corner_barrier_px: std::sync::atomic::AtomicU32::new(0),
             win_mods: RwLock::new((0xE0, 0xE3, 0xE0)), // ⌃→Ctrl ⌥→Win ⌘→Ctrl
             bounds: RwLock::new(bounds),
         }
@@ -427,4 +433,20 @@ pub fn wait_for_gui_permissions() -> anyhow::Result<()> {
     }
     #[cfg(feature = "sim")]
     { ensure_permissions() }
+}
+
+/// True if the active foreground application on this machine is in fullscreen mode.
+pub fn is_fullscreen_active() -> bool {
+    #[cfg(all(target_os = "macos", not(feature = "sim")))]
+    {
+        window_rescue_macos::is_fullscreen_active()
+    }
+    #[cfg(all(target_os = "windows", not(feature = "sim")))]
+    {
+        windows::is_fullscreen_active()
+    }
+    #[cfg(any(feature = "sim", not(any(target_os = "macos", target_os = "windows"))))]
+    {
+        false
+    }
 }

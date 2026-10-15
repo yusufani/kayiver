@@ -112,3 +112,73 @@ pub fn rescue(blocked: Rect) -> usize {
         moved
     })
 }
+
+/// True when the frontmost macOS application has a fullscreen window.
+pub fn is_fullscreen_active() -> bool {
+    if !unsafe { AXIsProcessTrusted() } {
+        return false;
+    }
+    let monitors = super::macos::monitors();
+    autoreleasepool(|_| unsafe {
+        let Some(front) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
+            return false;
+        };
+        let pid = front.processIdentifier();
+        if pid <= 0 || pid == std::process::id() as i32 {
+            return false;
+        }
+        let app = Owned(AXUIElementCreateApplication(pid));
+        if app.0.is_null() {
+            return false;
+        }
+        AXUIElementSetMessagingTimeout(app.0, 0.1);
+        let focused = Owned::string(b"AXFocusedWindow\0");
+        let windows = Owned::string(b"AXWindows\0");
+        let fullscreen = Owned::string(b"AXFullScreen\0");
+        let position = Owned::string(b"AXPosition\0");
+        let size = Owned::string(b"AXSize\0");
+
+        let check_win = |win: Ref| -> bool {
+            if win.is_null() {
+                return false;
+            }
+            if is_true(win, &fullscreen) {
+                return true;
+            }
+            let Some(p) = geometry::<Point>(win, &position, 1) else {
+                return false;
+            };
+            let Some(s) = geometry::<Size>(win, &size, 2) else {
+                return false;
+            };
+            if !p.x.is_finite() || !p.y.is_finite() || !s.w.is_finite() || !s.h.is_finite() {
+                return false;
+            }
+            let r = Rect {
+                x: p.x.round() as i32,
+                y: p.y.round() as i32,
+                w: s.w.round() as i32,
+                h: s.h.round() as i32,
+            };
+            monitors.iter().any(|m| {
+                r.x <= m.x && r.y <= m.y && r.right() >= m.right() && r.bottom() >= m.bottom()
+            })
+        };
+
+        if let Some(win) = attribute(app.0, &focused) {
+            if check_win(win.0) {
+                return true;
+            }
+        }
+        if let Some(list) = attribute(app.0, &windows) {
+            if CFGetTypeID(list.0) == CFArrayGetTypeID() {
+                for i in 0..CFArrayGetCount(list.0) {
+                    if check_win(CFArrayGetValueAtIndex(list.0, i)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    })
+}

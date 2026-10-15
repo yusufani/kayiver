@@ -890,6 +890,28 @@ fn a_shared_entry_after_disconnect_does_not_freeze_capture() {
 }
 
 #[test]
+fn accepted_reconnection_clears_connection_lost_after_forwarding() {
+    let (mut host, mut client) = desk("linkrecovery", 27920);
+    give_panel_to_client(&mut host);
+    host.ctl(serde_json::json!({"op":"warp", "x":2400, "y":700}));
+    std::thread::sleep(Duration::from_millis(40));
+    host.ctl(serde_json::json!({"op":"warp", "x":2568, "y":700}));
+    wait_until("host forwards to peer", Duration::from_secs(5), || {
+        client.state()["driven"] == true && host.state()["forwarding"] == true
+    });
+    let dir = client.cfg_dir.clone();
+    drop(client);
+    wait_until("disconnect reports lost connection", Duration::from_secs(5), || {
+        host.ctl(serde_json::json!({"op":"status"}))["link_error"] == "connection lost"
+    });
+    let _client = Machine::spawn_in("client", dir, CLIENT_MONS, 27922);
+    wait_until("accepted reconnection clears old error", Duration::from_secs(20), || {
+        let status = host.ctl(serde_json::json!({"op":"status"}));
+        status["peers"]["simwin"]["connected"] == true && status["link_error"].is_null()
+    });
+}
+
+#[test]
 fn return_preserves_motion_still_in_the_native_capture_queue() {
     let (mut host, mut client) = primary_windows_desk("capturetail", 27540);
     host.ctl(serde_json::json!({"op":"input_move", "dx":0, "dy":300}));

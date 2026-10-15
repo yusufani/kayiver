@@ -85,5 +85,6 @@ pub fn drag_url() -> Option<String> { None }
 pub fn open_url(_url: &str) {}
 pub fn reveal_path(_path: &str) {}
 pub fn get_clipboard_file() -> Option<String> { None }
+pub fn get_clipboard_files() -> Vec<String> { Vec::new() }
 
 pub fn clipboard_seq() -> u64 { 0 }

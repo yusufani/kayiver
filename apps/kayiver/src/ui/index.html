@@ -486,6 +486,20 @@
       <label class="switch"><input type="checkbox" id="setHotkey"><span class="slider"></span></label>
     </div>
     <div class="srow">
+      <div class="lbl"><b id="cornerBarrierLbl">Köşe bariyeri (Deadzone)</b><small id="cornerBarrierDescS">pencere kapatırken veya köşe menülerinde yanlışlıkla ekran geçişini önle</small></div>
+      <select id="setCornerBarrier" style="background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font:inherit;font-size:13px;cursor:pointer">
+        <option value="0" id="cbOffOpt">Kapalı (0 px)</option>
+        <option value="24">24 px</option>
+        <option value="32">32 px</option>
+        <option value="48">48 px</option>
+        <option value="64">64 px</option>
+      </select>
+    </div>
+    <div class="srow">
+      <div class="lbl"><b id="fsLockLbl">Tam ekran kilidi</b><small id="fsLockDescS">tam ekran oyun veya uygulama açıkken imlecin diğer bilgisayara geçmesini engelle</small></div>
+      <label class="switch"><input type="checkbox" id="setFsLock"><span class="slider"></span></label>
+    </div>
+    <div class="srow">
       <div class="lbl"><b id="autostartLbl">Girişte başlat</b><small id="autostartDescS">oturum açılınca kayıver kendiliğinden çalışsın</small></div>
       <label class="switch"><input type="checkbox" id="setAutostart"><span class="slider"></span></label>
     </div>
@@ -638,6 +652,11 @@ function applyStaticI18n() {
   byId('lightOption', lang === 'en' ? 'Light' : 'Açık');
   byId('hkShortLbl', t('hkShort'));
   byId('hkDescS', t('hkDesc'));
+  byId('cornerBarrierLbl', lang === 'en' ? 'Corner barrier (deadzone)' : 'Köşe bariyeri (Deadzone)');
+  byId('cornerBarrierDescS', lang === 'en' ? 'prevent accidental crossings at window close buttons or hot corners' : 'pencere kapatırken veya köşe menülerinde yanlışlıkla ekran geçişini önle');
+  byId('cbOffOpt', lang === 'en' ? 'Off (0 px)' : 'Kapalı (0 px)');
+  byId('fsLockLbl', lang === 'en' ? 'Fullscreen lock' : 'Tam ekran kilidi');
+  byId('fsLockDescS', lang === 'en' ? 'keep cursor on this screen while a fullscreen app or game is active' : 'tam ekran oyun veya uygulama açıkken imlecin diğer bilgisayara geçmesini engelle');
   byId('dwellLbl', t('dwell'));
   byId('dwellDescS', t('dwellDesc'));
   document.querySelectorAll('#setDwell option').forEach(o => {
@@ -1481,39 +1500,132 @@ function renderAddTile(open) {
   addTile.style.display = 'flex';
   addTile.style.flexDirection = 'column';
   addTile.style.alignItems = 'stretch';
-  addTile.style.width = '292px';
+  addTile.style.width = '320px';
   addTile.style.padding = '14px';
-  addTile.style.gap = '8px';
+  addTile.style.gap = '10px';
   addTile.style.background = 'var(--panel)';
   addTile.style.border = '1px solid var(--line2)';
   addTile.style.boxShadow = 'var(--shadow)';
   addTile.style.cursor = 'default';
   addTile.onclick = null;
   addTile.innerHTML = '';
+
+  // --- Section 1: Zero-Terminal PC Pairing (Host PIN / Client Join) ---
+  const pcHdr = document.createElement('div');
+  pcHdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;';
+  const pcTitle = document.createElement('div');
+  pcTitle.textContent = lang === 'en' ? 'Pair Computer (No Terminal)' : 'Bilgisayar Eşleştir (Terminalsiz)';
+  pcTitle.style.cssText = 'font-size:12.5px;font-weight:750;color:var(--text);';
+  const close = document.createElement('button');
+  close.className = 'dock-btn'; close.textContent = '✕'; close.style.padding = '4px 8px';
+  close.onclick = () => renderAddTile(false);
+  pcHdr.append(pcTitle, close);
+
+  const pinBox = document.createElement('div');
+  pinBox.style.cssText = 'display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:8px;background:var(--bg2);border:1px solid var(--line);';
+  const startPairBtn = document.createElement('button');
+  startPairBtn.className = 'dock-btn';
+  startPairBtn.textContent = lang === 'en' ? 'Generate 6-Digit PIN (Host)' : '6 Haneli PIN Oluştur (Ana Makine)';
+  startPairBtn.style.cssText = 'width:100%;justify-content:center;padding:7px 10px;';
+  const pinStatus = document.createElement('div');
+  pinStatus.style.cssText = 'font-size:11.5px;color:var(--muted);line-height:1.45;display:none;';
+  startPairBtn.onclick = async () => {
+    startPairBtn.disabled = true;
+    try {
+      const r = await fetch('/api/pair/start', { method: 'POST' });
+      const d = await r.json();
+      pinStatus.style.display = 'block';
+      pinStatus.innerHTML = (lang === 'en' ? 'PIN: <b style="font-size:15px;letter-spacing:2px;color:var(--text)">' : 'PIN Kodu: <b style="font-size:15px;letter-spacing:2px;color:var(--text)">') +
+        d.code + '</b><br>IP: <code>' + (d.ip || '?') + '</code> · ' + (lang === 'en' ? 'waiting for peer…' : 'karşı makine bekleniyor…');
+      const pollPair = async () => {
+        if (addTile.style.display === 'none') return;
+        try {
+          const st = await (await fetch('/api/pair/status')).json();
+          if (st.paired_peer) {
+            setMsg((lang === 'en' ? 'Paired with ' : 'Eşleşti: ') + st.paired_peer + ' ✓', 'ok');
+            renderAddTile(false); refreshStateIfChanged(); return;
+          }
+          if (st.error) {
+            pinStatus.textContent = st.error; startPairBtn.disabled = false; return;
+          }
+          if (st.active_code) setTimeout(pollPair, 1200);
+          else startPairBtn.disabled = false;
+        } catch (_) { startPairBtn.disabled = false; }
+      };
+      setTimeout(pollPair, 1200);
+    } catch (e) {
+      pinStatus.style.display = 'block'; pinStatus.textContent = String(e); startPairBtn.disabled = false;
+    }
+  };
+  pinBox.append(startPairBtn, pinStatus);
+
+  const joinBox = document.createElement('div');
+  joinBox.style.cssText = 'display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:8px;background:var(--bg2);border:1px solid var(--line);';
+  const joinLbl = document.createElement('div');
+  joinLbl.textContent = lang === 'en' ? 'Or join a host with PIN:' : 'Veya PIN gösteren bilgisayara katıl:';
+  joinLbl.style.cssText = 'font-size:11px;color:var(--muted);';
+  const discRow = document.createElement('div');
+  discRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
+  const ipInp = document.createElement('input');
+  ipInp.placeholder = lang === 'en' ? 'Host IP (e.g. 192.168.0.11)' : 'Ana makine IP (ör. 192.168.0.11)';
+  ipInp.style.cssText = 'flex:1;min-width:0;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit;font-size:11.5px;';
+  const codeInp = document.createElement('input');
+  codeInp.placeholder = '6-PIN'; codeInp.maxLength = 6;
+  codeInp.style.cssText = 'width:68px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit;font-size:11.5px;letter-spacing:1px;text-align:center;';
+  const joinBtn = document.createElement('button');
+  joinBtn.className = 'dock-btn'; joinBtn.textContent = lang === 'en' ? 'Join' : 'Katıl'; joinBtn.style.padding = '6px 10px';
+  const doJoin = async () => {
+    const addr = ipInp.value.trim(), code = codeInp.value.trim();
+    if (!addr || !code) return;
+    joinBtn.disabled = true;
+    try {
+      const r = await fetch('/api/pair/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ addr, code }) });
+      if (!r.ok) throw new Error(await r.text());
+      const d = await r.json();
+      setMsg((lang === 'en' ? 'Paired with ' : 'Eşleşti: ') + d.peer + ' ✓', 'ok');
+      renderAddTile(false); refreshStateIfChanged();
+    } catch (e) {
+      setMsg(String(e.message || e), 'err'); joinBtn.disabled = false;
+    }
+  };
+  joinBtn.onclick = doJoin;
+  const joinRow = document.createElement('div');
+  joinRow.style.cssText = 'display:flex;gap:6px;align-items:center;';
+  joinRow.append(ipInp, codeInp, joinBtn);
+  joinBox.append(joinLbl, discRow, joinRow);
+
+  // Auto-discover advertising hosts on LAN via mDNS
+  fetch('/api/pair/discover').then(r => r.json()).then(d => {
+    for (const h of (d.hosts || [])) {
+      const b = document.createElement('button');
+      b.className = 'dock-btn';
+      b.style.cssText = 'font-size:10.5px;padding:3px 7px;';
+      b.textContent = h.name + ' (' + h.ip + ')';
+      b.onclick = () => { ipInp.value = h.ip; codeInp.focus(); };
+      discRow.appendChild(b);
+    }
+  }).catch(() => {});
+
+  // --- Section 2: Android Tablet ---
   const title = document.createElement('div');
   title.textContent = t('addDeviceTitle');
-  title.style.cssText = 'font-size:12.5px;font-weight:750;color:var(--text);';
-  const monNote = document.createElement('div');
-  monNote.textContent = t('addDeviceMonNote');
-  monNote.style.cssText = 'font-size:11px;color:var(--muted);line-height:1.5;';
+  title.style.cssText = 'font-size:12px;font-weight:700;color:var(--text);margin-top:4px;border-top:1px solid var(--line);padding-top:8px;';
   const hint = document.createElement('div');
   hint.textContent = t('addDeviceHint');
-  hint.style.cssText = 'font-size:11px;color:var(--muted);line-height:1.5;';
+  hint.style.cssText = 'font-size:11px;color:var(--muted);line-height:1.45;';
   const row = document.createElement('div');
   row.style.cssText = 'display:flex;gap:6px;align-items:center;';
   const inp = document.createElement('input'); inp.placeholder = t('addDevicePh'); inp.style.cssText = 'flex:1;min-width:0;background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit;font-size:11.5px;';
   const go = document.createElement('button'); go.className = 'dock-btn'; go.textContent = t('addBtn'); go.style.padding = '6px 10px';
-  const close = document.createElement('button'); close.className = 'dock-btn'; close.textContent = '✕'; close.style.padding = '6px 9px';
-  close.onclick = () => renderAddTile(false);
   const add = async () => {
     const ip = inp.value.trim(); if (!ip) { renderAddTile(false); return; }
     try { const r = await fetch('/api/android/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip }) }); setMsg(r.ok ? t('addDeviceOk') : await r.text(), r.ok ? 'ok' : 'err'); } catch (e) { setMsg(String(e), 'err'); }
     renderAddTile(false); setTimeout(pollAndroid, 800);
   };
   go.onclick = add; inp.addEventListener('keydown', e => { if (e.key === 'Enter') add(); if (e.key === 'Escape') renderAddTile(false); });
-  row.appendChild(inp); row.appendChild(go); row.appendChild(close);
-  addTile.appendChild(title); addTile.appendChild(monNote); addTile.appendChild(hint); addTile.appendChild(row);
-  inp.focus();
+  row.append(inp, go);
+  addTile.append(pcHdr, pinBox, joinBox, title, hint, row);
+  ipInp.focus();
 }
 renderAddTile(false);
 let tabPos = (() => { try { return JSON.parse(localStorage.getItem('kayiver-tabpos')); } catch (_) { return null; } })();
@@ -1811,6 +1923,8 @@ async function openSettings() {
   try { settings = await (await fetch('/api/settings')).json(); } catch (e) { settings = {}; }
   document.getElementById('setSub').textContent = (settings.name || '?') + ' · ' + (settings.mode || '?') + ' · ' + t('port') + ' ' + (settings.port || '?');
   document.getElementById('setHotkey').checked = settings.hotkey !== false;
+  document.getElementById('setCornerBarrier').value = String(settings.corner_barrier_px || 0);
+  document.getElementById('setFsLock').checked = !!settings.fullscreen_lock;
   document.getElementById('setAutostart').checked = !!settings.autostart;
   document.getElementById('setMacShort').checked = settings.mac_shortcuts !== false;
   document.getElementById('setModCmd').value = settings.win_mod_cmd || 'ctrl';
@@ -1857,6 +1971,8 @@ document.getElementById('gear').addEventListener('click', openSettings);
 document.getElementById('setClose').addEventListener('click', closeSettings);
 overlay.addEventListener('click', e => { if (e.target === overlay) closeSettings(); });
 document.getElementById('setHotkey').addEventListener('change', e => saveSetting({ hotkey: e.target.checked }));
+document.getElementById('setCornerBarrier').addEventListener('change', e => saveSetting({ corner_barrier_px: +e.target.value }, t('savedOk')));
+document.getElementById('setFsLock').addEventListener('change', e => saveSetting({ fullscreen_lock: e.target.checked }, t('savedOk')));
 document.getElementById('setAutostart').addEventListener('change', e => saveSetting({ autostart: e.target.checked }, e.target.checked ? t('autostartOn') : t('autostartOff')));
 document.getElementById('setRemote').addEventListener('change', e => saveSetting({ remote_enabled: e.target.checked }, t('remoteNote')));
 

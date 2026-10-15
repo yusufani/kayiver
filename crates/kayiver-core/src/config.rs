@@ -83,6 +83,14 @@ pub struct Config {
     /// edge.
     #[serde(default)]
     pub edge_dwell_ms: u64,
+    /// Corner deadzone size in pixels along portal edges. Prevents accidental
+    /// crossings when aiming for window close buttons, menus or hot corners.
+    #[serde(default)]
+    pub corner_barrier_px: u32,
+    /// Lock cursor to the local screen while a fullscreen application or game
+    /// is active on this machine.
+    #[serde(default)]
+    pub fullscreen_lock: bool,
     /// macOS host only: remap Mac modifiers while controlling a Windows peer
     /// so Mac muscle memory works (defaults: ⌘→Ctrl, ⌥→Win, ⌃→Ctrl).
     /// Master switch; the per-modifier targets live in `win_modifiers`.
@@ -258,6 +266,8 @@ impl Default for Config {
             shared_monitor: SharedMonitor::default(),
             remote: RemoteApi::default(),
             edge_dwell_ms: 0,
+            corner_barrier_px: 0,
+            fullscreen_lock: false,
             mac_shortcuts: true,
             win_modifiers: WinModifiers::default(),
             tablet_edge: None,
@@ -350,6 +360,8 @@ mod tests {
             shared_monitor: SharedMonitor::default(),
             remote: RemoteApi::default(),
             edge_dwell_ms: 0,
+            corner_barrier_px: 0,
+            fullscreen_lock: false,
             mac_shortcuts: true,
             win_modifiers: WinModifiers::default(),
             tablet_edge: None,

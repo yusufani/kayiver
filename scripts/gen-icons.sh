@@ -69,6 +69,10 @@ tmp, out = sys.argv[1], sys.argv[2]
 src = Image.open(f"{tmp}/menubar_1024.png").convert("RGBA")
 src.resize((22, 22), Image.LANCZOS).save(f"{out}/menubarTemplate.png")
 src.resize((44, 44), Image.LANCZOS).save(f"{out}/menubarTemplate@2x.png")
+# Full-color app logo for the menu bar (macOS template tinting is disabled).
+color = Image.open(f"{tmp}/icon_1024.png").convert("RGBA")
+color.resize((22, 22), Image.LANCZOS).save(f"{out}/menubar-color.png")
+color.resize((44, 44), Image.LANCZOS).save(f"{out}/menubar-color@2x.png")
 PY
 
 echo "icons written to $OUT/"

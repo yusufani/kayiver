@@ -164,6 +164,7 @@ const ET_RIGHT_DRAG: u32 = 7;
 const ET_KEY_DOWN: u32 = 10;
 const ET_KEY_UP: u32 = 11;
 const ET_FLAGS: u32 = 12;
+const ET_SYS_DEFINED: u32 = 14;
 const ET_SCROLL: u32 = 22;
 const ET_OTHER_DOWN: u32 = 25;
 const ET_OTHER_UP: u32 = 26;
@@ -679,8 +680,8 @@ pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Res
 
             let mask: u64 = [
                 ET_LEFT_DOWN, ET_LEFT_UP, ET_RIGHT_DOWN, ET_RIGHT_UP, ET_MOVED, ET_LEFT_DRAG,
-                ET_RIGHT_DRAG, ET_KEY_DOWN, ET_KEY_UP, ET_FLAGS, ET_SCROLL, ET_OTHER_DOWN,
-                ET_OTHER_UP, ET_OTHER_DRAG,
+                ET_RIGHT_DRAG, ET_KEY_DOWN, ET_KEY_UP, ET_FLAGS, ET_SYS_DEFINED, ET_SCROLL,
+                ET_OTHER_DOWN, ET_OTHER_UP, ET_OTHER_DRAG,
             ]
             .iter()
             .fold(0u64, |m, t| m | (1u64 << t));
@@ -932,6 +933,8 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
                 None
             }
         }
+        ET_SYS_DEFINED => parse_media_event(event)
+            .and_then(|(vk, pressed)| keymap::native_to_hid(vk).map(|key| InputEvent::Key { key, pressed })),
         _ => None,
     };
 
@@ -939,6 +942,30 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
         super::capture_input(&ctl,&state.tx,ev);
     }
     if forwarding {std::ptr::null_mut()}else{event} // swallow only remote control
+}
+
+/// Extract media key (`0x0100 | nx_key`) and press state from an NSSystemDefined (type 14) event.
+unsafe fn parse_media_event(event: CGEventRef) -> Option<(u16, bool)> {
+    use objc2::{class, msg_send, runtime::AnyObject};
+    objc2::rc::autoreleasepool(|_| {
+        let ns_event: *mut AnyObject = msg_send![class!(NSEvent), eventWithCGEvent: event];
+        if ns_event.is_null() {
+            return None;
+        }
+        let subtype: i16 = msg_send![ns_event, subtype];
+        if subtype != 8 {
+            return None;
+        }
+        let data1: isize = msg_send![ns_event, data1];
+        let nx_key = ((data1 >> 16) & 0xFFFF) as u16;
+        let key_state = ((data1 >> 8) & 0xFF) as u8;
+        let pressed = match key_state {
+            0x0A => true,
+            0x0B => false,
+            _ => return None,
+        };
+        Some((0x0100 | nx_key, pressed))
+    })
 }
 
 
@@ -1143,6 +1170,38 @@ impl Injector {
         } else {
             self.down_keys.retain(|&k| k != hid);
         }
+        if vk >= 0x0100 {
+            unsafe {
+                use objc2::{class, msg_send, runtime::AnyObject};
+                use objc2_foundation::NSPoint;
+                objc2::rc::autoreleasepool(|_| {
+                    let nx_key = (vk & 0xFF) as isize;
+                    let key_state: isize = if pressed { 0x0A } else { 0x0B };
+                    let data1: isize = (nx_key << 16) | (key_state << 8);
+                    let flags: usize = (key_state as usize) << 8;
+                    let ns_event: *mut AnyObject = msg_send![
+                        class!(NSEvent),
+                        otherEventWithType: 14usize,
+                        location: NSPoint::new(0.0, 0.0),
+                        modifierFlags: flags,
+                        timestamp: 0.0f64,
+                        windowNumber: 0isize,
+                        context: std::ptr::null::<AnyObject>(),
+                        subtype: 8i16,
+                        data1: data1,
+                        data2: -1isize
+                    ];
+                    if !ns_event.is_null() {
+                        let cg_event: CGEventRef = msg_send![ns_event, CGEvent];
+                        if !cg_event.is_null() {
+                            CGEventSetIntegerValueField(cg_event, F_SOURCE_USER_DATA, TAG_OURS);
+                            CGEventPost(TAP_HID, cg_event);
+                        }
+                    }
+                });
+            }
+            return;
+        }
         unsafe {
             let e = CGEventCreateKeyboardEvent(self.source, vk, pressed);
             self.post(e);
@@ -1265,22 +1324,61 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8(bytes).unwrap_or_else(|_| s.to_string())
 }
 
-/// If a file was copied (e.g. in Finder), return its local file path.
-pub fn get_clipboard_file() -> Option<String> {
+/// Return all copied local files or folders from the clipboard.
+pub fn get_clipboard_files() -> Vec<String> {
+    if let Some(files) = arboard::Clipboard::new()
+        .ok()
+        .and_then(|mut c| c.get().file_list().ok())
+    {
+        let valid: Vec<String> = files
+            .into_iter()
+            .filter(|p| p.exists())
+            .filter_map(|p| p.to_str().map(str::to_owned))
+            .collect();
+        if !valid.is_empty() {
+            return valid;
+        }
+    }
     use objc2_app_kit::NSPasteboard;
     use objc2_foundation::NSString;
     let pb = NSPasteboard::generalPasteboard();
     let ty = NSString::from_str("public.file-url");
-    if let Some(s) = pb.stringForType(&ty) {
-        let st = s.to_string();
-        if let Some(rest) = st.strip_prefix("file://") {
-            let decoded = percent_decode(rest);
-            if std::path::Path::new(&decoded).exists() {
-                return Some(decoded);
+    let mut out = Vec::new();
+    if let Some(items) = pb.pasteboardItems() {
+        for item in items.iter() {
+            if let Some(s) = item.stringForType(&ty) {
+                let st = s.to_string();
+                if let Some(rest) = st.strip_prefix("file://") {
+                    let decoded = percent_decode(rest);
+                    if std::path::Path::new(&decoded).exists() && !out.contains(&decoded) {
+                        out.push(decoded);
+                    }
+                }
             }
         }
     }
-    None
+    if out.is_empty() {
+        if let Some(s) = pb.stringForType(&ty) {
+            let st = s.to_string();
+            if let Some(rest) = st.strip_prefix("file://") {
+                let decoded = percent_decode(rest);
+                if std::path::Path::new(&decoded).exists() {
+                    out.push(decoded);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// If a file was copied (e.g. in Finder), return its local file path.
+pub fn get_clipboard_file() -> Option<String> {
+    let files = get_clipboard_files();
+    if files.len() == 1 {
+        files.into_iter().next()
+    } else {
+        None
+    }
 }
 
 /// Monotonic clipboard change counter (cheap; avoids reading the whole

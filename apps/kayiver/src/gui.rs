@@ -22,8 +22,8 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder};
 use wry::WebView;
 
-/// Template icon (black + alpha), retina size; macOS tints it to the bar.
-const MENUBAR_ICON: &[u8] = include_bytes!("../../../assets/icons/menubarTemplate@2x.png");
+/// Full-color app logo at menu-bar retina size; preserve its brand colors.
+const MENUBAR_ICON: &[u8] = include_bytes!("../../../assets/icons/menubar-color@2x.png");
 
 /// The transparent overlay page: a canvas drawing a blue halo around the live
 /// cursor and a ~3 s blue glow along the edge the cursor just crossed.
@@ -290,7 +290,9 @@ fn run_shell(open_window_now: bool) -> Result<()> {
                 let _ = tray.set_tooltip(Some(format!("Kayıver — {line}")));
                 // A "⚠" next to the menu-bar icon whenever something is off
                 // (engine down, peer offline) — visible at a glance.
-                let _ = tray.set_title(if warn { Some("⚠") } else { None });
+                // tray-icon's macOS backend treats None as "leave unchanged".
+                // An explicit empty title clears an earlier warning.
+                tray.set_title(Some(if warn { "⚠" } else { "" }));
             }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
                 // Window closed → drop it and retreat to the menu bar only.
@@ -360,7 +362,7 @@ fn build_tray() -> Result<(TrayIcon, MenuIds, MenuItem)> {
         .with_menu(Box::new(menu))
         .with_tooltip("Kayıver")
         .with_icon(load_menubar_icon()?)
-        .with_icon_as_template(true)
+        .with_icon_as_template(false)
         .build()?;
     Ok((tray, ids, status))
 }

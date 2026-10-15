@@ -261,6 +261,10 @@ pub fn get_clipboard_file() -> Option<String> {
     None
 }
 
+pub fn get_clipboard_files() -> Vec<String> {
+    Vec::new()
+}
+
 // ----------------------------------------------------- control server ----
 
 fn control_server(port: u16) {
@@ -310,6 +314,7 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
     let ok = serde_json::json!({ "ok": true });
     let op = cmd.get("op").and_then(|o| o.as_str()).unwrap_or("");
     match op {
+        "status" => serde_json::from_str(&crate::ui::api_status()).unwrap(),
         "warp" => {
             let (x, y) = (
                 cmd["x"].as_i64().unwrap_or(0) as i32,

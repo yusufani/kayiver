@@ -54,6 +54,48 @@ pub enum UiCmd {
     QuickShareAccept { peer: String, id: u64 },
     /// Dismiss the active quick share prompt.
     QuickShareDismiss,
+    /// A new peer was paired via the GUI; start dialing/connecting immediately.
+    PeerPaired(String),
+}
+
+#[derive(Default)]
+struct PairUiState {
+    active_code: Option<(String, std::time::Instant)>,
+    last_paired_peer: Option<String>,
+    last_error: Option<String>,
+}
+
+static PAIR_STATE: OnceLock<Mutex<PairUiState>> = OnceLock::new();
+
+fn pair_state() -> &'static Mutex<PairUiState> {
+    PAIR_STATE.get_or_init(|| Mutex::new(PairUiState::default()))
+}
+
+const PAIR_CODE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Atomically consume the active GUI pairing code (SPAKE2 codes are single-use).
+pub fn take_active_pair_code() -> Option<String> {
+    let mut st = pair_state().lock().unwrap();
+    let (code, created) = st.active_code.take()?;
+    if created.elapsed() <= PAIR_CODE_TTL {
+        Some(code)
+    } else {
+        None
+    }
+}
+
+/// Record the outcome of an inbound GUI pairing attempt.
+pub fn record_pair_result(result: std::result::Result<String, String>) {
+    let mut st = pair_state().lock().unwrap();
+    match result {
+        Ok(peer) => {
+            st.last_paired_peer = Some(peer);
+            st.last_error = None;
+        }
+        Err(err) => {
+            st.last_error = Some(err);
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -795,8 +837,148 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
             Ok(json) => ("200 OK", "application/json", json.into_bytes()),
             Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
         },
+        ("POST", "/api/pair/start") => match api_pair_start() {
+            Ok(json) => ("200 OK", "application/json", json.into_bytes()),
+            Err(e) => ("500 Internal Server Error", "text/plain", e.to_string().into_bytes()),
+        },
+        ("GET", "/api/pair/status") => match api_pair_status() {
+            Ok(json) => ("200 OK", "application/json", json.into_bytes()),
+            Err(e) => ("500 Internal Server Error", "text/plain", e.to_string().into_bytes()),
+        },
+        ("POST", "/api/pair/join") => match api_pair_join(body) {
+            Ok(json) => ("200 OK", "application/json", json.into_bytes()),
+            Err(e) => ("400 Bad Request", "text/plain", e.to_string().into_bytes()),
+        },
+        ("GET", "/api/pair/discover") => ("200 OK", "application/json", api_pair_discover().into_bytes()),
         _ => ("404 Not Found", "text/plain", b"not found".to_vec()),
     }
+}
+
+/// POST /api/pair/start — generate a 6-digit pairing PIN and accept an inbound
+/// SPAKE2 pairing connection (either on the running host listener or a
+/// temporary standalone listener when `kayiver ui` is run by itself).
+fn api_pair_start() -> Result<String> {
+    let cfg = Config::load_or_init()?;
+    let code = kayiver_core::pairing::generate_code();
+    {
+        let mut st = pair_state().lock().unwrap();
+        st.active_code = Some((code.clone(), std::time::Instant::now()));
+        st.last_paired_peer = None;
+        st.last_error = None;
+    }
+
+    let port = cfg.port;
+    let name = cfg.name.clone();
+    // If the host listener is not already bound on `port` (e.g. client mode or
+    // standalone `kayiver ui`), spawn a temporary pairing listener for up to 5 min.
+    std::thread::Builder::new()
+        .name("kayiver-ui-pair-listen".into())
+        .spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+                return;
+            };
+            rt.block_on(async move {
+                let Ok(listener) = TcpListener::bind(("0.0.0.0", port)).await else {
+                    // Port already bound by the running `host_main` accept_loop,
+                    // which will handle `Intro::Pair` via `take_active_pair_code()`.
+                    return;
+                };
+                let _mdns = kayiver_core::discovery::advertise(&name, port).ok();
+                let deadline = tokio::time::Instant::now() + PAIR_CODE_TTL;
+                loop {
+                    let rem = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if rem.is_zero() {
+                        break;
+                    }
+                    let Ok(Ok((mut stream, addr))) = tokio::time::timeout(rem, listener.accept()).await else {
+                        break;
+                    };
+                    let Ok(Ok(frame)) = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        kayiver_core::wire::read_frame(&mut stream),
+                    )
+                    .await
+                    else {
+                        continue;
+                    };
+                    let Ok(kayiver_core::proto::Intro::Pair) = kayiver_core::proto::Intro::decode(&frame) else {
+                        continue;
+                    };
+                    let Some(active_code) = take_active_pair_code() else {
+                        break;
+                    };
+                    match crate::engine::pairing::accept_pair_stream(&mut stream, addr, &active_code).await {
+                        Ok(peer_name) => {
+                            record_pair_result(Ok(peer_name.clone()));
+                            send_cmd(UiCmd::PeerPaired(peer_name));
+                        }
+                        Err(e) => {
+                            record_pair_result(Err(e.to_string()));
+                        }
+                    }
+                    break;
+                }
+            });
+        })
+        .ok();
+
+    let ip = crate::engine::pairing::local_ip().map(|ip| ip.to_string());
+    Ok(serde_json::json!({
+        "code": code,
+        "ip": ip,
+        "port": cfg.port,
+        "name": cfg.name,
+    })
+    .to_string())
+}
+
+/// GET /api/pair/status — poll current GUI pairing PIN / completion / error.
+fn api_pair_status() -> Result<String> {
+    let cfg = Config::load_or_init()?;
+    let st = pair_state().lock().unwrap();
+    let active_code = st
+        .active_code
+        .as_ref()
+        .and_then(|(c, t)| (t.elapsed() <= PAIR_CODE_TTL).then(|| c.clone()));
+    let ip = crate::engine::pairing::local_ip().map(|ip| ip.to_string());
+    Ok(serde_json::json!({
+        "active_code": active_code,
+        "paired_peer": st.last_paired_peer,
+        "error": st.last_error,
+        "ip": ip,
+        "port": cfg.port,
+        "name": cfg.name,
+    })
+    .to_string())
+}
+
+/// POST /api/pair/join {"addr": "192.168.1.10", "code": "123456"}
+fn api_pair_join(body: &[u8]) -> Result<String> {
+    let v: serde_json::Value = serde_json::from_slice(body).context("invalid JSON")?;
+    let addr = v.get("addr").and_then(|s| s.as_str()).context("missing 'addr'")?;
+    let code = v.get("code").and_then(|s| s.as_str()).context("missing 'code'")?;
+    let peer = crate::engine::pairing::join_with_code(addr, code)?;
+    record_pair_result(Ok(peer.clone()));
+    send_cmd(UiCmd::PeerPaired(peer.clone()));
+    Ok(serde_json::json!({ "peer": peer }).to_string())
+}
+
+/// GET /api/pair/discover — browse mDNS for available kayiver hosts on the LAN.
+fn api_pair_discover() -> String {
+    let me = Config::load_or_init().ok().map(|c| c.name);
+    let hosts: Vec<serde_json::Value> =
+        kayiver_core::discovery::browse_all(std::time::Duration::from_millis(800))
+            .into_iter()
+            .filter(|(name, _)| me.as_deref() != Some(name.as_str()))
+            .map(|(name, addr)| {
+                serde_json::json!({
+                    "name": name,
+                    "addr": addr.to_string(),
+                    "ip": addr.ip().to_string(),
+                })
+            })
+            .collect();
+    serde_json::json!({ "hosts": hosts }).to_string()
 }
 
 /// GET /api/android — tool availability, devices, and live control state.
@@ -878,6 +1060,8 @@ fn api_get_settings() -> Result<String> {
         "remote_port": UI_PORT + 1,
         "autostart": crate::autostart::is_enabled(),
         "edge_dwell_ms": cfg.edge_dwell_ms,
+        "corner_barrier_px": cfg.corner_barrier_px,
+        "fullscreen_lock": cfg.fullscreen_lock,
         "mac_shortcuts": cfg.mac_shortcuts,
         "win_mod_cmd": cfg.win_modifiers.cmd,
         "win_mod_opt": cfg.win_modifiers.opt,
@@ -904,6 +1088,12 @@ fn api_set_settings(body: &[u8]) -> Result<String> {
     }
     if let Some(ms) = v.get("edge_dwell_ms").and_then(|x| x.as_u64()) {
         cfg.edge_dwell_ms = ms.min(10_000); // cap at 10 s
+    }
+    if let Some(px) = v.get("corner_barrier_px").and_then(|x| x.as_u64()) {
+        cfg.corner_barrier_px = (px as u32).min(256);
+    }
+    if let Some(fs) = v.get("fullscreen_lock").and_then(|x| x.as_bool()) {
+        cfg.fullscreen_lock = fs;
     }
     if let Some(b) = v.get("mac_shortcuts").and_then(|x| x.as_bool()) {
         cfg.mac_shortcuts = b;
@@ -1093,7 +1283,7 @@ fn api_permissions(body: &[u8]) -> Result<()> {
     crate::platform::permission_action(action)
 }
 
-fn api_status() -> String {
+pub(crate) fn api_status() -> String {
     // Never hold the UI mutex while acquiring capture locks.
     let capture = live().lock().unwrap().capture.clone();
     let capture = capture.as_ref().map(|ctl| {

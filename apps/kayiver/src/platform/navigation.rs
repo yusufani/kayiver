@@ -42,6 +42,8 @@ pub struct Navigation {
     pub sequence: u64,
     claim_sequence: u64,
     recovery_notified: Option<u64>,
+    pub corner_barrier_px: u32,
+    pub fullscreen_locked: bool,
 }
 impl Default for Navigation {
     fn default() -> Self {
@@ -61,6 +63,8 @@ impl Default for Navigation {
             sequence: 0,
             claim_sequence: 0,
             recovery_notified: None,
+            corner_barrier_px: 0,
+            fullscreen_locked: false,
         }
     }
 }
@@ -210,15 +214,26 @@ impl Navigation {
             return None;
         }
         let at = self.location.as_ref()?;
-        let Some(step) = self.topology.advance(at, delta) else {
+        let Some(step) = self.topology.advance_with_barrier(at, delta, self.corner_barrier_px as f64) else {
             self.control = Control::Recovering;
             self.location = None;
             self.generation += 1;
             return None;
         };
-        super::motion_trace::record(&self.topology, at, delta, &step);
         let was_remote = matches!(self.control, Control::Remote(_));
-        let handoff = was_remote || step.path.iter().any(|id| self.topology.surface(id).is_some_and(|s| s.machine != self.machine));
+        let crosses_remote = step
+            .path
+            .iter()
+            .any(|id| self.topology.surface(id).is_some_and(|s| s.machine != self.machine));
+        if !was_remote && self.fullscreen_locked && crosses_remote {
+            self.location = self
+                .topology
+                .locate(&self.machine, native)
+                .or_else(|| Some(at.clone()));
+            return None;
+        }
+        super::motion_trace::record(&self.topology, at, delta, &step);
+        let handoff = was_remote || crosses_remote;
         let mut location = step.location;
         if step.wall && !handoff {
             // The OS clips local walls itself. Its native position, including
@@ -491,6 +506,27 @@ mod tests {
         assert!(matches!(n.control,Control::Local));assert_eq!(n.sequence,sequence);
         let f=n.sample((2559,700),6,0).unwrap();
         assert_eq!(f.machine,"win");assert_eq!(f.x,5);
+    }
+
+    #[test]
+    fn corner_barrier_and_fullscreen_lock_prevent_unintended_crossings() {
+        let mut n = nav();
+        n.corner_barrier_px = 40;
+        n.location = Some(Location { surface: "A".into(), point: Point::new(2550.0, 20.0) });
+        let f = n.sample((2559, 20), 25, 0).unwrap();
+        assert!(!f.handoff);
+        assert_eq!(f.machine, "mac");
+
+        // Middle of the edge crosses when fullscreen_locked is false
+        n.native_reposition(Point::new(2550.0, 700.0));
+        n.fullscreen_locked = true;
+        assert!(n.sample((2559, 700), 25, 0).is_none());
+        assert!(matches!(n.control, Control::Local));
+
+        n.fullscreen_locked = false;
+        let f = n.sample((2559, 700), 25, 0).unwrap();
+        assert!(f.handoff);
+        assert_eq!(f.machine, "win");
     }
 
 }

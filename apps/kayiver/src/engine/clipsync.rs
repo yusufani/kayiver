@@ -283,12 +283,12 @@ pub fn watch(state: ClipState, send: impl Fn(Msg) -> Result<usize,String> + Send
             let first = read_image()
                 .map(|i| image_fingerprint(&i))
                 .or_else(|| platform::get_clipboard().map(Fingerprint::Text));
-            if let Some(payload) = crate::engine::quickshare::detect_payload(
+            if let Some(payload) = crate::engine::quickshare::detect_payload_files(
                 match &first {
                     Some(Fingerprint::Text(text)) => Some(text.as_str()),
                     _ => None,
                 },
-                platform::get_clipboard_file().as_deref(),
+                &platform::get_clipboard_files(),
             ) {
                 crate::engine::quickshare::engine().update_candidate(payload);
             }
@@ -350,12 +350,12 @@ pub fn watch(state: ClipState, send: impl Fn(Msg) -> Result<usize,String> + Send
                     continue;
                 } // never send a torn copy
                 sequence = seq;
-                let file = platform::get_clipboard_file();
+                let files = platform::get_clipboard_files();
                 state.lock().unwrap().source_kind = Some(if image.is_some() {
                     "image"
                 } else if text.is_some() {
                     "text"
-                } else if file.is_some() {
+                } else if !files.is_empty() {
                     "file"
                 } else {
                     "unknown"
@@ -366,7 +366,7 @@ pub fn watch(state: ClipState, send: impl Fn(Msg) -> Result<usize,String> + Send
                     continue;
                 }
                 if let Some(payload) =
-                    crate::engine::quickshare::detect_payload(text.as_deref(), file.as_deref())
+                    crate::engine::quickshare::detect_payload_files(text.as_deref(), &files)
                 {
                     crate::engine::quickshare::engine().update_candidate(payload);
                 }

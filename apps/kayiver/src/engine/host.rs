@@ -175,6 +175,9 @@ pub fn run(mut cfg: Config) -> Result<()> {
                 if let Some(b) = blocked {
                     platform::rescue_windows_off(b);
                 }
+                let fs_locked = ctl.fullscreen_lock.load(Ordering::Relaxed)
+                    && platform::is_fullscreen_active();
+                ctl.navigation.lock().unwrap().fullscreen_locked = fs_locked;
             })
             .ok();
     }
@@ -249,7 +252,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
             }
         }
     }
-    tokio::spawn(watch_layout(layout.clone(), shared.clone(), ctl.clone(), evt_tx));
+    tokio::spawn(watch_layout(layout.clone(), shared.clone(), ctl.clone(), evt_tx.clone()));
 
     // Shared-monitor state: arm the hotkey. Ownership survives restarts —
     // the physical panel doesn't change inputs just because kayiver did.
@@ -265,6 +268,9 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
         ctl.shared_hotkey.store(cfg.shared_monitor.hotkey, Ordering::SeqCst);
     }
     ctl.mac_shortcuts.store(cfg.mac_shortcuts, Ordering::Relaxed);
+    ctl.fullscreen_lock.store(cfg.fullscreen_lock, Ordering::Relaxed);
+    ctl.corner_barrier_px.store(cfg.corner_barrier_px, Ordering::Relaxed);
+    ctl.navigation.lock().unwrap().corner_barrier_px = cfg.corner_barrier_px;
     *ctl.win_mods.write().unwrap() = (
         mod_hid(&cfg.win_modifiers.ctrl, 0xE0),
         mod_hid(&cfg.win_modifiers.opt, 0xE2),
@@ -370,6 +376,20 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
                 }
                 Some(crate::ui::UiCmd::QuickShareDismiss) => {
                     crate::ui::dismiss_quick_share();
+                }
+                Some(crate::ui::UiCmd::PeerPaired(peer_name)) => {
+                    info!("newly paired peer '{peer_name}' via UI — starting connection");
+                    router.refresh_navigation();
+                    tokio::spawn(dial_loop(
+                        peer_name,
+                        router.cfg.clone(),
+                        router.layout.clone(),
+                        router.sessions.clone(),
+                        router.peer_screens.clone(),
+                        clip.clone(),
+                        evt_tx.clone(),
+                        router.ctl.clone(),
+                    ));
                 }
                 None => break,
             },
@@ -1148,6 +1168,9 @@ impl Router {
         match ev {
             SessionEvent::Connected { name,connection } => {
                 if !self.sessions.lock().unwrap().get(&name).is_some_and(|(id,_)|*id==connection) {return;}
+                // Both accepted and dialed sessions recover the link. Clear
+                // the error here, after any queued disconnect was handled.
+                crate::ui::set_link_error(None);
                 self.motion_receivers.remove(&name);
                 if !self.arbiter {self.ctl.navigation.lock().unwrap().topology=kayiver_core::motion::Topology::default();}
                 info!("client connected: {name}");
@@ -1166,6 +1189,9 @@ impl Router {
                 self.broadcast_state();
             }
             SessionEvent::Disconnected { name } => {
+                // A replacement may have connected while this event waited
+                // in the router queue. Do not tear its control state down.
+                if self.session_exists(&name) { return; }
                 self.motion_receivers.remove(&name);
                 self.monitor_identities.remove(&name);
                 info!("client disconnected: {name}");
@@ -1485,6 +1511,15 @@ async fn watch_layout(
         match Config::load_or_init() {
             Ok(new_cfg) => {
                 ctl.mac_shortcuts.store(new_cfg.mac_shortcuts, Ordering::Relaxed);
+                ctl.fullscreen_lock.store(new_cfg.fullscreen_lock, Ordering::Relaxed);
+                ctl.corner_barrier_px.store(new_cfg.corner_barrier_px, Ordering::Relaxed);
+                {
+                    let mut nav = ctl.navigation.lock().unwrap();
+                    nav.corner_barrier_px = new_cfg.corner_barrier_px;
+                    if !new_cfg.fullscreen_lock {
+                        nav.fullscreen_locked = false;
+                    }
+                }
                 *ctl.win_mods.write().unwrap() = (
                     mod_hid(&new_cfg.win_modifiers.ctrl, 0xE0),
                     mod_hid(&new_cfg.win_modifiers.opt, 0xE2),
@@ -1656,7 +1691,11 @@ async fn dial_loop(peer_name: String, cfg: Arc<Config>, layout: SharedLayout, se
             tokio::time::sleep(Duration::from_secs(5)).await;
             continue;
         };
-        match dial_once(&peer, cfg.clone(), layout.clone(), sessions.clone(), peer_screens.clone(), clip.clone(), evt_tx.clone(), ctl.clone()).await {
+        let result = dial_once(&peer, cfg.clone(), layout.clone(), sessions.clone(), peer_screens.clone(), clip.clone(), evt_tx.clone(), ctl.clone()).await;
+        // An inbound replacement can outlive this dial attempt/session.
+        // Its healthy state must not be overwritten by the older result.
+        if sessions.lock().unwrap().contains_key(&peer_name) { continue; }
+        match result {
             Ok(()) => {
                 info!("session ended, reconnecting");
                 crate::ui::set_link_error(Some("session ended — reconnecting".into()));
@@ -1723,12 +1762,31 @@ async fn handle_conn(mut stream: TcpStream, cfg: Arc<Config>, layout: SharedLayo
     let name = match Intro::decode(&intro)? {
         Intro::Session { name } => name,
         Intro::Pair => {
-            // Pairing is only served by the dedicated `kayiver pair` command:
-            // a running host must never silently accept new devices.
-            anyhow::bail!("pair attempt while running; run `kayiver pair` instead");
+            let Some(code) = crate::ui::take_active_pair_code() else {
+                anyhow::bail!("pair attempt while running; start pairing in UI or run `kayiver pair`");
+            };
+            let Some(remote_addr) = link_remote else {
+                anyhow::bail!("missing peer socket address for pairing");
+            };
+            match crate::engine::pairing::accept_pair_stream(&mut stream, remote_addr, &code).await {
+                Ok(peer_name) => {
+                    info!("paired with '{peer_name}' via UI");
+                    crate::ui::record_pair_result(Ok(peer_name));
+                    let _ = evt_tx.send(SessionEvent::LayoutChanged);
+                    return Ok(());
+                }
+                Err(e) => {
+                    crate::ui::record_pair_result(Err(e.to_string()));
+                    return Err(e);
+                }
+            }
         }
     };
-    let peer = cfg.peer(&name).with_context(|| format!("unknown peer '{name}'"))?;
+    let peer = cfg
+        .peer(&name)
+        .cloned()
+        .or_else(|| Config::load_or_init().ok().and_then(|c| c.peer(&name).cloned()))
+        .with_context(|| format!("unknown peer '{name}'"))?;
     let psk = peer.psk_bytes()?;
 
     let (mut reader, mut writer) = secure::handshake_responder(stream, &psk).await?;

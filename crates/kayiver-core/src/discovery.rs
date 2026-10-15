@@ -72,3 +72,38 @@ pub async fn resolve(instance_name: &str, timeout: Duration) -> Option<SocketAdd
         }
     }
 }
+
+/// Browse for all kayiver hosts on the LAN within `timeout`.
+pub fn browse_all(timeout: Duration) -> Vec<(String, SocketAddr)> {
+    let Ok(daemon) = ServiceDaemon::new() else {
+        return Vec::new();
+    };
+    let Ok(receiver) = daemon.browse(SERVICE_TYPE) else {
+        let _ = daemon.shutdown();
+        return Vec::new();
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    let mut found = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match receiver.recv_timeout(remaining) {
+            Ok(ServiceEvent::ServiceResolved(info)) => {
+                if let Some(name) = info.get_fullname().strip_suffix(&format!(".{SERVICE_TYPE}")) {
+                    if let Some(ip) = info.get_addresses().iter().find(|ip| ip.is_ipv4()).or_else(|| info.get_addresses().iter().next()) {
+                        let addr = SocketAddr::new(*ip, info.get_port());
+                        if !found.iter().any(|(n, a)| n == name && *a == addr) {
+                            found.push((name.to_string(), addr));
+                        }
+                    }
+                }
+            }
+            Ok(_) => continue,
+            Err(_) => break,
+        }
+    }
+    let _ = daemon.shutdown();
+    found
+}

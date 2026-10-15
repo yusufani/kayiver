@@ -1058,8 +1058,10 @@ const EXTENDED_HIDS: &[u16] = &[
     0x4F, 0x50, 0x51, 0x52, // arrows
     0x54, // KP divide
     0x58, // KP enter
+    0x7F, 0x80, 0x81, // Volume Mute/Up/Down
     0xE4, 0xE6, // RCtrl, RAlt
     0xE3, 0xE7, // LWin, RWin
+    0xE8, 0xE9, 0xEA, 0xEB, // Media Play/Pause, Stop, Prev, Next
 ];
 
 /// Input runs on a windowless, hook-free thread: SetThreadDesktop cannot
@@ -1645,12 +1647,24 @@ pub fn reveal_path(path: &str) {
         .spawn();
 }
 
+/// Return all copied local files or folders from the clipboard.
+pub fn get_clipboard_files() -> Vec<String> {
+    arboard::Clipboard::new()
+        .ok()
+        .and_then(|mut c| c.get().file_list().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.exists())
+        .filter_map(|p| p.to_str().map(str::to_owned))
+        .collect()
+}
+
 /// If a file was copied on Windows, return its local file path (if readable).
 pub fn get_clipboard_file() -> Option<String> {
-    let files=arboard::Clipboard::new().ok()?.get().file_list().ok()?;
+    let files = get_clipboard_files();
     // Never choose an arbitrary file from a multiple-selection clipboard.
-    if files.len()!=1 {return None;}
-    files[0].to_str().map(str::to_owned)
+    if files.len() != 1 { return None; }
+    files.into_iter().next()
 }
 
 /// Monotonic clipboard change counter (cheap change detection).
@@ -1712,6 +1726,30 @@ pub fn raise_editor_if_present()->bool {
         let _=SetForegroundWindow(hwnd);
     }
     true
+}
+
+/// True when the foreground Windows window covers an entire monitor.
+pub fn is_fullscreen_active() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetDesktopWindow, GetForegroundWindow, GetShellWindow, GetWindowRect, IsWindowVisible,
+    };
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null()
+            || hwnd == GetDesktopWindow()
+            || hwnd == GetShellWindow()
+            || !IsWindowVisible(hwnd).as_bool()
+        {
+            return false;
+        }
+        let mut r = windows::Win32::Foundation::RECT::default();
+        if GetWindowRect(hwnd, &mut r).is_err() {
+            return false;
+        }
+        monitors().iter().any(|m| {
+            r.left <= m.x && r.top <= m.y && r.right >= m.right() && r.bottom >= m.bottom()
+        })
+    }
 }
 
 #[cfg(test)]

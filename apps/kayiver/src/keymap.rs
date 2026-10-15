@@ -20,6 +20,15 @@ pub const HID_RSHIFT: u16 = 0xE5;
 pub const HID_RALT: u16 = 0xE6;
 pub const HID_RGUI: u16 = 0xE7;
 
+// Media & consumer control keys mapped into unused HID keyboard range.
+pub const HID_MUTE: u16 = 0x7F;
+pub const HID_VOLUME_UP: u16 = 0x80;
+pub const HID_VOLUME_DOWN: u16 = 0x81;
+pub const HID_MEDIA_PLAY_PAUSE: u16 = 0xE8;
+pub const HID_MEDIA_STOP: u16 = 0xE9;
+pub const HID_MEDIA_PREV: u16 = 0xEA;
+pub const HID_MEDIA_NEXT: u16 = 0xEB;
+
 pub fn is_modifier(hid: u16) -> bool {
     (0xE0..=0xE7).contains(&hid) || hid == HID_CAPSLOCK
 }
@@ -57,8 +66,17 @@ const KEYS: &[(u16, u16)] = &[
     (0x5E, 88), (0x5F, 89), (0x60, 91), (0x61, 92), (0x62, 82), (0x63, 65),
     (0x68, 105), (0x69, 107), (0x6A, 113), // F13-F15 share keys above
     (0x6B, 106), (0x6C, 64), (0x6D, 79), (0x6E, 80), // F16-F19
+    (0x7F, 0x0107), // Mute (NX_KEYTYPE_MUTE = 7)
+    (0x80, 0x0100), // Volume Up (NX_KEYTYPE_SOUND_UP = 0)
+    (0x81, 0x0101), // Volume Down (NX_KEYTYPE_SOUND_DOWN = 1)
     (0xE0, 59), (0xE1, 56), (0xE2, 58), (0xE3, 55),
     (0xE4, 62), (0xE5, 60), (0xE6, 61), (0xE7, 54),
+    (0xE8, 0x0110), // Play/Pause (NX_KEYTYPE_PLAY = 16)
+    (0xE9, 0x0115), // Stop
+    (0xEA, 0x0112), // Previous Track (NX_KEYTYPE_PREVIOUS = 18)
+    (0xEB, 0x0111), // Next Track (NX_KEYTYPE_NEXT = 17)
+    (0xEA, 0x0114), // Rewind (NX_KEYTYPE_REWIND = 20)
+    (0xEB, 0x0113), // Fast Forward (NX_KEYTYPE_FAST = 19)
 ];
 
 #[cfg(target_os = "windows")]
@@ -80,13 +98,20 @@ const KEYS: &[(u16, u16)] = &[
     (0x49, 0x2D), (0x4A, 0x24), (0x4B, 0x21), (0x4C, 0x2E), (0x4D, 0x23), (0x4E, 0x22),
     (0x4F, 0x27), (0x50, 0x25), (0x51, 0x28), (0x52, 0x26),
     (0x53, 0x90), // NumLock
-    (0x54, 0x6F), (0x55, 0x6A), (0x56, 0x6D), (0x57, 0x6B),
+    (0x54, 0x6F), (0x55, 67 + 39), (0x56, 0x6D), (0x57, 0x6B),
     (0x58, 0x0D), // KP Enter -> VK_RETURN (extended)
     (0x59, 0x61), (0x5A, 0x62), (0x5B, 0x63), (0x5C, 0x64), (0x5D, 0x65),
     (0x5E, 0x66), (0x5F, 0x67), (0x60, 0x68), (0x61, 0x69), (0x62, 0x60), (0x63, 0x6E),
     (0x68, 0x7C), (0x69, 0x7D), (0x6A, 0x7E), (0x6B, 0x7F), (0x6C, 0x80), (0x6D, 0x81), (0x6E, 0x82),
+    (0x7F, 0xAD), // VK_VOLUME_MUTE
+    (0x80, 0xAF), // VK_VOLUME_UP
+    (0x81, 0xAE), // VK_VOLUME_DOWN
     (0xE0, 0xA2), (0xE1, 0xA0), (0xE2, 0xA4), (0xE3, 0x5B),
     (0xE4, 0xA3), (0xE5, 0xA1), (0xE6, 0xA5), (0xE7, 0x5C),
+    (0xE8, 0xB3), // VK_MEDIA_PLAY_PAUSE
+    (0xE9, 0xB2), // VK_MEDIA_STOP
+    (0xEA, 0xB1), // VK_MEDIA_PREV_TRACK
+    (0xEB, 0xB0), // VK_MEDIA_NEXT_TRACK
 ];
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -150,5 +175,22 @@ mod tests {
     fn mac_letter_a() {
         assert_eq!(hid_to_native(0x04), Some(0)); // kVK_ANSI_A
         assert_eq!(native_to_hid(0), Some(0x04));
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn media_keys_map_both_ways() {
+        for hid in [
+            HID_MUTE,
+            HID_VOLUME_UP,
+            HID_VOLUME_DOWN,
+            HID_MEDIA_PLAY_PAUSE,
+            HID_MEDIA_STOP,
+            HID_MEDIA_PREV,
+            HID_MEDIA_NEXT,
+        ] {
+            let vk = hid_to_native(hid).expect("media hid mapped");
+            assert_eq!(native_to_hid(vk), Some(hid));
+        }
     }
 }
