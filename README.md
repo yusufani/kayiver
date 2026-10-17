@@ -1,3 +1,7 @@
+[![Watch the latest Kayıver demo](assets/screenshots/demo-2026-10-18.gif)](https://github.com/yusufani/kayiver/releases/download/v0.3.16-dev/kayiver-demo.mp4)
+
+<p align="center"><a href="https://github.com/yusufani/kayiver/releases/download/v0.3.16-dev/kayiver-demo.mp4">▶ Watch the full demo (22 seconds)</a></p>
+
 <p align="center"><img src="assets/icons/kayiver-256.png" width="96" alt="Kayıver"></p>
 
 # Kayıver
@@ -12,14 +16,6 @@ Kayıver is a lightweight, source-available software KVM. Slide your cursor off
 the edge of one machine's screen and it appears on the next, exactly like
 moving between two monitors of the same computer. Keyboard input follows the
 cursor.
-
-<p align="center">
-  <img src="assets/screenshots/demo.gif" width="820" alt="A real crossing, captured live from the layout editor: the cursor glides from the Mac onto the shared panel and the Windows machine takes over — over a direct cable at 1.5 ms">
-  <br>
-  <sub>Real footage, fully dark-mode: the cursor crosses from the Mac onto the shared panel and the
-  Windows machine takes focus; then the session is moved to Wi-Fi live — watch the RTT badge jump —
-  and back to the direct cable, settling at ~1&nbsp;ms.</sub>
-</p>
 
 - **One movement engine** — ordered movement samples cross actual monitor
   edge segments; remaining distance continues on the destination, including
@@ -59,20 +55,17 @@ cursor.
 
 ## Download
 
-Grab the latest build from **[Releases](https://github.com/yusufani/kayiver/releases/latest)**:
+Get the current **[0.3.16-dev prerelease](https://github.com/yusufani/kayiver/releases/tag/v0.3.16-dev)**:
 
-- **macOS (Apple silicon):** `Kayiver-macos-arm64.zip` — unzip, move to
-  Applications, then **right-click → Open** the first time (the app is
-  self-signed, not notarized).
-- **Windows 10/11 (x64):** `kayiver-windows-x64.exe` — put it anywhere and run
-  it; if SmartScreen appears, choose "More info → Run anyway".
+- **[macOS (Apple silicon) — DMG](https://github.com/yusufani/kayiver/releases/download/v0.3.16-dev/Kayiver-macos-arm64.dmg):** open the disk image and drag Kayıver into Applications. The app is self-signed, not notarized; macOS may require approval in **System Settings → Privacy & Security** on first launch.
+- **[Windows 10/11 (x64) — EXE](https://github.com/yusufani/kayiver/releases/download/v0.3.16-dev/kayiver-windows-x64.exe):** download and run. If SmartScreen appears, choose **More info → Run anyway**.
+- **[macOS ZIP alternative](https://github.com/yusufani/kayiver/releases/download/v0.3.16-dev/Kayiver-macos-arm64.zip)** · **[SHA-256 checksums](https://github.com/yusufani/kayiver/releases/download/v0.3.16-dev/SHA256SUMS)**
 
-The 0.3.2 engine rewrite is available as a **prerelease** on the releases
-page. Upgrade both computers together: protocol 16 does not connect to older
-versions. Keep both previous binaries and configuration backups for a paired
-rollback. The simulated geometry, control and failure suites are automated;
-physical mouse acceleration and held-input handoff still need hands-on
-acceptance. See [testing](docs/TESTING.md).
+Upgrade both computers together and keep the previous binaries for rollback.
+This build reduces idle CPU use and preserves responsive crossings after idle;
+fast crossing and dragging were checked on the paired Mac and Windows machines.
+Menu-based clipboard copies can take up to about 0.5 seconds to be detected.
+See [testing](docs/TESTING.md) for the automated and physical acceptance checks.
 
 Or build from source:
 

@@ -127,10 +127,19 @@ jobs:
 
       - name: Zip the bundle
         run: ditto -c -k --keepParent dist/Kayiver.app Kayiver-macos-arm64.zip
+      - name: Create disk image
+        run: |
+          mkdir -p dmg-root
+          ditto dist/Kayiver.app dmg-root/Kayiver.app
+          ln -s /Applications dmg-root/Applications
+          hdiutil create -volname Kayiver -srcfolder dmg-root -format UDZO Kayiver-macos-arm64.dmg
+          hdiutil verify Kayiver-macos-arm64.dmg
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: Kayiver-macos-arm64.zip
+          path: |
+            Kayiver-macos-arm64.zip
+            Kayiver-macos-arm64.dmg
 
   publish:
     needs: [windows, macos]
@@ -151,3 +160,4 @@ jobs:
           files: |
             kayiver-windows-x64.exe
             Kayiver-macos-arm64.zip
+            Kayiver-macos-arm64.dmg
