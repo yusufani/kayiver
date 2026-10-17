@@ -1941,6 +1941,31 @@ fn image_clipboard_is_bidirectional_chunked_and_never_echoes() {
 }
 
 #[test]
+fn stationary_portal_stops_fast_pings_and_idle_clipboards_still_sync() {
+    let (mut host,mut client)=desk("idle-resources",28180);
+    // A is still local. Park just short of the shared-panel portal, rather
+    // than crossing it; fresh approach movement should briefly prewarm.
+    give_panel_to_client(&mut host);
+    host.ctl(serde_json::json!({"op":"warp","x":2500,"y":700}));
+    std::thread::sleep(Duration::from_millis(150));
+    host.ctl(serde_json::json!({"op":"warp","x":2501,"y":700}));
+    wait_until("approach starts fast heartbeats",Duration::from_secs(2),||
+        host.ctl(serde_json::json!({"op":"status"}))["capture"]["heartbeat"]["fast"].as_u64().unwrap_or(0)>0);
+    std::thread::sleep(Duration::from_millis(2600));
+    let before=host.ctl(serde_json::json!({"op":"status"}));
+    std::thread::sleep(Duration::from_millis(1200));
+    let after=host.ctl(serde_json::json!({"op":"status"}));
+    assert_eq!(before["capture"]["heartbeat"]["fast"],after["capture"]["heartbeat"]["fast"],"resting at a portal must become idle");
+    assert!(after["capture"]["heartbeat"]["idle"].as_u64().unwrap()>before["capture"]["heartbeat"]["idle"].as_u64().unwrap(),"idle liveness must continue");
+    host.ctl(serde_json::json!({"op":"set_clipboard_text","text":"copy-after-idle"}));
+    for (key,pressed) in [(0xe3,true),(0x06,true),(0x06,false),(0xe3,false)] {
+        host.ctl(serde_json::json!({"op":"input_key","key":key,"pressed":pressed}));
+    }
+    wait_until("copy after idle reaches the other clipboard",Duration::from_secs(2),||
+        client.ctl(serde_json::json!({"op":"clipboard_state"}))["text"]=="copy-after-idle");
+}
+
+#[test]
 fn slow_file_disk_does_not_block_motion_or_corrupt_transfer() {
     let (mut host,mut client)=desk("file-credit-slow-disk",8030);
     give_panel_to_client(&mut host);

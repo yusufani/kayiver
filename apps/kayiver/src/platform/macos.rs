@@ -792,13 +792,22 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
 
     if etype == ET_MOVED || etype == ET_LEFT_DRAG || etype == ET_RIGHT_DRAG || etype == ET_OTHER_DRAG {
         if ctl.driven.load(Ordering::SeqCst) {return std::ptr::null_mut();}
-        let generation=ctl.navigation.lock().unwrap().generation;
-        if generation!=state.motion_generation {
-            state.motion_generation=generation;
-            state.motion_position=None;
-            state.local_warp_reference=None;
-        }
         let p=CGEventGetLocation(event);
+        {
+            let mut nav=ctl.navigation.lock().unwrap();
+            if nav.generation!=state.motion_generation {
+                state.motion_generation=nav.generation;
+                state.motion_position=None;
+                state.local_warp_reference=None;
+            }
+            if !forwarding && state.local_warp_reference.is_none()
+                && nav.local_interior(kayiver_core::motion::Point::new(p.x,p.y)) {
+                state.motion_position=Some(p);
+                ctl.local_motion_fast.fetch_add(1,Ordering::Relaxed);
+                return event;
+            }
+        }
+        ctl.local_motion_routed.fetch_add(1,Ordering::Relaxed);
         let raw=kayiver_core::motion::Point::new(CGEventGetIntegerValueField(event,F_MOUSE_DELTA_X) as f64,CGEventGetIntegerValueField(event,F_MOUSE_DELTA_Y) as f64);
         let unaccelerated=kayiver_core::motion::Point::new(CGEventGetDoubleValueField(event,170),CGEventGetDoubleValueField(event,171));
         if !super::source_motion::physical_motion(raw,unaccelerated) {

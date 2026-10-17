@@ -191,6 +191,19 @@ fn live() -> &'static Mutex<LiveState> {
     LIVE.get_or_init(|| Mutex::new(LiveState::default()))
 }
 
+pub struct TraySnapshot {
+    pub running: bool,
+    pub peers: Vec<(String,bool,Option<f64>)>,
+}
+/// The in-process tray only needs connection/RTT fields. Do not make it call
+/// the full diagnostic API (cursor, TCC checks and interface enumeration).
+pub fn tray_snapshot() -> Option<TraySnapshot> {
+    let state=live().lock().unwrap();
+    state.capture.as_ref()?;
+    Some(TraySnapshot {running:state.running,peers:state.peers.iter()
+        .map(|(name,p)|(name.clone(),p.connected,p.rtt_ms)).collect()})
+}
+
 /// Called by the host once, to mark that a live session router exists.
 pub fn mark_running() {
     live().lock().unwrap().running = true;
@@ -1299,6 +1312,15 @@ pub(crate) fn api_status() -> String {
                 serde_json::json!({"revision":nav.topology.revision,"generation":nav.generation,"sequence":nav.sequence,"control":control,"location":nav.location,"surfaces":nav.topology.surfaces.len(),"seams":nav.topology.seams.len()})
             }),
             "native_cursor": native_cursor,
+            "native_system_changes": crate::platform::native_system_changes(),
+            "heartbeat": {
+                "fast": ctl.heartbeat_fast.load(std::sync::atomic::Ordering::Relaxed),
+                "idle": ctl.heartbeat_idle.load(std::sync::atomic::Ordering::Relaxed),
+            },
+            "motion_work": {
+                "local_fast": ctl.local_motion_fast.load(std::sync::atomic::Ordering::Relaxed),
+                "routed": ctl.local_motion_routed.load(std::sync::atomic::Ordering::Relaxed),
+            },
             "bounds": ctl.bounds(),
             "blocked": *ctl.blocked.read().unwrap(),
             "forwarding": ctl.forwarding.load(std::sync::atomic::Ordering::SeqCst),

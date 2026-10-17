@@ -1565,6 +1565,7 @@ dependencies = [
  "if-addrs 0.15.0",
  "image",
  "kayiver-core",
+ "libc",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",

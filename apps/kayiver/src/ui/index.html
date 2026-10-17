@@ -1313,6 +1313,16 @@ const capEl = document.createElement('div');
 capEl.style.cssText = 'position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:45;background:var(--panel);border:1px solid var(--line2);border-radius:20px;padding:5px 13px;font-size:11.5px;font-family:"IBM Plex Mono",monospace;color:var(--muted);box-shadow:var(--shadow);opacity:0;transition:opacity .25s;white-space:nowrap;';
 canvas.appendChild(capEl);
 let curPos = { x: 300, y: 200 }, curBuf = [], curT = 0, realTarget = null;
+let editorVisible = true, cursorFrame = 0;
+function editorActive() { return editorVisible && !document.hidden; }
+function queueCursorFrame() {
+  if (!cursorFrame && editorActive()) cursorFrame = requestAnimationFrame(tickCursor);
+}
+addEventListener('kayiver-visibility', e => {
+  editorVisible = e.detail;
+  if (editorActive()) queueCursorFrame();
+});
+document.addEventListener('visibilitychange', () => { if (editorActive()) queueCursorFrame(); });
 // Map the host's real cursor (or the focused machine) to canvas coordinates.
 function mapCursor(c) {
   if (c.visible === false) return null;
@@ -1336,12 +1346,17 @@ function mapCursor(c) {
 }
 
 async function pollCursor() {
-  if (liveOn) { try { realTarget = mapCursor(await (await fetch('/api/cursor')).json()); } catch (_) { realTarget = null; } }
+  if (liveOn && editorActive()) {
+    const previous = realTarget;
+    try { realTarget = mapCursor(await (await fetch('/api/cursor')).json()); } catch (_) { realTarget = null; }
+    if (previous?.x !== realTarget?.x || previous?.y !== realTarget?.y) queueCursorFrame();
+  }
   setTimeout(pollCursor, 120);
 }
 pollCursor();
 function tickCursor(t) {
-  requestAnimationFrame(tickCursor);
+  cursorFrame = 0;
+  if (!editorActive()) return;
   const dt = Math.min(0.05, (t - (curT || t)) / 1000); curT = t;
   document.querySelectorAll('.mon.livefocus').forEach(e => e.classList.remove('livefocus'));
   if (!liveOn || !realTarget) { curEl.style.opacity = '0'; trailDots.forEach(d => d.style.opacity = '0'); return; }
@@ -1357,9 +1372,13 @@ function tickCursor(t) {
   }
   curBuf.unshift({ x: curPos.x, y: curPos.y }); if (curBuf.length > 30) curBuf.pop();
   trailDots.forEach((d, i) => { const p = curBuf[(i + 1) * 3]; if (p) { const k = 1 - i / 9; d.style.transform = 'translate(' + (p.x - 3) + 'px,' + (p.y - 3) + 'px) scale(' + (0.3 + k * 0.6) + ')'; d.style.opacity = String(k * 0.45); } else d.style.opacity = '0'; });
+  // Let the trail settle, then sleep until the sampled cursor changes.
+  const tail = curBuf[27];
+  if (!tail || Math.hypot(realTarget.x - curPos.x, realTarget.y - curPos.y) > .1 ||
+      Math.hypot(curPos.x - tail.x, curPos.y - tail.y) > .1) queueCursorFrame();
 }
-requestAnimationFrame(tickCursor);
-function setLive(on) { liveOn = on; localStorage.setItem('kayiver-live', on ? '1' : '0'); if (!on) realTarget = null; renderDock(); }
+queueCursorFrame();
+function setLive(on) { liveOn = on; localStorage.setItem('kayiver-live', on ? '1' : '0'); if (!on) realTarget = null; queueCursorFrame(); renderDock(); }
 
 // Dock: shared-panel owner buttons (design puts them here, at the bottom) +
 // the live-cursor toggle state.
@@ -1794,6 +1813,7 @@ document.getElementById('linkGo').addEventListener('click', async () => {
 
 let pollN = 0;
 async function poll() {
+  if (!editorActive()) { setTimeout(poll, 1000); return; }
   if (++pollN % 4 === 0) await refreshStateIfChanged();
   if (pollN % 4 === 2) pollAndroid();
   try {

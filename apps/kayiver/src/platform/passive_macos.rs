@@ -11,9 +11,17 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
 type State = Option<(Rect, String)>;
 static PENDING: OnceLock<Mutex<Option<State>>> = OnceLock::new();
+static NOTIFY: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+pub fn register_notifier(notify: impl Fn() + Send + Sync + 'static) {
+    let _ = NOTIFY.set(Box::new(notify));
+    // Deliver an engine update that arrived before the GUI was ready.
+    if let Some(notify) = NOTIFY.get() { notify(); }
+}
 
 pub fn show(state: State) {
     *PENDING.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(state);
+    if let Some(notify) = NOTIFY.get() { notify(); }
 }
 
 pub struct Notice {
@@ -24,6 +32,7 @@ pub struct Notice {
 }
 
 impl Notice {
+    pub fn active(&self) -> bool { self.blocked.is_some() }
     /// Called by the existing GUI tick; nested Option preserves explicit hides
     /// and retains an early engine update until the shell is ready.
     pub fn update(notice: &mut Option<Self>) {

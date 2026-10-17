@@ -41,6 +41,7 @@ pub fn initialize() {
         Some(tx)
     });
 }
+pub fn enabled() -> bool { matches!(RECORDER.get(), Some(Some(_))) || native_enabled() }
 pub fn record(topology: &Topology, start: &Location, delta: Point, expected: &Step) {
     let Some(Some(tx)) = RECORDER.get() else {
         return;

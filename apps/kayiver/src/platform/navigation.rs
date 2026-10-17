@@ -166,6 +166,25 @@ impl Navigation {
     pub fn sample(&mut self, native: (i32, i32), dx: i32, dy: i32) -> Option<Frame> {
         self.sample_precise(Point::new(native.0 as f64,native.1 as f64),Point::new(dx as f64,dy as f64))
     }
+    /// Native movement wholly inside the current local screen cannot cross a
+    /// seam. Update references in place: no geometry traversal, allocations,
+    /// held-key sorting or router messages. Keep a border for OS clipping.
+    /// Call under motion_gate, and never during a pending native return warp.
+    pub fn local_interior(&mut self, native: Point) -> bool {
+        if self.control != Control::Local || super::motion_trace::enabled() { return false; }
+        let Some(previous) = self.native_reference else { return false; };
+        let Some(at) = self.location.as_mut() else { return false; };
+        let Some(surface) = self.topology.surface(&at.surface) else { return false; };
+        if surface.machine != self.machine { return false; }
+        let r = surface.rect;
+        let inside = |p: Point| p.x > r.x as f64 + 1.0 && p.x < (r.right() - 2) as f64
+            && p.y > r.y as f64 + 1.0 && p.y < (r.bottom() - 2) as f64;
+        if !inside(previous) || !inside(at.point) || !inside(native) { return false; }
+        at.point = native;
+        self.native_reference = Some(native);
+        self.sequence += 1;
+        true
+    }
     pub fn sample_precise(&mut self, native: Point, delta: Point) -> Option<Frame> {
         let dx=delta.x; let dy=delta.y;
         if self.machine.is_empty() || matches!(self.control, Control::Driven(_) | Control::Recovering) {
@@ -339,6 +358,48 @@ mod tests {
         let mut n = Navigation::default();
         n.install("mac".into(), t);
         n
+    }
+    #[test]
+    fn local_interior_keeps_flick_reference_and_held_input() {
+        let mut n=nav();
+        n.native_reposition(Point::new(1200.25,700.25));
+        n.input(InputEvent::Key {key:0xe0,pressed:true});
+        n.input(InputEvent::MouseButton {button:MouseButton::Left,pressed:true});
+        assert!(n.local_interior(Point::new(2500.25,700.25)));
+        // A single fast report reaches the OS-clipped edge. It must still
+        // traverse the seam with the remaining distance and held inputs.
+        assert!(!n.local_interior(Point::new(2559.0,700.25)));
+        let f=n.sample_precise(Point::new(2559.0,700.25),Point::new(100.0,0.0)).unwrap();
+        assert_eq!(f.machine,"win");
+        assert!((f.position.x-40.25).abs()<0.001);
+        assert_eq!(f.keys,vec![0xe0]);assert_eq!(f.buttons,vec![MouseButton::Left]);
+        assert!(!n.local_interior(Point::new(1200.0,700.0)));
+    }
+    #[test]
+    fn local_fast_path_refuses_boundaries_invalid_positions_and_changed_layout() {
+        let mut n=nav();n.native_reposition(Point::new(1200.0,700.0));
+        for point in [Point::new(0.0,700.0),Point::new(2559.0,700.0),Point::new(1200.0,0.0),
+            Point::new(1200.0,1439.0),Point::new(f64::NAN,700.0),Point::new(3000.0,700.0)] {
+            assert!(!n.local_interior(point));
+            assert_eq!(n.location.as_ref().unwrap().point,Point::new(1200.0,700.0));
+        }
+        let mut topology=n.topology.clone();topology.revision+=1;
+        n.install("mac".into(),topology);
+        assert!(!n.local_interior(Point::new(1300.0,700.0)));
+        n.drive(Some("win".into()));assert!(!n.local_interior(Point::new(1300.0,700.0)));
+        n.begin_recovery();assert!(!n.local_interior(Point::new(1300.0,700.0)));
+    }
+    #[test]
+    #[ignore = "manual release-mode comparison of local motion CPU cost"]
+    fn local_motion_cost() {
+        let mut baseline=nav();baseline.native_reposition(Point::new(1201.0,700.0));
+        let mut fast=baseline.clone();
+        let started=std::time::Instant::now();
+        for i in 0..1_000_000 {let x=1200.0+(i%2) as f64;std::hint::black_box(baseline.sample_precise(Point::new(x,700.0),Point::new(if i%2==0 {-1.0}else{1.0},0.0)));}
+        let full=started.elapsed();let started=std::time::Instant::now();
+        for i in 0..1_000_000 {assert!(std::hint::black_box(fast.local_interior(Point::new(1200.0+(i%2) as f64,700.0))));}
+        eprintln!("1M local reports: geometry={full:?}, interior={:?}",started.elapsed());
+        assert_eq!(baseline.location,fast.location);
     }
     #[test]
     fn rapid_roundtrips_never_wait_or_lose_distance() {

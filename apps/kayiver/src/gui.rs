@@ -65,6 +65,7 @@ enum UserEvent {
     Menu(MenuEvent),
     /// Periodic status summary from the local API for the tray.
     Status { line: String, warn: bool },
+    Maintenance,
     /// ~60 fps overlay pump: live cursor position + a one-shot crossing flash.
     Overlay { x: i32, y: i32, flash: u8 },
     /// Quick share prompt (URL or file).
@@ -78,26 +79,33 @@ struct MenuIds {
     quit: tray_icon::menu::MenuId,
 }
 
-/// Summarize /api/status into one tray line + a warning flag.
+/// Read only cached connection fields for the in-process tray. A standalone
+/// editor shell still queries the engine process through the local API.
 fn status_summary() -> (String, bool) {
-    let parsed = crate::ui::local_api("GET", "/api/status", None)
+    let snapshot=crate::ui::tray_snapshot().or_else(|| {
+      let parsed = crate::ui::local_api("GET", "/api/status", None)
         .ok()
         .and_then(|(code, body)| if code == 200 { serde_json::from_str::<serde_json::Value>(&body).ok() } else { None });
-    let Some(v) = parsed else {
+      let v=parsed?;
+      Some(crate::ui::TraySnapshot {running:v["running"].as_bool().unwrap_or(false),
+        peers:v["peers"].as_object().into_iter().flatten().map(|(name,p)|
+            (name.clone(),p["connected"].as_bool().unwrap_or(false),p["rtt_ms"].as_f64())).collect()})
+    });
+    let Some(snapshot) = snapshot else {
         return ("Engine starting / waiting for permissions…".into(), true);
     };
-    if !v["running"].as_bool().unwrap_or(false) {
+    if !snapshot.running {
         return ("Engine not running (possibly waiting for permissions)".into(), true);
     }
-    let peers = v["peers"].as_object().cloned().unwrap_or_default();
+    let peers = snapshot.peers;
     if peers.is_empty() {
         return ("Waiting for a peer…".into(), true);
     }
     let mut parts = Vec::new();
     let mut any_down = false;
-    for (name, p) in peers {
-        if p["connected"].as_bool().unwrap_or(false) {
-            match p["rtt_ms"].as_f64() {
+    for (name, connected, rtt_ms) in peers {
+        if connected {
+            match rtt_ms {
                 Some(rtt) => parts.push(format!("{name}: connected ({rtt:.1} ms)")),
                 None => parts.push(format!("{name}: connected")),
             }
@@ -167,26 +175,40 @@ fn run_shell(open_window_now: bool) -> Result<()> {
     // Feed the tray a status summary every few seconds (connection state,
     // latency, warnings) so problems are visible without opening the editor.
     let status_proxy = event_loop.create_proxy();
-    std::thread::Builder::new().name("kayiver-tray-status".into()).spawn(move || loop {
+    std::thread::Builder::new().name("kayiver-tray-status".into()).spawn(move || {
+      let mut previous=None;
+      loop {
         if crate::ui::take_editor_request() {let _=status_proxy.send_event(UserEvent::OpenEditor);}
         let (line, warn) = status_summary();
-        if status_proxy.send_event(UserEvent::Status { line, warn }).is_err() {
-            return;
+        if previous.as_ref().is_none_or(|(old_line,old_warn)|old_line!=&line || *old_warn!=warn) {
+            previous=Some((line.clone(),warn));
+            if status_proxy.send_event(UserEvent::Status { line, warn }).is_err() { return; }
         }
         std::thread::sleep(std::time::Duration::from_secs(3));
+      }
     })?;
 
-    // ~60 fps overlay pump: pushes the live cursor position + any pending
-    // crossing flash to the overlay canvas.
-    let overlay_proxy = event_loop.create_proxy();
-    std::thread::Builder::new().name("kayiver-overlay".into()).spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(16));
-        let (x, y) = crate::platform::cursor_pos();
-        let flash = crate::ui::take_cross_flash();
-        if overlay_proxy.send_event(UserEvent::Overlay { x, y, flash }).is_err() {
-            return;
-        }
-    })?;
+    // Passive notices wake the GUI only when their state changes. Only start
+    // a cursor polling renderer when the overlay is explicitly enabled.
+    let overlay_enabled = std::env::var("KAYIVER_OVERLAY").as_deref() == Ok("1");
+    #[cfg(not(feature = "sim"))]
+    {
+        let maintenance_proxy = event_loop.create_proxy();
+        crate::platform::passive_macos::register_notifier(move || {
+            let _ = maintenance_proxy.send_event(UserEvent::Maintenance);
+        });
+    }
+    if overlay_enabled {
+        let overlay_proxy = event_loop.create_proxy();
+        std::thread::Builder::new().name("kayiver-overlay".into()).spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            let (x, y) = crate::platform::cursor_pos();
+            let flash = crate::ui::take_cross_flash();
+            if overlay_proxy.send_event(UserEvent::Overlay { x, y, flash }).is_err() {
+                return;
+            }
+        })?;
+    }
 
     let (tray, ids, status_item) = build_tray()?;
 
@@ -227,24 +249,18 @@ fn run_shell(open_window_now: bool) -> Result<()> {
             // Overlay is OFF: the transparent window rendered opaque white and
             // covered a whole monitor. Disabled until it's verified see-through
             // on-screen. `KAYIVER_OVERLAY=1` opts in for testing.
-            if std::env::var("KAYIVER_OVERLAY").as_deref() == Ok("1") {
+            if overlay_enabled {
                 overlay = open_overlay(target).map_err(|e| eprintln!("overlay failed: {e:#}")).ok();
             }
         }
 
         match event {
             Event::Reopen { .. } | Event::UserEvent(UserEvent::OpenEditor) => present_editor(target, &mut editor),
-            Event::UserEvent(UserEvent::Overlay { x, y, flash }) => {
+            Event::UserEvent(UserEvent::Maintenance) => {
                 #[cfg(not(feature = "sim"))]
-                {
-                    crate::platform::passive_macos::Notice::update(&mut passive_notice);
-                    if rescue_tick.elapsed() >= std::time::Duration::from_secs(1) {
-                        rescue_tick = std::time::Instant::now();
-                        if let (Some(notice), Some((window, _))) = (&passive_notice, &editor) {
-                            notice.rescue_editor(window);
-                        }
-                    }
-                }
+                crate::platform::passive_macos::Notice::update(&mut passive_notice);
+            }
+            Event::UserEvent(UserEvent::Overlay { x, y, flash }) => {
                 if let Some((_, wv, origin)) = &overlay {
                     let _ = wv.evaluate_script(&format!(
                         "window.tick&&tick({},{},{flash})",
@@ -301,7 +317,29 @@ fn run_shell(open_window_now: bool) -> Result<()> {
                 target.set_activation_policy_at_runtime(ActivationPolicy::Accessory);
                 target.set_dock_visibility(false);
             }
+            Event::WindowEvent { window_id, event: WindowEvent::Focused(focused), .. } => {
+                if let Some((window, webview)) = &editor {
+                    if window.id() == window_id {
+                        let _ = webview.evaluate_script(&format!(
+                            "window.dispatchEvent(new CustomEvent('kayiver-visibility',{{detail:{}}}))", focused
+                        ));
+                    }
+                }
+            }
             _ => {}
+        }
+        // Only a visible editor on a passive desk needs periodic rescue. A
+        // menu-bar-only app has no GUI timer and performs no cursor polling.
+        #[cfg(not(feature = "sim"))]
+        if let (Some(notice), Some((window, _))) = (&passive_notice, &editor) {
+            if notice.active() {
+                let period=std::time::Duration::from_secs(1);
+                if rescue_tick.elapsed() >= period {
+                    rescue_tick=std::time::Instant::now();
+                    notice.rescue_editor(window);
+                }
+                if !open_pending { *control_flow=ControlFlow::WaitUntil(rescue_tick+period); }
+            }
         }
     });
 }

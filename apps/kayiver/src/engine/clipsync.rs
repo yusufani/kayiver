@@ -6,7 +6,7 @@ use std::{
     collections::VecDeque,
     hash::{Hash, Hasher},
     io::Cursor,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 const MAX_PNG: usize = 16 * 1024 * 1024;
@@ -41,10 +41,35 @@ pub struct ClipboardState {
     error: Option<String>,
     source_kind: Option<&'static str>,
 }
-pub type ClipState = Arc<Mutex<ClipboardState>>;
+#[derive(Default)]
+pub struct ClipboardShared {
+    state: Mutex<ClipboardState>,
+    worker: OnceLock<std::thread::Thread>,
+    probe_requested: AtomicBool,
+}
+impl ClipboardShared {
+    fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, ClipboardState>> { self.state.lock() }
+    fn wake(&self) { if let Some(worker)=self.worker.get() { worker.unpark(); } }
+    fn wait(&self, delay:Duration) -> (Option<Command>,bool) {
+        if self.lock().unwrap().commands.is_empty() && !self.probe_requested.load(Ordering::Acquire) {
+            std::thread::park_timeout(delay);
+        }
+        let command=self.lock().unwrap().commands.pop_front();
+        (command,self.probe_requested.swap(false,Ordering::AcqRel))
+    }
+}
+pub type ClipState = Arc<ClipboardShared>;
 static ACTIVE: OnceLock<ClipState> = OnceLock::new();
 pub fn new_state() -> ClipState {
-    Arc::new(Mutex::new(ClipboardState::default()))
+    Arc::new(ClipboardShared::default())
+}
+/// Copy shortcuts and handoffs wake the clipboard worker without reading the
+/// pasteboard in an input callback. Remote commands use the same wakeup.
+pub fn probe_local() {
+    if let Some(state) = ACTIVE.get() {
+        state.probe_requested.store(true,Ordering::Release);
+        state.wake();
+    }
 }
 pub fn status() -> serde_json::Value {
     let Some(state) = ACTIVE.get() else {
@@ -73,6 +98,8 @@ fn enqueue(state: &ClipState, command: Command) {
         s.commands.pop_front();
     }
     s.commands.push_back(command);
+    drop(s);
+    state.wake();
 }
 fn image_fingerprint(image: &Image) -> Fingerprint {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -280,6 +307,7 @@ pub fn watch(state: ClipState, send: impl Fn(Msg) -> Result<usize,String> + Send
     std::thread::Builder::new()
         .name("kayiver-clip".into())
         .spawn(move || {
+            let _=state.worker.set(std::thread::current());
             let first = read_image()
                 .map(|i| image_fingerprint(&i))
                 .or_else(|| platform::get_clipboard().map(Fingerprint::Text));
@@ -295,9 +323,14 @@ pub fn watch(state: ClipState, send: impl Fn(Msg) -> Result<usize,String> + Send
             state.lock().unwrap().last = first;
             let mut sequence = platform::clipboard_seq();
             let mut transfer = 0u64;
+            let mut active_until = Instant::now() + Duration::from_secs(2);
             loop {
-                std::thread::sleep(Duration::from_millis(100));
-                let command = { state.lock().unwrap().commands.pop_front() };
+                let delay = if Instant::now() < active_until { Duration::from_millis(100) }
+                    else { Duration::from_millis(500) };
+                // unpark's sticky token closes the queue-check/park race.
+                // A capture callback requests a probe with atomics only.
+                let (command,probe)=state.wait(delay);
+                if probe || command.is_some() { active_until=Instant::now()+Duration::from_secs(2); }
                 let replay = matches!(command, Some(Command::Replay | Command::ReplayImage));
                 let image_only = matches!(command, Some(Command::ReplayImage));
                 match command {
@@ -331,6 +364,7 @@ pub fn watch(state: ClipState, send: impl Fn(Msg) -> Result<usize,String> + Send
                 if seq == sequence && !replay {
                     continue;
                 }
+                active_until=Instant::now()+Duration::from_secs(2);
                 let mut image = None;
                 let mut text = None;
                 for attempt in 0..RETRIES {
@@ -466,6 +500,22 @@ impl ImageTransfer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remote_clipboard_work_wakes_the_idle_worker_without_polling_delay() {
+        let state=new_state();let worker_state=state.clone();
+        let (ready_tx,ready_rx)=std::sync::mpsc::channel();
+        let (done_tx,done_rx)=std::sync::mpsc::channel();
+        let worker=std::thread::spawn(move|| {
+            worker_state.worker.set(std::thread::current()).unwrap();
+            ready_tx.send(()).unwrap();
+            let (command,_)=worker_state.wait(Duration::from_secs(10));
+            done_tx.send(matches!(command,Some(Command::Text(text)) if text=="remote")).unwrap();
+        });
+        ready_rx.recv().unwrap();
+        enqueue(&state,Command::Text("remote".into()));
+        assert!(done_rx.recv_timeout(Duration::from_secs(1)).expect("remote command remained asleep"));
+        worker.join().unwrap();
+    }
     #[test]
     fn legacy_dib_preserves_bottom_up_rows_and_pixel_padding() {
         let mut dib = vec![0u8; 40];

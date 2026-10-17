@@ -46,8 +46,58 @@ pub mod navigation;
 mod cursor_parking;
 mod source_motion;
 mod motion_trace;
+#[cfg(all(target_os="macos",not(feature="sim")))]
+mod changes_macos;
+
+#[derive(Clone, Copy, Default)]
+struct ChangeStamp { config: u64, displays: u64, failed: bool }
+pub struct SystemChange { pub config: bool, pub displays: bool }
+pub struct SystemChanges {
+    native: Option<tokio::sync::watch::Receiver<ChangeStamp>>,
+    last: ChangeStamp,
+}
+impl SystemChanges {
+    pub fn new() -> Self {
+        #[cfg(all(target_os="macos",not(feature="sim")))]
+        let native=changes_macos::subscribe();
+        #[cfg(not(all(target_os="macos",not(feature="sim"))))]
+        let native:Option<tokio::sync::watch::Receiver<ChangeStamp>>=None;
+        let native=native.filter(|r|!r.borrow().failed);
+        let last=native.as_ref().map(|r|*r.borrow()).unwrap_or_default();
+        Self {native,last}
+    }
+    pub async fn wait(&mut self) -> SystemChange {
+        if let Some(rx)=&mut self.native {
+            if rx.changed().await.is_ok() {
+                // Display transactions and atomic saves can emit several
+                // notifications; observe one settled snapshot per burst.
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let next=*rx.borrow_and_update();
+                let change=SystemChange {config:next.config!=self.last.config,displays:next.displays!=self.last.displays};
+                self.last=next;
+                if !next.failed {return change;}
+            }
+            self.native=None;
+        }
+        // Other backends and a failed native watcher retain the established
+        // recovery path. No native notifications are required for correctness.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        SystemChange {config:true,displays:true}
+    }
+}
+pub fn native_system_changes() -> bool {
+    #[cfg(all(target_os="macos",not(feature="sim")))]
+    { changes_macos::active() }
+    #[cfg(not(all(target_os="macos",not(feature="sim"))))]
+    { false }
+}
 
 pub struct CaptureCtl {
+    pub heartbeat_fast: std::sync::atomic::AtomicU64,
+    pub heartbeat_idle: std::sync::atomic::AtomicU64,
+    maintenance_thread: Mutex<Option<std::thread::Thread>>,
+    pub local_motion_fast: std::sync::atomic::AtomicU64,
+    pub local_motion_routed: std::sync::atomic::AtomicU64,
     pub navigation: Mutex<navigation::Navigation>,
     /// Serialize native capture with a return warp. A callback that already
     /// read forwarding must finish before the router restores the local cursor.
@@ -81,6 +131,10 @@ pub struct CaptureCtl {
 }
 
 impl CaptureCtl {
+    pub fn register_maintenance_thread(&self) { *self.maintenance_thread.lock().unwrap()=Some(std::thread::current()); }
+    pub fn wake_maintenance(&self) {
+        if let Some(thread)=&*self.maintenance_thread.lock().unwrap() { thread.unpark(); }
+    }
     pub fn bounds(&self) -> Rect {
         *self.bounds.read().unwrap()
     }
@@ -92,6 +146,11 @@ impl CaptureCtl {
     pub fn new(bounds: Rect) -> Self {
         motion_trace::initialize();
         CaptureCtl {
+            heartbeat_fast: std::sync::atomic::AtomicU64::new(0),
+            heartbeat_idle: std::sync::atomic::AtomicU64::new(0),
+            maintenance_thread: Mutex::new(None),
+            local_motion_fast: std::sync::atomic::AtomicU64::new(0),
+            local_motion_routed: std::sync::atomic::AtomicU64::new(0),
             navigation: Mutex::new(navigation::Navigation::default()),
             motion_gate: Mutex::new(()),
             forwarding: AtomicBool::new(false),
@@ -111,7 +170,14 @@ impl CaptureCtl {
 }
 
 pub fn capture_input(ctl:&CaptureCtl,tx:&tokio::sync::mpsc::UnboundedSender<Captured>,event:kayiver_core::proto::InputEvent) {
-    let (stamp,target)=ctl.navigation.lock().unwrap().input(event);
+    let (stamp,target,copy)={
+        let mut nav=ctl.navigation.lock().unwrap();
+        let copy=matches!(event,kayiver_core::proto::InputEvent::Key {key:0x06|0x1b,pressed:true})
+            && [0xe0,0xe3,0xe4,0xe7].iter().any(|key|nav.keys.contains(key));
+        let (stamp,target)=nav.input(event);
+        (stamp,target,copy)
+    };
+    if copy && target.is_none() { crate::engine::clipsync::probe_local(); }
     let _=tx.send(Captured::OrderedInput {stamp,target,event});
 }
 
@@ -200,6 +266,7 @@ pub fn route_motion_precise(ctl:&CaptureCtl,tx:&tokio::sync::mpsc::UnboundedSend
     if local && !frame.handoff {return RoutedMotion::passthrough();}
     let was=ctl.forwarding.swap(!local,Ordering::SeqCst);
     if was != !local {
+        crate::engine::clipsync::probe_local();
         if !set_forwarding_visuals(!local) {
             let mut nav=ctl.navigation.lock().unwrap();
             nav.begin_recovery();let generation=nav.take_recovery_request();drop(nav);
@@ -298,6 +365,17 @@ pub mod indicator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn native_change_broadcast_wakes_all_subscribers_but_has_no_idle_tick() {
+        let (tx,rx)=tokio::sync::watch::channel(ChangeStamp::default());
+        let mut first=SystemChanges {native:Some(rx.clone()),last:ChangeStamp::default()};
+        let mut second=SystemChanges {native:Some(rx),last:ChangeStamp::default()};
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(40),first.wait()).await.is_err());
+        tx.send_modify(|s|{s.config+=1;s.displays+=1;});
+        let (a,b)=tokio::join!(first.wait(),second.wait());
+        assert!(a.config && a.displays && b.config && b.displays);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(40),first.wait()).await.is_err());
+    }
 
     // The shared panel on this desk: B at (2560,0) 2560x1440, entered from A.
     fn b() -> Rect {

@@ -54,7 +54,7 @@ const EDGE_INSET: i32 = 2;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(8);
 /// Keep the radio hot this long after forwarding ends, so hopping back and
 /// forth between machines never pays the wake penalty.
-const HEARTBEAT_TAIL: Duration = Duration::from_secs(60);
+const HEARTBEAT_TAIL: Duration = Duration::from_secs(2);
 /// Idle tick: how often the heartbeat task re-checks whether to go fast.
 /// One ping is sent every 10th idle tick, preserving the old 1s liveness rate.
 const HEARTBEAT_TICK: Duration = Duration::from_millis(100);
@@ -169,20 +169,31 @@ pub fn run(mut cfg: Config) -> Result<()> {
         let ctl = ctl.clone();
         std::thread::Builder::new()
             .name("kayiver-window-rescue".into())
-            .spawn(move || loop {
-                std::thread::sleep(Duration::from_secs(1));
+            .spawn(move || {
+              ctl.register_maintenance_thread();
+              loop {
                 let blocked = *ctl.blocked.read().unwrap();
+                let fullscreen=ctl.fullscreen_lock.load(Ordering::Relaxed);
+                if blocked.is_none() && !fullscreen {
+                    std::thread::park();
+                    continue;
+                }
                 if let Some(b) = blocked {
                     platform::rescue_windows_off(b);
                 }
                 let fs_locked = ctl.fullscreen_lock.load(Ordering::Relaxed)
                     && platform::is_fullscreen_active();
                 ctl.navigation.lock().unwrap().fullscreen_locked = fs_locked;
+                std::thread::park_timeout(Duration::from_secs(1));
+              }
             })
             .ok();
     }
 
-    let rt = tokio::runtime::Runtime::new()?;
+    // Input capture, clipboard codecs and file I/O already have dedicated
+    // workers. The network/router is mostly asynchronous I/O; do not create
+    // one idle Tokio worker per CPU core on a large desktop.
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     rt.block_on(host_main(cfg, ctl, cap_rx))
 }
 
@@ -269,6 +280,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
     }
     ctl.mac_shortcuts.store(cfg.mac_shortcuts, Ordering::Relaxed);
     ctl.fullscreen_lock.store(cfg.fullscreen_lock, Ordering::Relaxed);
+    ctl.wake_maintenance();
     ctl.corner_barrier_px.store(cfg.corner_barrier_px, Ordering::Relaxed);
     ctl.navigation.lock().unwrap().corner_barrier_px = cfg.corner_barrier_px;
     *ctl.win_mods.write().unwrap() = (
@@ -657,6 +669,7 @@ impl Router {
 
     fn set_local_block(&self, rect: Option<kayiver_core::proto::Rect>) {
         *self.ctl.blocked.write().unwrap() = rect;
+        self.ctl.wake_maintenance();
         // Use the resolved local geometry for every ownership path: startup,
         // local hotkey/editor, peer sync, and display arrangement changes.
         platform::passive::show(rect.map(|r| (r,
@@ -1500,7 +1513,7 @@ impl Router {
 
 }
 
-/// Re-read the config every 2 s; on change, swap the shared layout /
+/// Observe native config/display changes, with a polling fallback; swap the shared layout /
 /// shared-monitor settings and nudge the router. This is what makes
 /// `kayiver ui` (or hand-editing config.toml) apply without restarting.
 async fn watch_layout(
@@ -1509,17 +1522,21 @@ async fn watch_layout(
     ctl: Arc<CaptureCtl>,
     evt_tx: UnboundedSender<SessionEvent>,
 ) {
+    let mut changes=platform::SystemChanges::new();
     let path = Config::path();
     let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let mut last = mtime(&path);
     let mut last_monitors = platform::identified_monitors();
     loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let current_monitors = platform::identified_monitors();
-        if current_monitors != last_monitors {
-            last_monitors = current_monitors;
-            let _ = evt_tx.send(SessionEvent::LocalMonitorsChanged);
+        let change=changes.wait().await;
+        if change.displays {
+            let current_monitors = platform::identified_monitors();
+            if current_monitors != last_monitors {
+                last_monitors = current_monitors;
+                let _ = evt_tx.send(SessionEvent::LocalMonitorsChanged);
+            }
         }
+        if !change.config {continue;}
         let cur = mtime(&path);
         if cur == last {
             continue;
@@ -1529,6 +1546,7 @@ async fn watch_layout(
             Ok(new_cfg) => {
                 ctl.mac_shortcuts.store(new_cfg.mac_shortcuts, Ordering::Relaxed);
                 ctl.fullscreen_lock.store(new_cfg.fullscreen_lock, Ordering::Relaxed);
+                ctl.wake_maintenance();
                 ctl.corner_barrier_px.store(new_cfg.corner_barrier_px, Ordering::Relaxed);
                 {
                     let mut nav = ctl.navigation.lock().unwrap();
@@ -1884,6 +1902,7 @@ async fn run_session(
         // Not `now - TAIL`: Instant can't represent times before boot.
         let mut warm_until = Instant::now();
         let mut idle_ticks = 0u32;
+        let mut last_local_position = None;
         loop {
             let forwarding = ping_ctl.forwarding.load(Ordering::SeqCst);
             if forwarding {
@@ -1895,11 +1914,15 @@ async fn run_session(
                 _ => forwarding || Instant::now() < warm_until,
             };
             let send = if fast {
+                // After this tail expires, require fresh local movement to
+                // rearm it. A pointer parked at an edge must not keep the
+                // radio and 125 Hz ping loop awake indefinitely.
+                last_local_position = None;
                 tokio::time::sleep(HEARTBEAT_INTERVAL).await;
                 true
             } else {
                 tokio::time::sleep(HEARTBEAT_TICK).await;
-                if heartbeat.as_str() != "off" && cursor_near_portal(&ping_ctl) {
+                if heartbeat.as_str() != "off" && cursor_near_portal(&ping_ctl, &mut last_local_position) {
                     // Pre-warm: the radio wakes while the cursor is still
                     // approaching the edge, so the crossing itself is hot.
                     warm_until = Instant::now() + HEARTBEAT_TAIL;
@@ -1911,6 +1934,8 @@ async fn run_session(
                 continue;
             }
             idle_ticks = 0;
+            if fast {ping_ctl.heartbeat_fast.fetch_add(1,Ordering::Relaxed);}
+            else {ping_ctl.heartbeat_idle.fetch_add(1,Ordering::Relaxed);}
             seq += 1;
             {
                 let mut p = ping_pending.lock().unwrap();
@@ -1936,13 +1961,30 @@ async fn run_session(
     // cancel-safe: a timer firing mid-read desyncs the Noise nonce.
     let geo_tx = out_tx.clone();
     let geo_task = tokio::spawn(async move {
+        let mut changes=platform::SystemChanges::new();
         let mut last = platform::monitors();
+        let mut desired=Config::load_or_init().map(|c|c.arrangement).unwrap_or_default();
+        let path=Config::path();
+        let modified=||std::fs::metadata(&path).and_then(|m|m.modified()).ok();
+        let mut config_mtime=modified();
         // (current shape, desired arrangement) we already tried to apply —
         // once per pair, so an OS that refuses cannot keep us retrying, but
         // a NEW arrangement (or the OS forgetting again) is always tried.
         let mut tried: Option<(Vec<kayiver_core::proto::Rect>, Vec<kayiver_core::proto::Rect>)> = None;
         loop {
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            let change=changes.wait().await;
+            let mut arrangement_changed=false;
+            if change.config {
+                let mtime=modified();
+                if config_mtime!=mtime {
+                    if let Ok(config)=Config::load_or_init() {
+                        arrangement_changed=desired!=config.arrangement;
+                        desired=config.arrangement;
+                        config_mtime=mtime;
+                    }
+                }
+            }
+            if !change.displays && !arrangement_changed {continue;}
             // Compare the monitor LIST, not the bounding box: a monitor can
             // move without changing the union, and the crossing math cares
             // about each rect.
@@ -1950,7 +1992,6 @@ async fn run_session(
             // The OS forgot the desk arrangement (Windows does, every time
             // the panel's input is switched away): put it back first and
             // report only the settled geometry.
-            let desired = Config::load_or_init().map(|c| c.arrangement).unwrap_or_default();
             if !desired.is_empty() && tried.as_ref() != Some(&(mons.clone(), desired.clone())) {
                 tried = Some((mons.clone(), desired.clone()));
                 if reapply_arrangement(&desired) {
@@ -2165,10 +2206,21 @@ async fn run_session(
     result
 }
 
-/// True while the local cursor loiters within WARM_EDGE_PX of an armed portal
-/// edge or the shared panel's blocked rect — i.e. a crossing may be imminent.
-fn cursor_near_portal(ctl: &CaptureCtl) -> bool {
-    let (x, y) = platform::cursor_pos();
+/// Prewarm only for fresh local movement near a portal. A stationary cursor
+/// (including one resting directly on the seam) is idle, not an imminent crossing.
+fn cursor_near_portal(ctl: &CaptureCtl, previous: &mut Option<kayiver_core::motion::Point>) -> bool {
+    // Capture already maintains the native local reference. Prewarming must
+    // not allocate/query a Quartz event ten times a second while idle.
+    let position = {
+        let nav=ctl.navigation.lock().unwrap();
+        if nav.control==platform::navigation::Control::Local {
+            nav.location.as_ref().map(|l|l.point)
+        } else { None }
+    };
+    let old = std::mem::replace(previous, position);
+    if old.is_none() || old == position { return false; }
+    let Some(position)=position else { return false; };
+    let (x,y)=(position.x as i32,position.y as i32);
     let b = ctl.bounds();
     let near_edge = ctl.portals.read().unwrap().iter().any(|e| match e {
         Edge::Left => x - b.x < WARM_EDGE_PX,
@@ -2211,5 +2263,30 @@ fn cache_peer_screens(name: &str, monitors: &[kayiver_core::proto::Rect], os: Op
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod idle_prewarm_tests {
+    use super::*;
+    use kayiver_core::motion::{Location, Point};
+    #[test]
+    fn resting_on_a_portal_never_rearms_fast_pings() {
+        let ctl=CaptureCtl::new(kayiver_core::proto::Rect{x:0,y:0,w:1000,h:800});
+        *ctl.portals.write().unwrap()=vec![Edge::Left];
+        let place=|x| {ctl.navigation.lock().unwrap().location=Some(Location{surface:"local".into(),point:Point::new(x,400.0)});};
+        let mut previous=None;
+        place(10.0);
+        assert!(!cursor_near_portal(&ctl,&mut previous));
+        for _ in 0..100 {assert!(!cursor_near_portal(&ctl,&mut previous));}
+        place(9.0);assert!(cursor_near_portal(&ctl,&mut previous));
+        assert!(!cursor_near_portal(&ctl,&mut previous));
+        // A finished fast tail discards its old reference. Merely remaining
+        // at the seam cannot start a second tail.
+        previous=None;assert!(!cursor_near_portal(&ctl,&mut previous));
+        place(8.0);assert!(cursor_near_portal(&ctl,&mut previous));
+        place(500.0);assert!(!cursor_near_portal(&ctl,&mut previous));
+        ctl.navigation.lock().unwrap().drive(Some("peer".into()));
+        assert!(!cursor_near_portal(&ctl,&mut previous));assert!(previous.is_none());
     }
 }

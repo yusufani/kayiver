@@ -5,18 +5,29 @@
 //! configured static address first (VPNs and many corporate networks drop
 //! multicast), and mDNS fills in when addresses change on a normal LAN.
 
+#[cfg(not(target_os = "macos"))]
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{ServiceDaemon, ServiceEvent};
+#[cfg(not(target_os = "macos"))]
+use mdns_sd::ServiceInfo;
 
+#[cfg(target_os = "macos")]
+#[path = "discovery_macos.rs"]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::advertise;
+
+#[cfg(not(target_os = "macos"))]
 use crate::{Error, Result};
 
 pub const SERVICE_TYPE: &str = "_kayiver._tcp.local.";
 
 /// Advertise this machine as a kayiver host. Keep the returned daemon alive
 /// for as long as the advertisement should stay up.
+#[cfg(not(target_os = "macos"))]
 pub fn advertise(instance_name: &str, port: u16) -> Result<ServiceDaemon> {
     let daemon = ServiceDaemon::new().map_err(|e| Error::Protocol(format!("mdns: {e}")))?;
     let hostname = format!("{}.local.", crate::config::machine_name());
