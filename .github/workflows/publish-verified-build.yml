@@ -1,0 +1,145 @@
+name: verify and publish existing desktop build
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Completed release workflow run with successful Windows and macOS build jobs
+        required: true
+        type: string
+      publish:
+        description: Create a draft release after exact-file verification
+        type: boolean
+        default: false
+permissions:
+  contents: write
+  actions: read
+jobs:
+  verify:
+    runs-on: windows-11-arm
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.source.outputs.tag }}
+      build_sha: ${{ steps.source.outputs.build_sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate build provenance and package version
+        id: source
+        shell: pwsh
+        env:
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if ($env:BUILD_RUN_ID -notmatch '^[0-9]+$') { throw 'Invalid build run ID' }
+          $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json'}
+          $api="https://api.github.com/repos/$env:GITHUB_REPOSITORY"
+          $run=Invoke-RestMethod -Uri "$api/actions/runs/$env:BUILD_RUN_ID" -Headers $headers
+          if ($run.path -ne '.github/workflows/release.yml' -or $run.head_branch -ne 'main' -or
+              $run.event -ne 'workflow_dispatch' -or $run.head_repository.full_name -ne $env:GITHUB_REPOSITORY -or
+              $run.status -ne 'completed') { throw 'Unexpected build provenance' }
+          $jobs=(Invoke-RestMethod -Uri "$api/actions/runs/$env:BUILD_RUN_ID/jobs?per_page=100" -Headers $headers).jobs
+          foreach ($name in @('windows','macos')) {
+              $job=@($jobs | Where-Object name -eq $name)
+              if ($job.Count -ne 1 -or $job[0].conclusion -ne 'success') { throw "Build job $name did not pass" }
+          }
+          $file=Invoke-RestMethod -Uri "$api/contents/Cargo.toml?ref=$($run.head_sha)" -Headers $headers
+          $cargo=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($file.content))
+          $version=[regex]::Match($cargo,'(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+-dev$') { throw 'Promotion supports development prereleases only' }
+          try {
+              $existing=Invoke-RestMethod -Uri "$api/releases/tags/v$version" -Headers $headers
+              if (-not $existing.draft) { throw 'Refusing to overwrite a published release' }
+          } catch {
+              if ([int]$_.Exception.Response.StatusCode -ne 404) { throw }
+          }
+          try {
+              $tagRef=Invoke-RestMethod -Uri "$api/git/ref/tags/v$version" -Headers $headers
+              $object=$tagRef.object
+              for ($i=0;$i -lt 5 -and $object.type -eq 'tag';$i++) {
+                  $object=(Invoke-RestMethod -Uri "$api/git/tags/$($object.sha)" -Headers $headers).object
+              }
+              if ($object.type -ne 'commit' -or $object.sha -ne $run.head_sha) { throw 'Release tag refers to another source commit' }
+          } catch {
+              if ([int]$_.Exception.Response.StatusCode -ne 404) { throw }
+          }
+          "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "build_sha=$($run.head_sha)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-unverified
+          path: candidate
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Prepare the ephemeral Defender scan host
+        shell: pwsh
+        env:
+          KAYIVER_EPHEMERAL_SCAN_HOST: ${{ runner.environment }}
+        run: ./scripts/prepare-defender-ci.ps1
+      - name: Verify the exact candidate without launching it
+        shell: pwsh
+        run: ./scripts/verify-windows-artifact.ps1 -Path candidate/kayiver-windows-x64.exe -ReportPath windows-verification.json
+      - name: Record source provenance
+        shell: pwsh
+        env:
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          BUILD_SHA: ${{ steps.source.outputs.build_sha }}
+        run: |
+          $report=Get-Content windows-verification.json -Raw | ConvertFrom-Json
+          $report | Add-Member -NotePropertyName build_run_id -NotePropertyValue $env:BUILD_RUN_ID
+          $report | Add-Member -NotePropertyName build_commit -NotePropertyValue $env:BUILD_SHA
+          $report | ConvertTo-Json -Depth 6 | Set-Content windows-verification.json -Encoding UTF8
+      - name: Preserve scan evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: promoted-security-report
+          path: |
+            windows-verification.json
+            defender-ci-preparation.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: promoted-windows
+          path: |
+            candidate/kayiver-windows-x64.exe
+            windows-verification.json
+  draft:
+    needs: verify
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: promoted-windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify promotion evidence and compute checksums
+        env:
+          BUILD_SHA: ${{ needs.verify.outputs.build_sha }}
+        run: |
+          # Upload-artifact preserves the candidate directory for mixed paths.
+          if [ -f candidate/kayiver-windows-x64.exe ]; then mv candidate/kayiver-windows-x64.exe .; fi
+          python3 - <<'PYTHON'
+          import hashlib, json, os
+          from pathlib import Path
+          report=json.loads(Path('windows-verification.json').read_text(encoding='utf-8-sig'))
+          digest=hashlib.sha256(Path('kayiver-windows-x64.exe').read_bytes()).hexdigest()
+          if report.get('passed') is not True or report.get('sha256') != digest or report.get('build_commit') != os.environ['BUILD_SHA']:
+              raise SystemExit('Release bytes or build provenance do not match the verified report')
+          PYTHON
+          sha256sum kayiver-windows-x64.exe Kayiver-macos-arm64.zip Kayiver-macos-arm64.dmg windows-verification.json > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: true
+          tag_name: ${{ needs.verify.outputs.tag }}
+          target_commitish: ${{ needs.verify.outputs.build_sha }}
+          name: Kayıver ${{ needs.verify.outputs.tag }}
+          files: |
+            kayiver-windows-x64.exe
+            Kayiver-macos-arm64.zip
+            Kayiver-macos-arm64.dmg
+            windows-verification.json
+            SHA256SUMS

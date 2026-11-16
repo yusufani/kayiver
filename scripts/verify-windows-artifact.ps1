@@ -47,6 +47,8 @@ try {
         throw 'Defender antivirus, real-time protection and behavior monitoring must be enabled.'
     }
     $preferences = Get-MpPreference -ErrorAction Stop
+    $report.defender['cloud_reporting'] = [int]$preferences.MAPSReporting
+    $report.defender['sample_submission_consent'] = [int]$preferences.SubmitSamplesConsent
     $excludedPaths = @($preferences.ExclusionPath | Where-Object {
         if ([string]::IsNullOrWhiteSpace($_)) { return $false }
         $excluded = [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\')

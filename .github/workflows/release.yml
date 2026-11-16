@@ -58,6 +58,11 @@ jobs:
       # Development prereleases retain the existing unsigned Windows channel.
       # The exact file must pass Defender and publishes its verification report.
       # Stable version tags additionally require a trusted Authenticode signature.
+      - name: Prepare the ephemeral Defender scan host
+        shell: pwsh
+        env:
+          KAYIVER_EPHEMERAL_SCAN_HOST: ${{ runner.environment }}
+        run: ./scripts/prepare-defender-ci.ps1
       - name: Verify the exact Windows artifact
         shell: pwsh
         run: |
@@ -65,13 +70,15 @@ jobs:
           $versionLine = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0]
           $isDevelopment = $versionLine.Groups[1].Value.EndsWith('-dev')
           $requireSignature = $publicBuild -and -not $isDevelopment
-          ./scripts/verify-windows-artifact.ps1 -Path candidate/kayiver-windows-x64.exe -ReportPath windows-verification.json -UpdateSignatures -RequireSignature:$requireSignature
+          ./scripts/verify-windows-artifact.ps1 -Path candidate/kayiver-windows-x64.exe -ReportPath windows-verification.json -RequireSignature:$requireSignature
       - name: Preserve verification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-security-report
-          path: windows-verification.json
+          path: |
+            windows-verification.json
+            defender-ci-preparation.json
       - uses: actions/upload-artifact@v4
         with:
           name: windows-verified
