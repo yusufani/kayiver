@@ -10,6 +10,8 @@
 #include <wmcodecdsp.h>
 #include <codecapi.h>
 #include <wtsapi32.h>
+#include <physicalmonitorenumerationapi.h>
+#include <lowlevelmonitorconfigurationapi.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +53,7 @@ static HANDLE parentHandle=nullptr;
 static RECT targetRect;
 static volatile LONG stopping=0;
 static bool testMode=false;
+static bool displayInUse=false;
 // Synthetic test frames only. Never enable readback for a user's live desktop.
 static const char *testReadbackPath=nullptr;
 static bool testReadbackDone=false;
@@ -67,6 +70,31 @@ static bool readAll(void *p,DWORD size) {
     return size==0;
 }
 static bool sameRect(const RECT &a,const RECT &b){return a.left==b.left&&a.top==b.top&&a.right==b.right&&a.bottom==b.bottom;}
+static bool wakeSelectedMonitor() {
+    // A panel can remain in a DDC standby state even with a Windows display
+    // request. Wake only the selected physical panel, never the shared panel
+    // or every display through a global monitor-power broadcast.
+    HMODULE dll=LoadLibraryW(L"dxva2.dll");if(!dll)return true;
+    auto count=(decltype(&GetNumberOfPhysicalMonitorsFromHMONITOR))GetProcAddress(dll,"GetNumberOfPhysicalMonitorsFromHMONITOR");
+    auto get=(decltype(&GetPhysicalMonitorsFromHMONITOR))GetProcAddress(dll,"GetPhysicalMonitorsFromHMONITOR");
+    auto read=(decltype(&GetVCPFeatureAndVCPFeatureReply))GetProcAddress(dll,"GetVCPFeatureAndVCPFeatureReply");
+    auto write=(decltype(&SetVCPFeature))GetProcAddress(dll,"SetVCPFeature");
+    auto destroy=(decltype(&DestroyPhysicalMonitor))GetProcAddress(dll,"DestroyPhysicalMonitor");
+    bool ok=true;DWORD n=0;
+    HMONITOR monitor=MonitorFromRect(&targetRect,MONITOR_DEFAULTTONULL);
+    if(count&&get&&read&&write&&destroy&&monitor&&count(monitor,&n)&&n==1) {
+        PHYSICAL_MONITOR physical={};
+        if(get(monitor,1,&physical)) {
+            MC_VCP_CODE_TYPE type;DWORD current=0,maximum=0;
+            if(read(physical.hPhysicalMonitor,0xD6,&type,&current,&maximum)&&current>=2&&current<=5) {
+                ok=write(physical.hPhysicalMonitor,0xD6,1)!=FALSE;
+                fprintf(stderr,"display receiver: selected panel wake %s\n",ok?"requested":"failed");
+            }
+            destroy(physical.hPhysicalMonitor);
+        }
+    }
+    FreeLibrary(dll);return ok;
+}
 static void fail(HRESULT hr,const char *stage) {fprintf(stderr,"display receiver: %s (0x%08lx)\n",stage,(unsigned long)hr);}
 #define CHECK(call) do {HRESULT result=(call);if(FAILED(result)){fail(result,#call);return false;}}while(0)
 
@@ -232,7 +260,25 @@ static DWORD WINAPI consume(LPVOID param) {
 }
 static LRESULT CALLBACK wndproc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     switch(msg) {
-        case WM_APP+1: if(!IsWindowVisible(hwnd)){ShowWindow(hwnd,SW_SHOW);SetForegroundWindow(hwnd);SetFocus(hwnd);}return 0;
+        case WM_APP+1:
+            if(!IsWindowVisible(hwnd)){ShowWindow(hwnd,SW_SHOW);SetForegroundWindow(hwnd);SetFocus(hwnd);}
+            if(!displayInUse) {
+                // Screen-only use generates no Windows keyboard/mouse input.
+                // Hold the standard video-playback request while visible;
+                // otherwise the monitor can power off during a healthy stream.
+                // Reset a pre-existing idle state after the viewer is visible,
+                // then retain the request for this UI thread's lifetime.
+                if(!SetThreadExecutionState(ES_DISPLAY_REQUIRED|ES_SYSTEM_REQUIRED) ||
+                   !SetThreadExecutionState(ES_CONTINUOUS|ES_DISPLAY_REQUIRED|ES_SYSTEM_REQUIRED)) {
+                    fprintf(stderr,"display receiver: could not keep the active display awake\n");
+                    PostMessageW(hwnd,WM_CLOSE,0,0);return 0;
+                }
+                displayInUse=true;
+                if(!wakeSelectedMonitor()) {
+                    PostMessageW(hwnd,WM_CLOSE,0,0);return 0;
+                }
+            }
+            return 0;
         case WM_COMMAND: if(LOWORD(wp)==100)PostMessageW(hwnd,WM_CLOSE,0,0);return 0;
         case WM_KEYDOWN: if(wp==VK_ESCAPE)PostMessageW(hwnd,WM_CLOSE,0,0);return 0;
         case WM_TIMER: if(parentHandle&&WaitForSingleObject(parentHandle,0)==WAIT_OBJECT_0)PostMessageW(hwnd,WM_CLOSE,0,0);return 0;
@@ -241,7 +287,9 @@ static LRESULT CALLBACK wndproc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         case WM_POWERBROADCAST: if(wp==PBT_APMSUSPEND)PostMessageW(hwnd,WM_CLOSE,0,0);return TRUE;
         case WM_SETCURSOR: if((HWND)wp==hwnd&&LOWORD(lp)==HTCLIENT){SetCursor(nullptr);return TRUE;}break;
         case WM_CLOSE: InterlockedExchange(&stopping,1);DestroyWindow(hwnd);return 0;
-        case WM_DESTROY: PostQuitMessage(0);return 0;
+        case WM_DESTROY:
+            if(displayInUse){SetThreadExecutionState(ES_CONTINUOUS);displayInUse=false;}
+            PostQuitMessage(0);return 0;
         case WM_ERASEBKGND: return 1;
     }
     return DefWindowProcW(hwnd,msg,wp,lp);

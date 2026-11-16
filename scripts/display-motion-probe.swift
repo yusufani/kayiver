@@ -25,10 +25,15 @@ final class Pattern: NSView {
     }
 }
 let frame=screen.visibleFrame.insetBy(dx: 20, dy: 30)
-let window=NSWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: false)
+let window=NSWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: false, screen: screen)
+window.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary]
+window.level = .floating
+window.setFrame(frame, display: true)
 window.title="Kayiver temporary display check"
 let pattern=Pattern(frame: NSRect(origin: .zero, size: frame.size));window.contentView=pattern
 window.orderFrontRegardless()
+print("probe target=\(screen.localizedName) frame=\(window.frame) actual=\(window.screen?.localizedName ?? "none") visible=\(window.isVisible) activeSpace=\(window.isOnActiveSpace)")
+guard window.screen == screen else { fputs("Probe did not reach the virtual display\n",stderr);exit(2) }
 let started=Date()
 let timer=Timer.scheduledTimer(withTimeInterval: 1.0/60, repeats: true) { _ in
     pattern.phase += 8;pattern.needsDisplay=true

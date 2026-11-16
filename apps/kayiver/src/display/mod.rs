@@ -319,6 +319,12 @@ pub fn worker(args: Vec<String>) -> Result<()> {
     runtime.block_on(session::run(args))
 }
 
+/// A companion must not outlive the explicit launcher that owns its consent.
+pub fn parent_lifetime() -> Result<impl std::future::Future<Output = ()>> {
+    let parent = session::ParentWatch::new()?;
+    Ok(async move { parent.wait().await })
+}
+
 fn chunk(frame: u64, captured: u64, total: usize, offset: usize, data: &[u8]) -> Vec<u8> {
     let mut packet = Vec::with_capacity(CHUNK_HEADER + data.len());
     packet.push(0x10);

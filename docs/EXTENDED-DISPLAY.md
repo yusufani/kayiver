@@ -43,18 +43,53 @@ receiver readiness; Windows login does not. Mac Stop leaves the receiver ready;
 Windows Escape/Stop closes its accepted session. Close or restart the companion
 to revoke a waiting acceptance. There is no automatic stream restart.
 
-The final companion SHA-256
-`13945bb534470cf02806aa95401bdf88b5eff94354d3a84ae9fcc3a1cb314004`
-passed exact-file Defender checks at staging and installation. The prior
-companion was observed receiving and presenting hardware-decoded frames on the
-BenQ 1920×1080 C output while the original KVM remained connected, without
-Defender exclusions/protection changes or active threats. A motion window on
-the real virtual screen advanced the live frame counter; rolling estimated
-p95 reached approximately 74 ms at the adaptive 30 fps target. This does not
-prove sustained 60 fps or physical scanout latency. Mac Stop removed the
-virtual display and restored the two physical surfaces in under a second.
-Full sleep/lock/cable-loss and long-running visual acceptance remain separate
-checks; the default remains experimental and off after app restart.
+The currently installed companion SHA-256 is
+`9e5bd19c1ef4050f5b2d1420444f37bde8ede08dda2daf24fc0a8e3c94d2f0ff`.
+Exact-file Defender checks passed at staging and installation; protection is
+still enabled and the original KVM is unchanged. The companion uses the active
+KVM cable route when available, with saved peer addresses as a screen-only
+fallback. Parent exit stops its children.
+
+**Current acceptance is incomplete:** the user reports no image on C even
+while software reports streaming. Read-only telemetry of the selected BenQ
+identity found DDC standby (VCP D6 = 2). A targeted DDC wake changed it to on
+(1), but a later reading returned to standby despite an active Windows display
+power request. Resetting the Windows display idle timer then produced another
+on reading. The receiver now shows its window before resetting that timer,
+holding the continuous playback request, and waking the selected panel. This
+startup change has been built, scanned and installed. At 22:32:48 local
+time, more than five minutes after the 22:27:17 launch, the selected panel
+still reported power-on (D6 = 1), the cable media connection was established,
+and software presentation continued. The physical image still needs user
+confirmation; this is not a complete visual acceptance test. A software frame counter is not proof of a visible image. Do
+not treat this build as ready for daily use until visible output and sustained
+wake behavior are confirmed.
+
+Automatic D3D video enhancement was responsible for excessive brightness in
+the synthetic color fixture. Disabling it reduced sampled patch-interior error
+against software decoding from a maximum of 79 to 1 channel value. This does
+not establish physical panel calibration or user acceptance of the live image.
+
+The signed Mac preview now captures NV12 and changes the ScreenCaptureKit
+capture rate with the adaptive encoder target. In a verified 15-second motion
+probe on the virtual screen over the cable, 379 frames were presented. Native
+capture/encoding averaged 2.26% of one CPU core and transport 0.72%; the Mac has
+12 logical cores. Global WindowServer usage averaged 43.04% of one core and
+includes all displays and other applications, so it cannot be excluded when
+assessing overall Mac load. Estimated rolling software p95 varied about
+77–91 ms and ended at 84 ms. Sustained 60 fps, the under-80-ms target, and
+physical scanout latency are not established. A later visible-first startup test
+on the same cable advanced 817 frames in roughly 15 seconds at the 60 fps target
+(about 54 presented frames/s), ending with rolling software p95 10.135 ms.
+Capture/encode averaged 5.42% of one core, transport 1.60%, and global
+WindowServer 38.62%. These are separate short samples under different running
+conditions, not a controlled before/after comparison. Earlier motion probes without
+verified window placement must not be used as before/after CPU evidence.
+
+Mac Stop removed the virtual display and restored the two physical surfaces
+in under a second in an earlier check. Full sleep/lock/cable-loss and
+long-running visual acceptance remain separate checks; the default remains
+experimental and off after app restart.
 
 Use a Windows-connected monitor as an additional Mac desktop. For example,
 drag a Safari window from a physical Mac monitor onto the added desktop:

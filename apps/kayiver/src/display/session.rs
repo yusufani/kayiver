@@ -133,14 +133,14 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     outcome
 }
 
-struct ParentWatch {
+pub(super) struct ParentWatch {
     #[cfg(target_os = "macos")]
     pid: libc::pid_t,
     #[cfg(target_os = "windows")]
     handle: windows::Win32::Foundation::HANDLE,
 }
 impl ParentWatch {
-    fn new() -> Result<Self> {
+    pub(super) fn new() -> Result<Self> {
         #[cfg(target_os = "macos")]
         {
             Ok(Self {
@@ -185,7 +185,7 @@ impl ParentWatch {
             Ok(Self {})
         }
     }
-    async fn wait(&self) {
+    pub(super) async fn wait(&self) {
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
             #[cfg(target_os = "macos")]
@@ -386,10 +386,12 @@ async fn send_control(tx: &mpsc::Sender<Outbound>, c: Control) -> Result<()> {
 fn source_addresses(cfg: &Config, args: &[String]) -> Result<Vec<std::net::SocketAddr>> {
     let peer = cfg.peer(&args[1]).context("peer no longer paired")?;
     let mut candidates = Vec::new();
+    let active_route = crate::ui::peer_remote_addr(&args[1]);
     for address in args
         .get(3)
         .filter(|s| !s.starts_with("--"))
         .into_iter()
+        .chain(active_route.iter())
         .chain(peer.addr.iter())
         .chain(peer.last_good.iter())
         .chain(peer.addrs.iter())
@@ -652,7 +654,6 @@ async fn receive(
         synthetic || cfg.shared_monitor.local_rect != Some(rect),
         "shared physical panel is not an eligible target"
     );
-    let addresses = source_addresses(cfg, args)?;
     state.phase = "listening".into();
     state.virtual_rect = None;
     state.frames = 0;
@@ -664,6 +665,10 @@ async fn receive(
     // The selected Mac must also explicitly start its service. Windows is
     // always the TCP/Noise initiator; media direction remains Mac -> Windows.
     let (mut reader, mut writer) = loop {
+        // A KVM connection may become ready after the receiver was launched.
+        // Refresh its optional route hint while waiting, rather than pinning
+        // an old Wi-Fi address for the entire accepted application session.
+        let addresses = source_addresses(cfg, args)?;
         let mut authenticated = None;
         for address in &addresses {
             let dial = async {
