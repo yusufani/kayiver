@@ -355,6 +355,7 @@ async fn host_main(cfg: Config, ctl: Arc<CaptureCtl>, mut cap_rx: UnboundedRecei
                 None => break,
             },
             cmd = cmd_rx.recv() => match cmd {
+                Some(crate::ui::UiCmd::DisplayChanged) => {router.refresh_navigation();router.broadcast_state();},
                 Some(crate::ui::UiCmd::SetSharedOwner(owner)) => router.request_shared_owner(&owner),
                 Some(crate::ui::UiCmd::TabletControl(on)) => router.set_tablet_control(on),
                 Some(crate::ui::UiCmd::Arrange { machine, monitors }) => router.arrange(&machine, monitors),
@@ -1095,6 +1096,7 @@ impl Router {
                 if current {self.recover_local(reason);}
             },
             Captured::Panic => {
+                crate::display::stop();
                 if self.tablet_active {self.set_tablet_control(false);}
                 self.recover_local("escape shortcut restored local control");
             }
@@ -1414,6 +1416,7 @@ impl Router {
         for (name,monitors) in &self.monitor_identities {
             if self.session_exists(name) { desks.push(Desk {machine:name.clone(),monitors:monitors.clone()}); }
         }
+        crate::display::exclude_presentation(&mut desks,crate::display::presentation());
         desks.sort_by(|a,b|a.machine.cmp(&b.machine));
         for d in &mut desks {d.monitors.sort_by(|a,b|a.0.cmp(&b.0));}
         let sm=self.shared.read().unwrap().clone();
@@ -1992,7 +1995,7 @@ async fn run_session(
             // The OS forgot the desk arrangement (Windows does, every time
             // the panel's input is switched away): put it back first and
             // report only the settled geometry.
-            if !desired.is_empty() && tried.as_ref() != Some(&(mons.clone(), desired.clone())) {
+            if !crate::display::virtual_screen_active() && !desired.is_empty() && tried.as_ref() != Some(&(mons.clone(), desired.clone())) {
                 tried = Some((mons.clone(), desired.clone()));
                 if reapply_arrangement(&desired) {
                     continue;

@@ -6,6 +6,7 @@
 
 mod android;
 mod autostart;
+mod display;
 mod engine;
 #[cfg(target_os = "macos")]
 mod gui;
@@ -38,6 +39,18 @@ enum DisplayAction {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Extended display controls (experimental, off until explicitly started).
+    Screen {
+        #[arg(value_parser=["status","inspect","stop","source","receive","probe"])]
+        action:String,
+        peer:Option<String>,
+        /// Stable local Windows monitor identity (from screen status).
+        #[arg(long)] monitor_id:Option<String>,
+    },
+    #[command(hide=true)]
+    ScreenWorker {#[arg(trailing_var_arg=true,allow_hyphen_values=true)] args:Vec<String>},
+    #[command(hide=true)]
+    ScreenNative {#[arg(trailing_var_arg=true,allow_hyphen_values=true)] args:Vec<String>},
     /// Run kayiver with the configured role (default subcommand).
     Run {
         /// Headless: skip the menu-bar icon / native window (macOS only).
@@ -159,6 +172,17 @@ fn main() -> Result<()> {
         return ui::run(true);
     }
     match cli.command.unwrap_or(Command::Run { no_gui: false }) {
+        Command::ScreenWorker {args}=>display::worker(args),
+        Command::ScreenNative {args}=>display::native(args),
+        Command::Screen {action,peer,monitor_id}=> {
+            if action=="probe" {return display::native(vec!["probe".into()]);}
+            if action=="inspect" {println!("{}",display::api_status());return Ok(());}
+            let (code,body)=if action=="status" {ui::local_api("GET","/api/display",None)?} else {
+                let payload=serde_json::json!({"action":action,"peer":peer,"monitor_id":monitor_id}).to_string();
+                ui::local_api("POST","/api/display",Some(&payload))?
+            };
+            anyhow::ensure!(code==200,"{body}");println!("{body}");Ok(())
+        },
         Command::Run { no_gui } => run(no_gui),
         Command::Pair => engine::pairing::pair_as_display(),
         Command::Join { address } => engine::pairing::join(&address),

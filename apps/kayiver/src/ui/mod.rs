@@ -41,6 +41,8 @@ pub struct PeerLive {
 
 /// Commands the editor (or `kayiver monitor`) sends to the running host router.
 pub enum UiCmd {
+    /// A presentation target was reserved or released; update input topology.
+    DisplayChanged,
     SetSharedOwner(String),
     /// Enter (true) or leave (false) tablet control: forward the keyboard/mouse
     /// to the connected Android device instead of the local desktop.
@@ -226,6 +228,10 @@ pub fn set_builtin(peer: &str, flags: Vec<bool>) {
 
 pub fn builtin_of(peer: &str) -> Vec<bool> {
     live().lock().unwrap().peers.get(peer).map(|p| p.builtin.clone()).unwrap_or_default()
+}
+
+pub fn peer_remote_addr(peer:&str)->Option<String> {
+    live().lock().unwrap().peers.get(peer).and_then(|p|p.remote_addr.clone())
 }
 
 pub fn set_rtt(peer: &str, rtt_ms: f64) {
@@ -736,9 +742,7 @@ async fn handle(mut stream: TcpStream, required_token: Option<String>) -> Result
         }
     }
 
-    let remote_permission_action = required_token.is_some()
-        && request_line.split_whitespace().take(2).eq(["POST", "/api/permissions"]);
-    let (status, ctype, payload) = if remote_permission_action {
+    let (status, ctype, payload) = if reject_local_action(&request_line,&headers,required_token.is_some()) {
         ("403 Forbidden", "text/plain", b"permission actions must be performed on this machine".to_vec())
     } else { route(&request_line, &body) };
     let response = format!(
@@ -751,6 +755,18 @@ async fn handle(mut stream: TcpStream, required_token: Option<String>) -> Result
     Ok(())
 }
 
+fn reject_local_action(request_line:&str,headers:&[(String,String)],remote:bool)->bool {
+    let local_action = request_line.split_whitespace().take(2).eq(["POST", "/api/permissions"])
+        || request_line.split_whitespace().take(2).eq(["POST", "/api/display"]);
+    let display_action = request_line.split_whitespace().take(2).eq(["POST", "/api/display"]);
+    // Screen consent cannot come from the phone/LAN API or from a website
+    // submitting a cross-origin form to localhost.
+    let cross_origin_display = display_action && headers.iter().any(|(k,v)|
+        (k=="origin" && !matches!(v.as_str(),"http://127.0.0.1:24818"|"http://localhost:24818"))
+        || (k=="sec-fetch-site" && matches!(v.as_str(),"cross-site"|"same-site")));
+    (remote&&local_action)||cross_origin_display
+}
+
 fn find_headers_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
@@ -761,6 +777,11 @@ fn route(request_line: &str, body: &[u8]) -> (&'static str, &'static str, Vec<u8
     let path = parts.next().unwrap_or_default();
 
     match (method, path) {
+        ("GET","/api/display") => ("200 OK","application/json",crate::display::api_status().to_string().into_bytes()),
+        ("POST","/api/display") => match crate::display::action(body) {
+            Ok(())=>("200 OK","application/json",crate::display::api_status().to_string().into_bytes()),
+            Err(e)=>("400 Bad Request","text/plain",format!("{e:#}").into_bytes()),
+        },
         ("GET", "/") => ("200 OK", "text/html; charset=utf-8", INDEX_HTML.replace("__KAYIVER_VERSION__",env!("CARGO_PKG_VERSION")).into_bytes()),
         ("GET", "/assets/alpine-blue.png") => ("200 OK", "image/png", include_bytes!("assets/alpine-blue.png").to_vec()),
         ("GET", "/api/state") => match api_state() {
@@ -1351,6 +1372,7 @@ pub(crate) fn api_status() -> String {
         "clipboard": crate::engine::clipsync::status(),
         "version": env!("CARGO_PKG_VERSION"),
         "input_queue":crate::engine::host::input_queue_status(),
+        "display_extension":crate::display::status(),
         "editor": ({
             #[cfg(all(target_os="windows",not(feature="sim")))] {crate::platform::editor_status()}
             #[cfg(not(all(target_os="windows",not(feature="sim"))))] {serde_json::Value::Null}
@@ -1409,6 +1431,7 @@ fn api_cursor() -> String {
 }
 
 fn api_save_layout(body: &[u8]) -> Result<()> {
+    anyhow::ensure!(crate::display::presentation().is_none(),"stop the extended display before saving a physical desk arrangement");
     // Body is either the bare link list (older editor) or
     // `{ links, arrangements: { machine: [rect, ...] } }`.
     let v: serde_json::Value = serde_json::from_slice(body).context("invalid layout JSON")?;
@@ -1535,6 +1558,18 @@ mod tests {
         assert_eq!(status, "200 OK");
         assert!(ctype.starts_with("text/html"));
         assert!(String::from_utf8_lossy(&body).contains("Kayıver"));
+    }
+
+    #[test]
+    fn display_consent_requires_a_local_editor_action() {
+        let request="POST /api/display HTTP/1.1";
+        assert!(reject_local_action(request,&[],true));
+        assert!(reject_local_action(request,&[("origin".into(),"https://example.com".into())],false));
+        assert!(reject_local_action(request,&[("sec-fetch-site".into(),"same-site".into())],false));
+        assert!(reject_local_action(request,&[("origin".into(),"null".into())],false));
+        assert!(!reject_local_action(request,&[("origin".into(),"http://127.0.0.1:24818".into()),("sec-fetch-site".into(),"same-origin".into())],false));
+        assert!(!reject_local_action(request,&[],false)); // local CLI
+        assert!(!reject_local_action("GET /api/display HTTP/1.1",&[],true));
     }
 
     #[test]

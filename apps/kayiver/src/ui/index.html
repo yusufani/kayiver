@@ -452,7 +452,24 @@
   <div style="flex:1"></div>
   <button class="dock-btn" id="liveBtn"><span class="dot" id="liveDot"></span><span id="liveLbl">live cursor</span></button>
   <button class="dock-btn" id="addDevBtn">+ <span id="addDevLbl">device</span></button>
+  <button class="dock-btn" id="screenExtensionBtn" type="button">Extra display</button>
 </footer>
+
+<dialog id="screenExtensionDialog" aria-labelledby="screenExtensionTitle" style="margin:auto;background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:18px;padding:24px;width:min(480px,calc(100vw - 48px));max-height:85vh;overflow:auto">
+  <h2 id="screenExtensionTitle" style="margin:0 0 8px">Mac extended display · Experimental</h2>
+  <p id="screenExtensionHelp" style="color:var(--muted);line-height:1.6"></p>
+  <label for="screenExtensionPeer" id="screenExtensionPeerLabel">Paired device</label>
+  <select id="screenExtensionPeer" style="display:block;width:100%;margin:8px 0 16px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px"></select>
+  <div id="screenExtensionMonitorRow"><label for="screenExtensionMonitor" id="screenExtensionMonitorLabel">Display</label>
+  <select id="screenExtensionMonitor" style="display:block;width:100%;margin:8px 0 16px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px"></select></div>
+  <p id="screenExtensionRisk" style="font-size:12px;color:var(--muted);line-height:1.6"></p>
+  <p id="screenExtensionStatus" role="status" aria-live="polite" style="line-height:1.6;overflow-wrap:anywhere"></p>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:20px">
+    <button id="screenExtensionStart" type="button">Start</button>
+    <button id="screenExtensionStop" class="ghost" type="button">Stop</button>
+    <button id="screenExtensionClose" class="ghost" type="button" style="margin-left:auto">Close</button>
+  </div>
+</dialog>
 
 <div id="overlay">
   <div id="settings">
@@ -723,6 +740,7 @@ function selectScreen(tile) {
   const arranged=tileNow ? peerArrangements()[tileNow.machine]?.[tileNow.idx] : null;
   document.getElementById('inspectorPosition').textContent = tileNow ? (arranged?.x ?? tileNow.realX) + ', ' + (arranged?.y ?? tileNow.realY) : '—';
   document.getElementById('inspectorSharing').textContent = tileNow ? (tileNow.el.classList.contains('panel') ? (english ? 'Shared screen' : 'Ortak ekran') : (tileNow.me ? (english ? 'Local' : 'Yerel') : (english ? 'Peer' : 'Diğer bilgisayar'))) : '—';
+  if (tileNow && (isDisplayPresentation(tileNow)||tileNow.el.classList.contains('display-virtual'))) document.getElementById('inspectorSharing').textContent=english?'Mac extended display · input stays on Mac':'Mac ek ekranı · kontrol Mac’te';
   const kindButton=document.getElementById('inspectorKind');kindButton.disabled=!tileNow || tileNow.el.classList.contains('panel');kindButton.textContent=english?'Change device appearance':'Cihaz görünümünü değiştir';
 }
 document.getElementById('inspectorKind').addEventListener('click',()=>mons.find(m=>screenKey(m)===selectedScreen)?.el.querySelector('.kind').click());
@@ -1812,12 +1830,97 @@ document.getElementById('linkGo').addEventListener('click', async () => {
 });
 
 let pollN = 0;
+let screenExtensionState = null;
+let screenExtensionCanStart = false;
+function isDisplayPresentation(tile) {
+  const s=screenExtensionState, r=s?.target;
+  if (!r || !['connecting','streaming','stopping'].includes(s.phase)) return false;
+  const targetMachine=s.role==='source'?s.peer:machines.find(m=>m.me)?.name;
+  return tile.machine===targetMachine && tile.realX===r.x && tile.realY===r.y && tile.realW===r.w && tile.realH===r.h;
+}
+function renderScreenExtensionStatus(s) {
+  screenExtensionState=s;
+  const en=lang==='en';
+  const phases=en?{off:'Off',starting:'Starting…',listening:'Ready for the selected Mac',connecting:'Connecting…',streaming:'Mac extended display active',stopping:'Stopping…',error:'Stopped'}:
+    {off:'Kapalı',starting:'Başlatılıyor…',listening:'Seçilen Mac için hazır',connecting:'Bağlanıyor…',streaming:'Mac ek ekranı açık',stopping:'Durduruluyor…',error:'Durduruldu'};
+  const active=s && !['off','error',''].includes(s.phase);
+  const button=document.getElementById('screenExtensionBtn');button.textContent=(en?'Extra display':'Ek ekran')+(active?' ●':'');
+  document.getElementById('screenExtensionStatus').textContent=(phases[s?.phase]||phases.off)+(s?.error?' · '+s.error:'')+
+    (s?.phase==='streaming'&&s.target?' · '+s.target.w+' × '+s.target.h+(en?' · up to ':' · en fazla ')+s.fps+' fps':'');
+  document.getElementById('screenExtensionStart').disabled=!!active||!screenExtensionCanStart;
+  document.getElementById('screenExtensionStop').disabled=!active;
+  const sourceMachine=s?.role==='source'?machines.find(m=>m.me)?.name:s?.peer;
+  const vr=s?.virtual_rect;
+  const virtualTile=vr && mons.find(tile=>tile.machine===sourceMachine && tile.realX===vr.x && tile.realY===vr.y && tile.realW===vr.w && tile.realH===vr.h);
+  for(const tile of mons) {
+    const presentation=isDisplayPresentation(tile);tile.el.classList.toggle('display-presentation',presentation);
+    tile.el.classList.toggle('display-virtual',!!active&&tile===virtualTile);
+    const merged=presentation && virtualTile && virtualTile!==tile && active;
+    if(merged) {
+      tile.el.dataset.displayHidden='1';tile.el.style.display='none';
+      if(screenKey(tile)===selectedScreen)selectedScreen=screenKey(virtualTile);
+    } else if(tile.el.dataset.displayHidden) {delete tile.el.dataset.displayHidden;tile.el.style.display='';}
+    const label=tile.el.querySelector('.name');if(label)label.textContent=tile.machine+((presentation||(active&&tile===virtualTile))?(en?' · Mac display':' · Mac ekranı'):'');
+  }
+  // Native arrangement persistence must never include an ephemeral monitor.
+  const save=document.getElementById('save');save.disabled=!!active;
+  save.title=active?(en?'Stop the extra display before saving the desk layout':'Masa düzenini kaydetmeden önce ek ekranı durdur'):'';
+  renderCorridors();
+  selectScreen();
+}
+async function openScreenExtension() {
+  const dialog=document.getElementById('screenExtensionDialog');
+  try {
+    const response=await fetch('/api/display');if(!response.ok)throw new Error(await response.text());
+    const data=await response.json(), en=lang==='en', receiving=data.os==='windows';
+    document.getElementById('screenExtensionTitle').textContent=en?'Mac extended display · Experimental':'Mac ek ekranı · Deneysel';
+    document.getElementById('screenExtensionHelp').textContent=receiving?
+      (en?'Choose a Mac and a monitor, then accept this session. On the Mac, choose this Windows device under Extra display. Your Windows apps keep running in the background.':'Bir Mac ve monitör seçip oturumu kabul et. Ardından Mac’te Ek ekran bölümünden bu Windows cihazını seç. Windows uygulamaları arka planda çalışmaya devam eder.'):
+      (en?'First accept a display session in Kayiver on Windows. Then choose that Windows device here. Drag a Mac window onto the added desktop; keyboard and mouse stay on your Mac.':'Önce Windows’ta Kayiver’den ekran oturumunu kabul et. Sonra buradan o Windows cihazını seç. Mac pencerelerini ek masaüstüne sürükleyebilirsin; klavye ve mouse Mac’te kalır.');
+    document.getElementById('screenExtensionRisk').textContent=en?
+      'Off by default. The selected Windows monitor will show your Mac content. Disconnecting can move windows. A macOS update may affect compatibility. Native resolution, up to 1440p / 60 Hz; no audio.':
+      'Varsayılanı kapalıdır. Seçilen Windows monitöründe Mac içeriğin görünür. Bağlantı kesilirse pencereler taşınabilir. macOS güncellemeleri uyumluluğu etkileyebilir. Doğal çözünürlük, en fazla 1440p / 60 Hz; ses yok.';
+    document.getElementById('screenExtensionPeerLabel').textContent=en?'Paired device':'Eşleşmiş cihaz';
+    document.getElementById('screenExtensionMonitorLabel').textContent=en?'Windows monitor':'Windows monitörü';
+    const peers=document.getElementById('screenExtensionPeer'), previous=peers.value;
+    const selected=mons.find(m=>screenKey(m)===selectedScreen);
+    peers.replaceChildren();
+    for(const p of data.peers.filter(p=>!p.os||p.os===(receiving?'macos':'windows'))) {const o=document.createElement('option');o.value=p.name;o.textContent=p.name;peers.append(o);}
+    if([...peers.options].some(o=>o.value===previous))peers.value=previous;
+    else if(selected && [...peers.options].some(o=>o.value===selected.machine))peers.value=selected.machine;
+    const monitors=document.getElementById('screenExtensionMonitor'), oldMonitor=monitors.value;monitors.replaceChildren();
+    for(const m of data.monitors.filter(m=>m.id)) {const o=document.createElement('option');o.value=m.id;o.textContent=(m.index+1)+' · '+m.rect.w+' × '+m.rect.h;monitors.append(o);}
+    if([...monitors.options].some(o=>o.value===oldMonitor))monitors.value=oldMonitor;
+    document.getElementById('screenExtensionMonitorRow').hidden=!receiving;
+    document.getElementById('screenExtensionStart').textContent=receiving?(en?'Accept Mac display session':'Mac ekran oturumunu kabul et'):(en?'Use Windows as extra display':'Windows’u ek ekran olarak kullan');
+    document.getElementById('screenExtensionStop').textContent=en?'Stop display':'Ekranı durdur';
+    document.getElementById('screenExtensionClose').textContent=en?'Close':'Kapat';
+    screenExtensionCanStart=!!data.supported&&!!peers.options.length&&(!receiving||!!monitors.options.length);
+    dialog.dataset.receiving=receiving?'1':'0';renderScreenExtensionStatus(data.status);
+    if(!screenExtensionCanStart) {
+      document.getElementById('screenExtensionStart').disabled=true;
+      document.getElementById('screenExtensionStatus').textContent=en?'A compatible native build, paired device and identified display are required.':'Uyumlu uygulama sürümü, eşleşmiş cihaz ve kimliği belirlenebilen ekran gerekli.';
+    }
+    dialog.showModal();
+  } catch(e) {setMsg(String(e),'err');}
+}
+document.getElementById('screenExtensionBtn').addEventListener('click',openScreenExtension);
+document.getElementById('screenExtensionClose').addEventListener('click',()=>document.getElementById('screenExtensionDialog').close());
+async function screenExtensionAction(action) {
+  try {
+    const r=await fetch('/api/display',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,peer:document.getElementById('screenExtensionPeer').value,monitor_id:document.getElementById('screenExtensionMonitor').value})});
+    if(!r.ok)throw new Error(await r.text());renderScreenExtensionStatus((await r.json()).status);
+  }catch(e){document.getElementById('screenExtensionStatus').textContent=String(e);}
+}
+document.getElementById('screenExtensionStart').addEventListener('click',()=>screenExtensionAction(document.getElementById('screenExtensionDialog').dataset.receiving==='1'?'receive':'source'));
+document.getElementById('screenExtensionStop').addEventListener('click',()=>screenExtensionAction('stop'));
 async function poll() {
   if (!editorActive()) { setTimeout(poll, 1000); return; }
   if (++pollN % 4 === 0) await refreshStateIfChanged();
   if (pollN % 4 === 2) pollAndroid();
   try {
     const st = await (await fetch('/api/status')).json();
+    renderScreenExtensionStatus(st.display_extension || {phase:'off'});
     renderPermissions(st.permissions);
     document.getElementById('hostDot').className = 'dot ' + (st.running ? 'on' : 'off');
     document.getElementById('hostTxt').textContent = st.running ? t('running') : t('stopped');

@@ -22,6 +22,16 @@ use crate::{Error, Result};
 
 const PATTERN: &str = "Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s";
 
+/// Domain separation keeps auxiliary services from accepting an input-session
+/// handshake, even though they use the same pairing identity.
+pub fn display_service_key(psk: &[u8; 32]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"kayiver/display-extension/v1\0");
+    hash.update(psk);
+    hash.finalize().into()
+}
+
 fn builder(psk: &[u8; 32]) -> Result<snow::Builder<'_>> {
     let params = PATTERN.parse().map_err(|_| Error::Protocol("bad noise params".into()))?;
     Ok(snow::Builder::new(params).psk(0, psk)?)
@@ -45,11 +55,17 @@ pub struct SecureWriter {
 
 impl SecureReader {
     pub async fn recv(&mut self) -> Result<Msg> {
+        Msg::decode(self.recv_payload().await?)
+    }
+
+    /// An independently versioned service can reuse framing and encryption
+    /// without adding variants to the input protocol. Not cancellation safe.
+    pub async fn recv_payload(&mut self) -> Result<&[u8]> {
         read_frame_into(&mut self.half, &mut self.cipher).await?;
         self.plain.resize(self.cipher.len(), 0);
         let n = self.state.read_message(self.nonce, &self.cipher, &mut self.plain)?;
         self.nonce += 1;
-        Msg::decode(&self.plain[..n])
+        Ok(&self.plain[..n])
     }
 }
 
@@ -57,11 +73,19 @@ impl SecureWriter {
     pub async fn send(&mut self, msg: &Msg) -> Result<()> {
         self.plain.clear();
         self.plain = postcard::to_extend(msg, std::mem::take(&mut self.plain))?;
-        if self.plain.len() > MAX_FRAME - 16 {
+        let plain = std::mem::take(&mut self.plain);
+        let result = self.send_payload(&plain).await;
+        self.plain = plain;
+        result
+    }
+
+    /// Send one bounded application payload on this session's own nonce stream.
+    pub async fn send_payload(&mut self, plain: &[u8]) -> Result<()> {
+        if plain.len() > MAX_FRAME - 16 {
             return Err(Error::Protocol("encrypted frame exceeds Noise/u16 limit".into()));
         }
-        self.cipher.resize(self.plain.len() + 18, 0);
-        let n = self.state.write_message(self.nonce, &self.plain, &mut self.cipher[2..])?;
+        self.cipher.resize(plain.len() + 18, 0);
+        let n = self.state.write_message(self.nonce, plain, &mut self.cipher[2..])?;
         self.nonce += 1;
         self.cipher[..2].copy_from_slice(&(n as u16).to_be_bytes());
         // Same wire bytes, one socket write instead of separate length/data
@@ -114,6 +138,35 @@ pub async fn handshake_responder(mut stream: TcpStream, psk: &[u8; 32]) -> Resul
 mod tests {
     use super::*;
     use crate::proto::InputEvent;
+
+    #[tokio::test]
+    async fn auxiliary_payloads_are_bounded_and_domain_separated() {
+        let pairing=[9u8;32];let key=display_service_key(&pairing);
+        assert_ne!(key,pairing);assert_eq!(key,display_service_key(&pairing));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move {
+            let (stream,_)=listener.accept().await.unwrap();
+            let (mut reader,mut writer)=handshake_responder(stream,&key).await.unwrap();
+            let data=reader.recv_payload().await.unwrap().to_vec();
+            writer.send_payload(&data).await.unwrap();
+        });
+        let stream=TcpStream::connect(addr).await.unwrap();
+        let (mut reader,mut writer)=handshake_initiator(stream,&key).await.unwrap();
+        assert!(writer.send_payload(&vec![0;MAX_FRAME-15]).await.is_err());
+        assert_eq!(writer.nonce,0);
+        let payload=vec![0x10;32768+25];writer.send_payload(&payload).await.unwrap();
+        assert_eq!(reader.recv_payload().await.unwrap(),payload);
+        server.await.unwrap();
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move {
+            let (stream,_)=listener.accept().await.unwrap();
+            let _=handshake_responder(stream,&key).await;
+        });
+        assert!(handshake_initiator(TcpStream::connect(addr).await.unwrap(),&pairing).await.is_err());
+        server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn handshake_and_roundtrip() {
