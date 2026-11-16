@@ -51,6 +51,9 @@ static HANDLE parentHandle=nullptr;
 static RECT targetRect;
 static volatile LONG stopping=0;
 static bool testMode=false;
+// Synthetic test frames only. Never enable readback for a user's live desktop.
+static const char *testReadbackPath=nullptr;
+static bool testReadbackDone=false;
 static uint64_t read64(const uint8_t *p) {uint64_t n=0;for(int i=0;i<8;i++) n=(n<<8)|p[i];return n;}
 static uint32_t read32(const uint8_t *p) {return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|((uint32_t)p[2]<<8)|p[3];}
 static void write64(uint8_t *p,uint64_t n){for(int i=7;i>=0;i--){p[i]=n&255;n>>=8;}}
@@ -80,6 +83,24 @@ struct Renderer {
     Ptr<ID3D11VideoProcessorOutputView> outputView;
     bool initialized=false;
     int width,height;
+
+    bool readbackTestFrame() {
+        if(!testMode || !testReadbackPath || testReadbackDone)return true;
+        Ptr<ID3D11Texture2D> back;CHECK(swap->GetBuffer(0,__uuidof(ID3D11Texture2D),(void **)back.put()));
+        D3D11_TEXTURE2D_DESC desc={};back->GetDesc(&desc);
+        desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;desc.MiscFlags=0;
+        Ptr<ID3D11Texture2D> staging;CHECK(device->CreateTexture2D(&desc,nullptr,staging.put()));
+        context->CopyResource(staging.p,back.p);
+        D3D11_MAPPED_SUBRESOURCE mapped={};CHECK(context->Map(staging.p,0,D3D11_MAP_READ,0,&mapped));
+        FILE *out=fopen(testReadbackPath,"wb");
+        bool ok=out!=nullptr;
+        if(out) {
+            for(int y=0;y<height;y++)if(fwrite((uint8_t *)mapped.pData+y*mapped.RowPitch,1,width*4,out)!=(size_t)width*4){ok=false;break;}
+            if(fclose(out)!=0)ok=false;
+        }
+        context->Unmap(staging.p,0);testReadbackDone=ok;
+        return ok;
+    }
 
     bool init(int w,int h) {
         width=w;height=h;
@@ -131,6 +152,9 @@ struct Renderer {
         content.OutputFrameRate=content.InputFrameRate;content.Usage=D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
         CHECK(videoDevice->CreateVideoProcessorEnumerator(&content,enumerator.put()));
         CHECK(videoDevice->CreateVideoProcessor(enumerator.p,0,processor.put()));
+        // Desktop pixels must not receive the driver's movie enhancements
+        // (dynamic contrast, brightness, skin-tone or edge processing).
+        videoContext->VideoProcessorSetStreamAutoProcessingMode(processor.p,0,FALSE);
         // H.264 GPU surfaces may include padding (1080 video in 1088 rows).
         // Crop to the negotiated image before the 1:1 blit; never stretch
         // decoder padding into the desktop or soften text vertically.
@@ -180,6 +204,7 @@ struct Renderer {
             Ptr<ID3D11VideoProcessorInputView> inputView;CHECK(videoDevice->CreateVideoProcessorInputView(texture.p,enumerator.p,&iv,inputView.put()));
             D3D11_VIDEO_PROCESSOR_STREAM stream={};stream.Enable=TRUE;stream.pInputSurface=inputView.p;
             CHECK(videoContext->VideoProcessorBlt(processor.p,outputView.p,0,1,&stream));
+            if(!readbackTestFrame())return false;
             CHECK(swap->Present(1,0));
             if(!testMode)PostMessageW(windowHandle,WM_APP+1,0,0);
             LONGLONG timestamp=0;CHECK(decoded->GetSampleTime(&timestamp));
@@ -229,8 +254,9 @@ extern "C" bool kayiver_display_available() {
 }
 
 extern "C" int kayiver_display_native(int argc,const char **argv) {
-    if(argc!=6||(strcmp(argv[0],"sink")!=0&&strcmp(argv[0],"test-sink")!=0))return 2;
+    if((argc!=6&&argc!=7)||(strcmp(argv[0],"sink")!=0&&strcmp(argv[0],"test-sink")!=0))return 2;
     testMode=strcmp(argv[0],"test-sink")==0;
+    if(argc==7){if(!testMode)return 2;testReadbackPath=argv[6];}
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     int x=atoi(argv[1]),y=atoi(argv[2]),w=atoi(argv[3]),h=atoi(argv[4]);
     if(w<640||h<480||w>2560||h>2560||w%2||h%2||w*h>2560*1440)return 2;

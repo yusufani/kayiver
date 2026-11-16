@@ -252,7 +252,11 @@ static void encoded(void *context, void *frameContext, OSStatus status,
                 config.width=self.width; config.height=self.height; config.queueDepth=3;
                 config.minimumFrameInterval=CMTimeMake(1,60); config.showsCursor=YES;
                 if([config respondsToSelector:@selector(setCapturesAudio:)])config.capturesAudio=NO;
-                config.pixelFormat=kCVPixelFormatType_32BGRA;
+                // ScreenCaptureKit performs this conversion on the GPU. Feed
+                // its IOSurface-backed NV12 buffer directly to VideoToolbox,
+                // avoiding an intermediate 4-byte RGB encoding surface.
+                config.pixelFormat=kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+                config.colorMatrix=kCGDisplayStreamYCbCrMatrix_ITU_R_709_2;
                 config.colorSpaceName=kCGColorSpaceSRGB;
                 self.stream=[[SCStream alloc] initWithFilter:filter configuration:config delegate:self];
                 NSError *outputError=nil;
@@ -285,6 +289,9 @@ static void encoded(void *context, void *frameContext, OSStatus status,
     if(now-lastFrame<(uint64_t)(900000/fps.load()) || busy.exchange(true)) return;
     lastFrame=now;
     CVImageBufferRef image=CMSampleBufferGetImageBuffer(sample);
+    if(CVPixelBufferGetPixelFormatType(image)!=kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
+        busy=false;dispatch_async(dispatch_get_main_queue(), ^{[self stop:@"capture did not provide the hardware NV12 surface"];});return;
+    }
     CMTime pts=CMSampleBufferGetPresentationTimeStamp(sample);
     double age=CMTimeGetSeconds(CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()),pts));
     uint64_t captured=now-(age>=0 && age<2 ? (uint64_t)(age*1000000):0);
