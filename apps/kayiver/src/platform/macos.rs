@@ -650,8 +650,6 @@ struct CaptureState {
     ctl: Arc<CaptureCtl>,
     tx: UnboundedSender<Captured>,
     tap: CFMachPortRef,
-    /// Modifier keycodes currently held (for flagsChanged press/release).
-    mods_down: Vec<u16>,
     esc_downs: [Option<Instant>; 2],
     motion_position: Option<CGPoint>,
     motion_generation: u64,
@@ -671,7 +669,6 @@ pub fn start_capture(ctl: Arc<CaptureCtl>, tx: UnboundedSender<Captured>) -> Res
                 ctl,
                 tx,
                 tap: std::ptr::null_mut(),
-                mods_down: Vec::new(),
                 esc_downs: [None, None],
                 motion_position: None,
                 motion_generation: 0,
@@ -788,6 +785,13 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
     if ctl.driven.load(Ordering::SeqCst) {
         if etype==ET_KEY_DOWN {let vk=CGEventGetIntegerValueField(event,F_KEYCODE) as u16;check_panic(state,vk);}
         return std::ptr::null_mut();
+    }
+
+    if matches!(etype,ET_FLAGS|ET_SCROLL|ET_KEY_DOWN|ET_KEY_UP) {
+        // Repair missed/duplicate flagsChanged events before the dependent
+        // key or wheel event is stamped and forwarded. No polling or motion
+        // hot-path work is needed; this event carries its ordered flags.
+        super::capture_macos_modifiers(&ctl,&state.tx,CGEventGetFlags(event));
     }
 
     if etype == ET_MOVED || etype == ET_LEFT_DRAG || etype == ET_RIGHT_DRAG || etype == ET_OTHER_DRAG {
@@ -917,7 +921,7 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
             keymap::native_to_hid(vk).map(|key| InputEvent::Key { key, pressed })
         }
         ET_FLAGS => {
-            // Modifier press/release arrives as flagsChanged; track held set.
+            // Ordinary modifiers were reconciled from this event's flags.
             let vk = CGEventGetIntegerValueField(event, F_KEYCODE) as u16;
             if let Some(key) = keymap::native_to_hid(vk) {
                 if key == keymap::HID_CAPSLOCK {
@@ -928,16 +932,7 @@ unsafe extern "C" fn tap_callback(_proxy: *mut c_void, etype: u32, event: CGEven
                     // every OTHER press. Send a full pair per event instead.
                     super::capture_input(&ctl,&state.tx,InputEvent::Key {key,pressed:true});
                     Some(InputEvent::Key { key, pressed: false })
-                } else {
-                    let pressed = if let Some(i) = state.mods_down.iter().position(|&m| m == vk) {
-                        state.mods_down.remove(i);
-                        false
-                    } else {
-                        state.mods_down.push(vk);
-                        true
-                    };
-                    Some(InputEvent::Key { key, pressed })
-                }
+                } else {None}
             } else {
                 None
             }

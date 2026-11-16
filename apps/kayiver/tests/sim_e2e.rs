@@ -285,6 +285,31 @@ fn cross_diagonally(host: &mut Machine, client: &mut Machine) -> (i64, i64) {
 
 // ------------------------------------------------------------ scenarios ----
 
+#[test]
+fn macos_modifier_snapshots_release_stale_shift_before_remote_scroll() {
+    let (mut host,mut client)=desk("scroll-stale-shift",28240);
+    give_panel_to_client(&mut host);
+    cross_diagonally(&mut host,&mut client);
+    client.injected();
+    // Two identical flagsChanged reports must leave Shift DOWN, not toggle
+    // it back up. Then lose its release and receive an unmodified wheel.
+    for _ in 0..2 {host.ctl(serde_json::json!({"op":"input_macos_flags","flags":0x20002}));}
+    host.ctl(serde_json::json!({"op":"input_wheel","macos_flags":0x20002,"dx":0,"dy":-120}));
+    host.ctl(serde_json::json!({"op":"input_wheel","macos_flags":0,"dx":0,"dy":-120}));
+    let mut received=Vec::new();
+    wait_until("wheel after missed Shift release",Duration::from_secs(5),|| {
+        received.extend(client.injected());
+        received.iter().filter(|e|e["kind"]=="wheel").count()==2
+    });
+    let relevant:Vec<_>=received.into_iter().filter(|e|e["kind"]=="key" || e["kind"]=="wheel").collect();
+    assert_eq!(relevant.len(),4,"duplicate flags must not introduce a second press or an early release: {relevant:?}");
+    assert_eq!(relevant[0]["key"],0xe1);assert_eq!(relevant[0]["pressed"],true);
+    assert_eq!(relevant[1]["kind"],"wheel");
+    assert_eq!(relevant[2]["key"],0xe1);assert_eq!(relevant[2]["pressed"],false);
+    assert_eq!(relevant[3]["kind"],"wheel");
+}
+
+
 /// Bug class #1: a diagonal entry (|dy| > |dx|) used to be read as a TOP-edge
 /// entry and dumped the cursor in the peer's top-left corner. The entry point
 /// of prev→cur crosses B's left edge at y = 740; the peer must be warped to

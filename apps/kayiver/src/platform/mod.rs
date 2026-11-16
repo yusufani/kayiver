@@ -46,6 +46,8 @@ pub mod navigation;
 mod cursor_parking;
 mod source_motion;
 mod motion_trace;
+#[cfg(any(target_os="macos",feature="sim",test))]
+mod macos_modifiers;
 #[cfg(all(target_os="macos",not(feature="sim")))]
 mod changes_macos;
 
@@ -168,6 +170,13 @@ impl CaptureCtl {
         }
     }
 }
+
+#[cfg(any(target_os="macos",feature="sim",test))]
+pub(super) fn capture_macos_modifiers(ctl:&CaptureCtl,tx:&tokio::sync::mpsc::UnboundedSender<Captured>,flags:u64) {
+    let changes=macos_modifiers::changes(flags,&ctl.navigation.lock().unwrap().keys);
+    for event in changes {capture_input(ctl,tx,event);}
+}
+
 
 pub fn capture_input(ctl:&CaptureCtl,tx:&tokio::sync::mpsc::UnboundedSender<Captured>,event:kayiver_core::proto::InputEvent) {
     let (stamp,target,copy)={

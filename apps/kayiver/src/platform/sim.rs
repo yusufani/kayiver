@@ -483,6 +483,22 @@ fn handle(cmd: serde_json::Value) -> serde_json::Value {
             super::capture_input(&ctl,&tx,InputEvent::Key {key,pressed});
             ok
         }
+        "input_wheel" => {
+            let Some((ctl,tx))=capture_handles() else {return serde_json::json!({"ok":false,"error":"no capture"});};
+            let _gate=ctl.motion_gate.lock().unwrap();
+            if let Some(flags)=cmd["macos_flags"].as_u64() {super::capture_macos_modifiers(&ctl,&tx,flags);}
+            super::capture_input(&ctl,&tx,InputEvent::Wheel {
+                dx:cmd["dx"].as_i64().unwrap_or(0) as i32,
+                dy:cmd["dy"].as_i64().unwrap_or(0) as i32,
+            });
+            ok
+        }
+        "input_macos_flags" => {
+            let Some((ctl,tx))=capture_handles() else {return serde_json::json!({"ok":false});};
+            let _gate=ctl.motion_gate.lock().unwrap();
+            super::capture_macos_modifiers(&ctl,&tx,cmd["flags"].as_u64().unwrap_or(0));
+            ok
+        }
         "reject_containment" => {world().lock().unwrap().reject_containment=cmd["enabled"].as_bool().unwrap_or(true);ok}
         "reject_injection" => {world().lock().unwrap().reject_injection=cmd["enabled"].as_bool().unwrap_or(true);ok}
         "programmatic_move" => {warp_cursor_settled(cmd["x"].as_i64().unwrap_or(0) as i32,cmd["y"].as_i64().unwrap_or(0) as i32);ok}
