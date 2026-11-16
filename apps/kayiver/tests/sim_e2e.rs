@@ -412,7 +412,13 @@ fn owner_survives_host_restart() {
         let state = host.state();
         !state["blocked"].is_null() && state["passive_notice"] == state["blocked"]
     });
-    assert!(client.state()["passive_notice"].is_null(), "active peer must not be covered");
+    // The local notice can settle before its ownership update has crossed
+    // the socket and been applied by the peer. Observe both desks before
+    // asserting the active screen is uncovered or restarting the host.
+    wait_until("active peer applies ownership and clears its notice", Duration::from_secs(5), || {
+        let state=client.state();
+        state["blocked"].is_null() && state["passive_notice"].is_null()
+    });
     // Kill and restart the host on the SAME config dir — the deploy flow.
     let dir = host.cfg_dir.clone();
     drop(host);

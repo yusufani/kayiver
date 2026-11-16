@@ -32,7 +32,7 @@ retention depends on the installed signature and macOS state.
 The Windows x64 development prerelease is unsigned. The release workflow scans
 the exact executable with current Defender intelligence before allowing it into
 a draft release. The attached windows-verification.json records the hash,
-signature status, scanner output and protection state. SHA256SUMS covers both
+signature status, scanner host, exclusion checks, output and protection state. SHA256SUMS covers both
 macOS packages, the Windows executable and that report. A static scan does not
 exercise runtime behavior or guarantee future Defender/SmartScreen decisions.
 Do not bypass a security warning.

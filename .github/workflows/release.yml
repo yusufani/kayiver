@@ -46,7 +46,9 @@ jobs:
 
   windows-security:
     needs: windows
-    runs-on: windows-latest
+    # This Windows 11 image keeps Defender and Tamper Protection enabled.
+    # Static scanning of the x64 PE does not execute it or require an x64 host.
+    runs-on: windows-11-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

@@ -25,6 +25,10 @@ try {
     $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
     $report.sha256 = $hash
     $report.file_name = [IO.Path]::GetFileName($candidate)
+    $report.scan_host = [ordered]@{
+        os_version = [Environment]::OSVersion.VersionString
+        process_architecture = $env:PROCESSOR_ARCHITECTURE
+    }
     $blocked = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'windows-blocked-artifacts.json') -Raw | ConvertFrom-Json
     if ($blocked.PSObject.Properties.Name -contains $hash) {
         throw "This exact artifact has an unresolved Defender detection: $($blocked.$hash). Submit it for review; do not redeploy it."
@@ -41,6 +45,21 @@ try {
     }
     if (-not $status.AntivirusEnabled -or -not $status.RealTimeProtectionEnabled -or -not $status.BehaviorMonitorEnabled) {
         throw 'Defender antivirus, real-time protection and behavior monitoring must be enabled.'
+    }
+    $preferences = Get-MpPreference -ErrorAction Stop
+    $excludedPaths = @($preferences.ExclusionPath | Where-Object {
+        if ([string]::IsNullOrWhiteSpace($_)) { return $false }
+        $excluded = [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\')
+        $candidate -like $excluded -or $candidate -like ($excluded + '\*')
+    })
+    $extension = [IO.Path]::GetExtension($candidate).TrimStart('.')
+    $excludedExtensions = @($preferences.ExclusionExtension | Where-Object {
+        $extension -like ([string]$_).TrimStart('.')
+    })
+    $report.matching_path_exclusions = $excludedPaths.Count
+    $report.matching_extension_exclusions = $excludedExtensions.Count
+    if ($excludedPaths.Count -gt 0 -or $excludedExtensions.Count -gt 0) {
+        throw 'The candidate path or extension is excluded from Defender. Verification requires a non-excluded file.'
     }
     if ($status.AntivirusSignatureLastUpdated.ToUniversalTime() -lt [DateTime]::UtcNow.AddHours(-24)) {
         throw 'Defender signatures are older than 24 hours. Update signatures and try again.'
