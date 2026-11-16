@@ -1,4 +1,4 @@
-name: verify and publish existing desktop build
+name: verify and package existing desktop build
 on:
   workflow_dispatch:
     inputs:
@@ -7,11 +7,11 @@ on:
         required: true
         type: string
       publish:
-        description: Create a draft release after exact-file verification
+        description: Prepare a release asset bundle after exact-file verification
         type: boolean
         default: false
 permissions:
-  contents: write
+  contents: read
   actions: read
 jobs:
   verify:
@@ -102,7 +102,7 @@ jobs:
           path: |
             candidate/kayiver-windows-x64.exe
             windows-verification.json
-  draft:
+  package:
     needs: verify
     if: inputs.publish
     runs-on: ubuntu-latest
@@ -130,14 +130,10 @@ jobs:
               raise SystemExit('Release bytes or build provenance do not match the verified report')
           PYTHON
           sha256sum kayiver-windows-x64.exe Kayiver-macos-arm64.zip Kayiver-macos-arm64.dmg windows-verification.json > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          draft: true
-          prerelease: true
-          tag_name: ${{ needs.verify.outputs.tag }}
-          target_commitish: ${{ needs.verify.outputs.build_sha }}
-          name: Kayıver ${{ needs.verify.outputs.tag }}
-          files: |
+          name: verified-release-bundle
+          path: |
             kayiver-windows-x64.exe
             Kayiver-macos-arm64.zip
             Kayiver-macos-arm64.dmg

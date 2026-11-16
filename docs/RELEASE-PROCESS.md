@@ -23,8 +23,11 @@ The promotion workflow accepts only completed main-branch release runs from
 this repository with both build jobs successful. It derives the version from
 the build's source commit, records that commit/run in the verification report,
 refuses to replace a published release or a tag pointing at another commit,
-and scans the original Windows bytes without executing them. The release tag
-points to the build commit, not a later verification-only workflow commit.
+and scans the original Windows bytes without executing them. It produces the
+`verified-release-bundle` artifact with read-only repository permissions. An
+authorized operator creates the draft from those files, setting `--target` to
+the report's build commit. The release tag must point to that build commit,
+not a later verification-only workflow commit.
 
 `prepare-defender-ci.ps1` is restricted to an explicitly identified ephemeral
 GitHub-hosted scan job. It removes the hosted image's build-performance
@@ -33,7 +36,9 @@ supported MMPC and Microsoft Update sources. It does not change cloud reporting
 or sample consent. A failed update never waives the independent verifier's
 24-hour freshness rule. Do not run this preparation script on a user desktop.
 
-Download and inspect every draft asset before publication: Windows hash must
+Download the verified bundle and create a draft with the existing authorized
+GitHub session; do not add a broad publisher PAT to the scan workflow. Inspect
+every draft asset before publication: Windows hash must
 match its successful report; checksums must match all files; Mac signatures,
 architecture and bundle version must be verified. Publish the draft with its
 security limitations stated, including unsigned Windows and self-signed,
