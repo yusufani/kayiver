@@ -9,6 +9,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Create a draft release after both platform checks pass
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -32,19 +37,54 @@ jobs:
         with:
           name: simulated-desk-failure-logs
           path: /tmp/kayiver-sim-*/kayiver.log
-      - run: cargo build --release -p kayiver --target x86_64-pc-windows-gnu
+      - run: cargo build --locked --release -p kayiver --target x86_64-pc-windows-gnu
       - run: cp target/x86_64-pc-windows-gnu/release/kayiver.exe kayiver-windows-x64.exe
       - uses: actions/upload-artifact@v4
         with:
-          name: windows
+          name: windows-unverified
           path: kayiver-windows-x64.exe
 
+  windows-security:
+    needs: windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-unverified
+          path: candidate
+      # Development prereleases retain the existing unsigned Windows channel.
+      # The exact file must pass Defender and publishes its verification report.
+      # Stable version tags additionally require a trusted Authenticode signature.
+      - name: Verify the exact Windows artifact
+        shell: pwsh
+        run: |
+          $publicBuild = '${{ startsWith(github.ref, 'refs/tags/') || inputs.publish }}' -eq 'true'
+          $versionLine = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0]
+          $isDevelopment = $versionLine.Groups[1].Value.EndsWith('-dev')
+          $requireSignature = $publicBuild -and -not $isDevelopment
+          ./scripts/verify-windows-artifact.ps1 -Path candidate/kayiver-windows-x64.exe -ReportPath windows-verification.json -UpdateSignatures -RequireSignature:$requireSignature
+      - name: Preserve verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-security-report
+          path: windows-verification.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-verified
+          path: candidate/kayiver-windows-x64.exe
+
   macos:
-    runs-on: macos-14 # Apple silicon
+    runs-on: macos-15 # Apple silicon
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release -p kayiver
+      - name: Build and verify Apple-silicon executable
+        run: |
+          test "$(uname -m)" = arm64
+          cargo build --locked --release -p kayiver
+          test "$(lipo -archs target/release/kayiver)" = arm64
 
       # Assemble the .app the same way packaging/macos/build-app.sh does, but
       # without touching /Applications or the local keychain.
@@ -73,7 +113,7 @@ jobs:
               <key>LSMinimumSystemVersion</key><string>11.0</string>
               <key>NSHighResolutionCapable</key><true/>
               <key>LSUIElement</key><true/>
-              <key>NSHumanReadableCopyright</key><string>MIT</string>
+              <key>NSHumanReadableCopyright</key><string>PolyForm Noncommercial 1.0.0</string>
           </dict>
           </plist>
           PLIST
@@ -123,6 +163,7 @@ jobs:
               --identifier app.kayiver dist/Kayiver.app
             rm -f "$RUNNER_TEMP/cert.p12"
           fi
+          codesign --verify --strict dist/Kayiver.app
           codesign -dv dist/Kayiver.app 2>&1 | grep -i identifier
 
       - name: Zip the bundle
@@ -142,22 +183,62 @@ jobs:
             Kayiver-macos-arm64.dmg
 
   publish:
-    needs: [windows, macos]
+    needs: [windows-security, macos]
     runs-on: ubuntu-latest
-    # Only a real version tag publishes. A manual run (workflow_dispatch) just
-    # builds and signs, so the pipeline can be exercised without creating a
-    # release nobody asked for.
-    if: startsWith(github.ref, 'refs/tags/')
+    # Tag builds and explicitly requested manual runs create drafts only.
+    # Publication remains a separate step after inspecting exact artifacts.
+    if: startsWith(github.ref, 'refs/tags/') || inputs.publish
     steps:
+      - uses: actions/checkout@v4
+      - name: Resolve release tag from the package version
+        id: release
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import os, re
+          from pathlib import Path
+          package = Path('Cargo.toml').read_text().split('[workspace.package]', 1)[1].split('\n[', 1)[0]
+          version = re.search(r'^version\s*=\s*"([^"]+)"', package, re.M).group(1)
+          if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-dev)?', version):
+              raise SystemExit('Unsupported release version')
+          tag = 'v' + version
+          if os.environ['GITHUB_REF_TYPE'] == 'tag' and os.environ['GITHUB_REF_NAME'] != tag:
+              raise SystemExit('Release tag must match the package version')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('tag=' + tag, file=output)
+          PYTHON
       - uses: actions/download-artifact@v4
         with:
-          merge-multiple: true
+          name: windows-verified
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-security-report
+      - name: Verify evidence and compute release checksums
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, json
+          from pathlib import Path
+          report = json.loads(Path('windows-verification.json').read_text(encoding='utf-8-sig'))
+          actual = hashlib.sha256(Path('kayiver-windows-x64.exe').read_bytes()).hexdigest()
+          if report.get('passed') is not True or report.get('sha256') != actual:
+              raise SystemExit('Windows verification does not match release bytes')
+          PYTHON
+          sha256sum kayiver-windows-x64.exe Kayiver-macos-arm64.zip Kayiver-macos-arm64.dmg windows-verification.json > SHA256SUMS
       # Draft, so the notes can be written (or edited) before anyone sees it.
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
-          name: Kayıver ${{ github.ref_name }}
+          tag_name: ${{ steps.release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ endsWith(steps.release.outputs.tag, '-dev') }}
+          name: Kayıver ${{ steps.release.outputs.tag }}
           files: |
             kayiver-windows-x64.exe
             Kayiver-macos-arm64.zip
             Kayiver-macos-arm64.dmg
+            windows-verification.json
+            SHA256SUMS

@@ -20,7 +20,7 @@ cursor.
 - **One movement engine** — ordered movement samples cross actual monitor
   edge segments; remaining distance continues on the destination, including
   an immediate reversal. Floating-point position is rounded only when applied
-  to the operating system. Protocol 16 requires both desktops to run 0.3.2.
+  to the operating system. Protocol 18 is shared by 0.3.16-dev and 0.3.17-dev.
 - **Recoverable control** — triple-tap `Esc` returns control to a visible local
   screen. Disconnects and failed cursor injection release held input and
   recover locally. Old-session and duplicate movement frames are rejected.
@@ -55,17 +55,16 @@ cursor.
 
 ## Download
 
-Get the current **[0.3.16-dev prerelease](https://github.com/yusufani/kayiver/releases/tag/v0.3.16-dev)**:
+Get the current **[0.3.17-dev prerelease](https://github.com/yusufani/kayiver/releases/tag/v0.3.17-dev)**:
 
-- **[macOS (Apple silicon) — DMG](https://github.com/yusufani/kayiver/releases/download/v0.3.16-dev/Kayiver-macos-arm64.dmg):** open the disk image and drag Kayıver into Applications. The app is self-signed, not notarized; macOS may require approval in **System Settings → Privacy & Security** on first launch.
-- **[Windows 10/11 (x64) — EXE](https://github.com/yusufani/kayiver/releases/download/v0.3.16-dev/kayiver-windows-x64.exe):** download and run. If SmartScreen appears, choose **More info → Run anyway**.
-- **[macOS ZIP alternative](https://github.com/yusufani/kayiver/releases/download/v0.3.16-dev/Kayiver-macos-arm64.zip)** · **[SHA-256 checksums](https://github.com/yusufani/kayiver/releases/download/v0.3.16-dev/SHA256SUMS)**
+- **[macOS (Apple silicon) — DMG](https://github.com/yusufani/kayiver/releases/download/v0.3.17-dev/Kayiver-macos-arm64.dmg):** open the image and drag Kayıver into Applications. The app uses the existing self-signed identity and is not notarized; first launch may require macOS approval.
+- **[Windows 10/11 (x64) — EXE](https://github.com/yusufani/kayiver/releases/download/v0.3.17-dev/kayiver-windows-x64.exe):** an unsigned development build. The exact published file must pass Defender; its verification report is attached to the release. This is a point-in-time scan, not a universal safety or SmartScreen guarantee. Do not bypass antivirus alerts.
+- **[macOS ZIP](https://github.com/yusufani/kayiver/releases/download/v0.3.17-dev/Kayiver-macos-arm64.zip)** · **[SHA-256 checksums](https://github.com/yusufani/kayiver/releases/download/v0.3.17-dev/SHA256SUMS)** · **[Windows verification](https://github.com/yusufani/kayiver/releases/download/v0.3.17-dev/windows-verification.json)**
 
-Upgrade both computers together and keep the previous binaries for rollback.
-This build reduces idle CPU use and preserves responsive crossings after idle;
-fast crossing and dragging were checked on the paired Mac and Windows machines.
-Menu-based clipboard copies can take up to about 0.5 seconds to be detected.
-See [testing](docs/TESTING.md) for the automated and physical acceptance checks.
+This update repairs stale macOS modifier state before remote key and wheel
+input, including a missed Shift release. Protocol 18 is unchanged and is
+compatible with 0.3.16-dev. Preserve your existing pairing configuration.
+See [release notes](docs/RELEASE-0.3.17.md) for validation and limitations.
 
 Or build from source:
 
