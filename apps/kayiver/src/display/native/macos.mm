@@ -46,6 +46,7 @@ static void be64(uint8_t *p, uint64_t n) { for (int i=7;i>=0;--i) {p[i]=n&255;n>
 }
 @property KVDisplay *display;
 @property SCStream *stream;
+@property SCStreamConfiguration *captureConfiguration;
 @property int width, height, bitrate;
 @property BOOL stopping;
 @property BOOL testMode;
@@ -258,6 +259,7 @@ static void encoded(void *context, void *frameContext, OSStatus status,
                 config.pixelFormat=kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
                 config.colorMatrix=kCGDisplayStreamYCbCrMatrix_ITU_R_709_2;
                 config.colorSpaceName=kCGColorSpaceSRGB;
+                self.captureConfiguration=config;
                 self.stream=[[SCStream alloc] initWithFilter:filter configuration:config delegate:self];
                 NSError *outputError=nil;
                 self.captureQueue=dispatch_queue_create("app.kayiver.display.capture",DISPATCH_QUEUE_SERIAL);
@@ -289,7 +291,7 @@ static void encoded(void *context, void *frameContext, OSStatus status,
     if(now-lastFrame<(uint64_t)(900000/fps.load()) || busy.exchange(true)) return;
     lastFrame=now;
     CVImageBufferRef image=CMSampleBufferGetImageBuffer(sample);
-    if(CVPixelBufferGetPixelFormatType(image)!=kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
+    if(!image || CVPixelBufferGetPixelFormatType(image)!=kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
         busy=false;dispatch_async(dispatch_get_main_queue(), ^{[self stop:@"capture did not provide the hardware NV12 surface"];});return;
     }
     CMTime pts=CMSampleBufferGetPresentationTimeStamp(sample);
@@ -343,6 +345,15 @@ extern "C" int kayiver_display_native(int argc,const char **argv) {
                     source->fps=bytes[i];
                     int rate=bytes[i]==30 ? source.bitrate*3/4:source.bitrate;
                     VTSessionSetProperty(source->encoder,kVTCompressionPropertyKey_AverageBitRate,(__bridge CFNumberRef)@(rate));
+                    VTSessionSetProperty(source->encoder,kVTCompressionPropertyKey_ExpectedFrameRate,(__bridge CFNumberRef)@(bytes[i]));
+                    // Throttle capture itself, not just encoding. Otherwise a
+                    // 30fps session still asks WindowServer for 60 surfaces/s.
+                    if(source.stream && source.captureConfiguration) {
+                        source.captureConfiguration.minimumFrameInterval=CMTimeMake(1,bytes[i]);
+                        [source.stream updateConfiguration:source.captureConfiguration completionHandler:^(NSError *error) {
+                            if(error)dispatch_async(dispatch_get_main_queue(), ^{[source stop:@"capture rate update failed"];});
+                        }];
+                    }
                 }
             }
         }); dispatch_resume(source.inputSource);
