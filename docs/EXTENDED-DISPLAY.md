@@ -2,18 +2,59 @@
 
 ## Installation status — 16 November 2026
 
-This feature is implemented in the working tree, but is **not available in the
-installed Mac application**. Do not present its footer button as an installed
-capability. A live Windows upgrade passed a static Defender scan, then Defender
+The Mac preview is now installed as `0.3.17-dev`, signed by the same certificate
+and designated requirement as the previous application. It was built by the
+existing signing workflow, without recovering or exporting the local keychain
+password. The footer **Extra display** option is available.
+
+A first, monolithic Windows upgrade passed a static Defender scan, then Defender
 blocked the running application as `Trojan:Win32/Bearfoos.A!ml` and removed its
 startup task. The exact affected artifact is blocked in
 `scripts/windows-blocked-artifacts.json`; see `WINDOWS-SECURITY.md`.
 
-The subsequent worker-pipe fix built successfully and passed 78 unit tests
-(2 ignored), but is withheld from execution following that incident. It does
-not establish a cause or resolve the detection. The same-signature Mac upgrade
-was also left uninstalled. Live C-monitor streaming and full GUI acceptance
-remain unverified. Do not install or run another variant to evade the detector.
+That disputed KVM executable remains blocked. Its detection has not been
+resolved or declared a false positive. Windows input sharing was restored to
+the independently published `0.3.16-dev` executable and is not replaced for
+the display preview.
+
+### Receive-only companion
+
+`kayiver-display-receiver` is an independently built entry point for Windows
+that contains no KVM engine, clipboard service, input hooks, key polling or
+input injection. It shares the authenticated display transport/decoder with
+the integrated application, reads the existing pairing, and accepts only the
+receiver role. It never provides/captures a desktop. Native PE imports were
+checked for absence of `SendInput`, `SetWindowsHookExW`, `GetAsyncKeyState`,
+clipboard access, session impersonation and process-memory writes. This is
+functional isolation for screen-only operation, not a clearance of the earlier
+detected sample or a guarantee of antivirus acceptance.
+
+Build with `cargo build --release -p kayiver --bin kayiver-display-receiver
+--target x86_64-pc-windows-gnu`. `--list` reports paired peers and stable monitor
+identities. Explicit `--peer NAME --monitor-id ID` launch accepts that endpoint
+only for the lifetime of the process. A loopback-only instance guard prevents
+two companion viewers competing for the panel; there is no control server.
+
+`scripts/install-display-receiver.ps1 -Path EXE -Peer NAME -MonitorId ID` scans
+the original and installed bytes, preserves the input executable, and creates
+a limited-user interactive task with **no triggers** plus a **Kayiver Extra
+Display** Start Menu shortcut. Launching that shortcut explicitly starts
+receiver readiness; Windows login does not. Mac Stop leaves the receiver ready;
+Windows Escape/Stop closes its accepted session. Close or restart the companion
+to revoke a waiting acceptance. There is no automatic stream restart.
+
+The final companion SHA-256
+`13945bb534470cf02806aa95401bdf88b5eff94354d3a84ae9fcc3a1cb314004`
+passed exact-file Defender checks at staging and installation. The prior
+companion was observed receiving and presenting hardware-decoded frames on the
+BenQ 1920×1080 C output while the original KVM remained connected, without
+Defender exclusions/protection changes or active threats. A motion window on
+the real virtual screen advanced the live frame counter; rolling estimated
+p95 reached approximately 74 ms at the adaptive 30 fps target. This does not
+prove sustained 60 fps or physical scanout latency. Mac Stop removed the
+virtual display and restored the two physical surfaces in under a second.
+Full sleep/lock/cable-loss and long-running visual acceptance remain separate
+checks; the default remains experimental and off after app restart.
 
 Use a Windows-connected monitor as an additional Mac desktop. For example,
 drag a Safari window from a physical Mac monitor onto the added desktop:
@@ -27,7 +68,8 @@ one Mac → Windows monitor, native even pixel dimensions up to 2560×1440
 
 ## Use
 
-Both computers need a build containing this feature and an existing pairing.
+The Mac needs a build containing this feature and an existing pairing. Windows
+can use either a compatible integrated build or the receive-only companion.
 The input wire protocol remains 18; older builds still share input with newer
 ones but cannot provide the new display service.
 

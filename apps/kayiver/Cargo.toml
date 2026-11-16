@@ -1,5 +1,6 @@
 [package]
 name = "kayiver"
+default-run = "kayiver"
 description = "kayiver: a lightweight, open-source software KVM — share one keyboard and mouse across macOS, Windows (and soon Android)"
 version.workspace = true
 edition.workspace = true
@@ -8,6 +9,10 @@ license.workspace = true
 [[bin]]
 name = "kayiver"
 path = "src/main.rs"
+
+[[bin]]
+name = "kayiver-display-receiver"
+path = "src/display_receiver.rs"
 
 [dev-dependencies]
 serde_json = "1"
