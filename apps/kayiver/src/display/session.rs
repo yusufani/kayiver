@@ -160,6 +160,14 @@ pub async fn run(args: Vec<String>) -> Result<()> {
             },
         }
     };
+    // Route selection and the hardware presenter can still be settling on a
+    // cold app launch. The manager bounds startup retries per explicit start.
+    if state.role=="source" && !state.hardware_confirmed && !*cancel_rx.borrow() &&
+        outcome.as_ref().is_err_and(|error|error.is::<tokio::time::error::Elapsed>()) {
+        emit(&Status {phase:"retrying".into(),role:state.role,peer:state.peer,
+            error:Some("The display did not become ready in time".into()),..Default::default()});
+        return Ok(());
+    }
     if state.role=="source" && outcome.as_ref().is_err_and(|error|error.is::<PeerDisconnected>()) && !*cancel_rx.borrow() {
         emit(&Status {phase:"reconnecting".into(),role:state.role,peer:state.peer,..Default::default()});
         return Ok(());
@@ -555,7 +563,7 @@ async fn source(
     let stdout = native.child.stdout.take().unwrap();
     let mut frames = BufReader::new(stdout);
     let mut ready = String::new();
-    timeout(Duration::from_secs(15), frames.read_line(&mut ready)).await??;
+    timeout(Duration::from_secs(15), frames.read_line(&mut ready)).await.context("Mac capture startup timed out")??;
     let ready: serde_json::Value = serde_json::from_str(&ready)
         .context("Mac capture could not start; check Screen Recording permission")?;
     anyhow::ensure!(ready["ready"] == true, "Mac capture did not become ready");

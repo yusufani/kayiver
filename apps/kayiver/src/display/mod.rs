@@ -259,6 +259,7 @@ pub fn action(body: &[u8]) -> Result<()> {
     };
     m.child = Some(child);
     std::thread::spawn(move || {
+        let mut startup_retries=0;
         loop {
             for line in std::io::BufReader::new(output).lines() {
                 let Ok(line) = line else { break };
@@ -273,6 +274,7 @@ pub fn action(body: &[u8]) -> Result<()> {
                     || m.status.target != next.target
                     || m.status.virtual_rect != next.virtual_rect;
                 if m.status.phase=="stopping" && !matches!(next.phase.as_str(),"off"|"error") {continue;}
+                if next.phase=="streaming" {startup_retries=0;}
                 m.status = next;
                 drop(m);
                 if changed {
@@ -285,6 +287,10 @@ pub fn action(body: &[u8]) -> Result<()> {
             }
             let exit = m.child.as_mut().and_then(|c| c.wait().ok());
             m.child = None;
+            if m.status.phase=="retrying" {
+                if startup_retries>=2 {m.status.phase="error".into();}
+                else {startup_retries+=1;m.status.phase="reconnecting".into();}
+            }
             if m.status.phase=="reconnecting" {
                 // A fresh macOS worker sees the updated Quartz topology after the
                 // previous virtual display has disappeared. Keep the acceptance

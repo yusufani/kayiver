@@ -1902,8 +1902,8 @@ function isDisplayPresentation(tile) {
 function renderScreenExtensionStatus(s) {
   screenExtensionState=s;
   const en=lang==='en';
-  const phases=en?{off:'Off',starting:'Starting…',reconnecting:'Waiting to reconnect…',listening:'Ready for the selected Mac',connecting:'Connecting…',streaming:'Mac extended display active',stopping:'Stopping…',error:'Stopped'}:
-    {off:'Kapalı',starting:'Başlatılıyor…',reconnecting:'Yeniden bağlanma bekleniyor…',listening:'Seçilen Mac için hazır',connecting:'Bağlanıyor…',streaming:'Mac ek ekranı açık',stopping:'Durduruluyor…',error:'Durduruldu'};
+  const phases=en?{off:'Off',starting:'Starting…',reconnecting:'Waiting to reconnect…',retrying:'Retrying display setup…',listening:'Ready for the selected Mac',connecting:'Connecting…',streaming:'Mac extended display active',stopping:'Stopping…',error:'Stopped'}:
+    {off:'Kapalı',starting:'Başlatılıyor…',reconnecting:'Yeniden bağlanma bekleniyor…',retrying:'Ekran bağlantısı yeniden deneniyor…',listening:'Seçilen Mac için hazır',connecting:'Bağlanıyor…',streaming:'Mac ek ekranı açık',stopping:'Durduruluyor…',error:'Durduruldu'};
   const active=s && !['off','error',''].includes(s.phase);
   const button=document.getElementById('screenExtensionBtn');button.textContent=(en?'Extra display':'Ek ekran')+(s?.phase==='streaming'?' ●':active?' …':'');
   document.getElementById('screenExtensionStatus').textContent=(s?.role==='source' && s.phase==='connecting' && !s.target ? (en?'Waiting for Windows. If the receiver is closed, open Kayiver Extra Display on Windows.':'Windows bekleniyor. Alıcı kapalıysa Windows’ta Kayiver Extra Display’i açın.') : phases[s?.phase]||phases.off)+(s?.error?' · '+s.error:'')+
