@@ -135,6 +135,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
                 };
                 match outcome {
                     Err(error) if error.is::<PeerDisconnected>() && !*cancel_rx.borrow() => {
+                        if state.role=="source" {break Err(error);}
                         let old=std::mem::take(&mut state);
                         state=Status { role:old.role,peer:old.peer,phase:"connecting".into(),..Default::default() };
                         emit(&state);
@@ -159,6 +160,10 @@ pub async fn run(args: Vec<String>) -> Result<()> {
             },
         }
     };
+    if state.role=="source" && outcome.as_ref().is_err_and(|error|error.is::<PeerDisconnected>()) && !*cancel_rx.borrow() {
+        emit(&Status {phase:"reconnecting".into(),role:state.role,peer:state.peer,..Default::default()});
+        return Ok(());
+    }
     state.virtual_rect = None;
     state.phase = if outcome.is_err() { "error" } else { "off" }.into();
     state.error = outcome.as_ref().err().map(|e| format!("{e:#}"));
@@ -498,7 +503,8 @@ async fn source(
     let Some((mut reader, mut writer)) = accept_receiver(cfg, args, key, &mut cancel).await? else {
         return Ok(());
     };
-    let requested_fps=requested_fps(cfg.extra_display.frame_rate);
+    let preferences=Config::load_or_init()?.extra_display;
+    let requested_fps=requested_fps(preferences.frame_rate);
     let requested_version=if requested_fps>60 {REFRESH_VERSION}else{VERSION};
     let started = now_us();
     writer
@@ -525,7 +531,7 @@ async fn source(
     let midpoint = started + (ended - started) / 2;
     let offset = time_us as i64 - midpoint as i64;
     state.clock_uncertainty_ms = Some((ended - started) as f64 / 2000.0);
-    let (preferred_fps,preferred_bitrate)=display_profile(rect,cfg.extra_display);
+    let (preferred_fps,preferred_bitrate)=display_profile(rect,preferences);
     let preferred_fps=preferred_fps.min(refresh_hz.unwrap_or(60).clamp(30,144));
     writer
         .send_payload(&serde_json::to_vec(&Control::Start { offset_us: offset, fps:refresh_hz.map(|_|preferred_fps) })?)
@@ -679,7 +685,7 @@ async fn source(
                         let mut sorted:Vec<_>=latencies.iter().copied().collect();sorted.sort_by(f64::total_cmp);
                         state.latency_p95_ms=sorted.get((sorted.len()*95/100).min(sorted.len()-1)).copied();
                         state.phase="streaming".into();state.hardware_confirmed=true;
-                        if cfg.extra_display.frame_rate==kayiver_core::config::DisplayFrameRate::Adaptive && last_adapt.elapsed()>Duration::from_secs(3) {
+                        if preferences.frame_rate==kayiver_core::config::DisplayFrameRate::Adaptive && last_adapt.elapsed()>Duration::from_secs(3) {
                             let desired=if state.latency_p95_ms.unwrap_or(0.)>80. {30}else if state.latency_p95_ms.unwrap_or(0.)<45. {60}else{state.fps};
                             if desired!=state.fps {native_input.lock().await.write_u8(desired as u8).await?;state.fps=desired;state.bitrate_mbps=if desired==30{base_bitrate_mbps*3/4}else{base_bitrate_mbps};}
                             last_adapt=Instant::now();

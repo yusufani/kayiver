@@ -248,6 +248,73 @@ pub fn action(body: &[u8]) -> Result<()> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
+    let (child,mut output)=spawn_worker(&mut command)?;
+    m.generation += 1;
+    let generation = m.generation;
+    m.status = Status {
+        phase: "starting".into(),
+        role: action.into(),
+        peer: peer.into(),
+        ..Default::default()
+    };
+    m.child = Some(child);
+    std::thread::spawn(move || {
+        loop {
+            for line in std::io::BufReader::new(output).lines() {
+                let Ok(line) = line else { break };
+                let Ok(next) = serde_json::from_str::<Status>(&line) else {
+                    continue;
+                };
+                let mut m = manager().lock().unwrap();
+                if m.generation != generation {
+                    return;
+                }
+                let changed = m.status.phase != next.phase
+                    || m.status.target != next.target
+                    || m.status.virtual_rect != next.virtual_rect;
+                if m.status.phase=="stopping" && !matches!(next.phase.as_str(),"off"|"error") {continue;}
+                m.status = next;
+                drop(m);
+                if changed {
+                    let _ = crate::ui::send_cmd(crate::ui::UiCmd::DisplayChanged);
+                }
+            }
+            let mut m = manager().lock().unwrap();
+            if m.generation != generation {
+                return;
+            }
+            let exit = m.child.as_mut().and_then(|c| c.wait().ok());
+            m.child = None;
+            if m.status.phase=="reconnecting" {
+                // A fresh macOS worker sees the updated Quartz topology after the
+                // previous virtual display has disappeared. Keep the acceptance
+                // generation so a simultaneous user Stop still cancels this retry.
+                match spawn_worker(&mut command) {
+                    Ok((child,new_output))=>{
+                        m.child=Some(child);
+                        m.status.phase="connecting".into();
+                        output=new_output;
+                        continue;
+                    }
+                    Err(error)=>{m.status.phase="error".into();m.status.error=Some(error.to_string());}
+                }
+            }
+            if m.status.phase=="stopping" {m.status.phase="off".into();}
+            if !matches!(m.status.phase.as_str(), "off" | "error") {
+                m.status.phase = "error".into();
+                m.status.error = Some(format!("display worker exited ({exit:?})"));
+            }
+            m.status.virtual_rect=None;
+            m.status.hardware_confirmed=false;
+            drop(m);
+            let _ = crate::ui::send_cmd(crate::ui::UiCmd::DisplayChanged);
+            break;
+        }
+    });
+    Ok(())
+}
+
+fn spawn_worker(command:&mut Command)->Result<(Child,std::process::ChildStdout)> {
     let mut child = command.spawn().context("could not start display worker")?;
     let output = child.stdout.take().unwrap();
     let errors = child.stderr.take().unwrap();
@@ -259,48 +326,7 @@ pub fn action(body: &[u8]) -> Result<()> {
             tracing::warn!(target:"kayiver::display", "{line}");
         }
     });
-    m.generation += 1;
-    let generation = m.generation;
-    m.status = Status {
-        phase: "starting".into(),
-        role: action.into(),
-        peer: peer.into(),
-        ..Default::default()
-    };
-    m.child = Some(child);
-    std::thread::spawn(move || {
-        for line in std::io::BufReader::new(output).lines() {
-            let Ok(line) = line else { break };
-            let Ok(next) = serde_json::from_str::<Status>(&line) else {
-                continue;
-            };
-            let mut m = manager().lock().unwrap();
-            if m.generation != generation {
-                return;
-            }
-            let changed = m.status.phase != next.phase
-                || m.status.target != next.target
-                || m.status.virtual_rect != next.virtual_rect;
-            m.status = next;
-            drop(m);
-            if changed {
-                let _ = crate::ui::send_cmd(crate::ui::UiCmd::DisplayChanged);
-            }
-        }
-        let mut m = manager().lock().unwrap();
-        if m.generation != generation {
-            return;
-        }
-        let exit = m.child.as_mut().and_then(|c| c.wait().ok());
-        m.child = None;
-        if !matches!(m.status.phase.as_str(), "off" | "error") {
-            m.status.phase = "error".into();
-            m.status.error = Some(format!("display worker exited ({exit:?})"));
-        }
-        drop(m);
-        let _ = crate::ui::send_cmd(crate::ui::UiCmd::DisplayChanged);
-    });
-    Ok(())
+    Ok((child,output))
 }
 
 pub fn stop() {
