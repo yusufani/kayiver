@@ -394,6 +394,27 @@
     #msg { flex-basis:100%; }
   }
   @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none!important; transition:none!important; } }
+
+  /* Display controls belong to the selected screen's inspector, never a modal. */
+  .screen-extension-panel { margin:12px 0 18px; min-width:0; }
+  .screen-extension-panel[hidden] { display:none; }
+  #deviceInspector .screen-extension-panel h3 { font-size:14px; margin:0 0 6px; }
+  #deviceInspector:has(.screen-extension-panel:not([hidden])) #inspectorMachine { margin-bottom:10px; }
+  #screenExtensionStatus { font-size:11.5px; color:var(--muted); margin:0 0 12px; }
+  .screen-extension-panel label { font-size:12px; }
+  .screen-extension-panel select { min-width:0; max-width:100%; font:inherit; font-size:12px; }
+  #screenPreferences { border:0!important; border-top:1px solid var(--line)!important; border-radius:0!important; padding:12px 0 0!important; margin:12px 0!important; min-width:0; }
+  #screenPreferences legend { font-size:12px; color:var(--muted); padding:0!important; }
+  #screenPreferences > div { display:block!important; }
+  #screenPreferences select { margin:6px 0 12px!important; padding:8px!important; }
+  #screenPreferencesHelp { font-size:11px!important; line-height:1.5!important; }
+  #screenPreferencesApply { width:100%; font-size:12px; padding:8px 9px; white-space:normal; }
+  #screenPreferencesMessage:empty { display:none; }
+  .screen-extension-actions { position:sticky; bottom:0; z-index:2; padding:10px 0; margin-top:8px!important; background:var(--bg2); }
+  #screenExtensionStart,#screenExtensionStop { width:100%; padding:8px 9px; font-size:12px; }
+  .screen-extension-about, #inspectorDetails { font-size:12px; border-top:1px solid var(--line); padding-top:10px; margin-top:12px; }
+  .screen-extension-about summary, #inspectorDetailsLabel { color:var(--muted); cursor:pointer; }
+  .screen-extension-about p { font-size:11px; line-height:1.5; color:var(--muted); }
 </style>
 </head>
 <body>
@@ -440,7 +461,36 @@
 
 <button id="permissionsBanner" style="display:none"></button>
 <div class="workspace"><div id="canvas"><button id="sharedBtn"></button><div id="zoomBox"><button id="zoomOut" title="Zoom out">−</button><span id="zoomLbl">100%</span><button id="zoomIn" title="Zoom in">+</button><button id="zoomReset" title="Reset">⟲</button></div></div>
-<aside id="deviceInspector" aria-label="Seçili ekran"><div class="inspector-kicker" id="inspectorTitle">Ekran</div><h2 id="inspectorLetter">—</h2><div id="inspectorMachine">—</div><dl><dt id="resolutionTitle">Çözünürlük</dt><dd id="inspectorResolution">—</dd><dt id="typeTitle">Cihaz türü</dt><dd id="inspectorType">—</dd><dt id="positionTitle">Konum</dt><dd id="inspectorPosition">—</dd><dt id="sharingTitle">Paylaşım</dt><dd id="inspectorSharing">—</dd></dl><button id="inspectorKind" type="button">Laptop / Monitör</button><p class="inspector-note" id="inspectorHint">Ekranları sürükleyerek yerleştir. Yalnızca birleşen ekran kenarları geçiş oluşturur.</p></aside></div>
+<aside id="deviceInspector" aria-label="Seçili ekran"><div class="inspector-kicker" id="inspectorTitle">Ekran</div><h2 id="inspectorLetter">—</h2><div id="inspectorMachine">—</div><section id="screenExtensionPanel" class="screen-extension-panel" aria-labelledby="screenExtensionTitle" hidden>
+  <h3 id="screenExtensionTitle">Mac extended display</h3>
+  <p id="screenExtensionStatus" role="status" aria-live="polite" style="line-height:1.6;overflow-wrap:anywhere"></p>
+  <div id="screenExtensionPeerRow"><label for="screenExtensionPeer" id="screenExtensionPeerLabel">Paired device</label>
+  <select id="screenExtensionPeer" style="display:block;width:100%;margin:8px 0 16px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px"></select></div>
+  <div id="screenExtensionMonitorRow"><label for="screenExtensionMonitor" id="screenExtensionMonitorLabel">Display</label>
+  <select id="screenExtensionMonitor" style="display:block;width:100%;margin:8px 0 16px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px"></select></div>
+  <fieldset id="screenPreferences" style="border:1px solid var(--line);border-radius:12px;padding:16px;margin:16px 0">
+    <legend id="screenPreferencesTitle" style="padding:0 6px">Görüntü ayarları</legend>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px"><div>
+    <label for="screenFrameRate" id="screenFrameRateLabel">FPS</label>
+    <select id="screenFrameRate" style="display:block;width:100%;margin:8px 0 16px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px">
+      <option value="adaptive">Otomatik · 60 fps, gerektiğinde 30</option><option value="30">30 fps · düşük yük</option><option value="60">60 fps · sabit hedef</option>
+    </select>
+    </div><div><label for="screenQuality" id="screenQualityLabel">Görüntü kalitesi</label>
+    <select id="screenQuality" style="display:block;width:100%;margin:8px 0 12px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px">
+      <option value="economy">Ekonomik</option><option value="balanced">Dengeli</option><option value="high">Yüksek</option>
+    </select>
+    </div></div>
+    <p id="screenPreferencesHelp" style="color:var(--muted);font-size:12px;line-height:1.6;margin:8px 0"></p>
+    <p id="screenPreferencesMessage" role="status" aria-live="polite" style="font-size:12px;line-height:1.6;margin:8px 0 0;overflow-wrap:anywhere"></p>
+  </fieldset>
+
+  <div class="screen-extension-actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:20px">
+    <button id="screenPreferencesApply" class="ghost" type="button">Kaydet</button>
+    <button id="screenExtensionStart" type="button">Start</button>
+    <button id="screenExtensionStop" class="ghost" type="button">Stop</button>
+  </div>
+  <details class="screen-extension-about"><summary id="screenExtensionAboutLabel">About this display</summary><p id="screenExtensionHelp"></p><p id="screenExtensionRisk"></p></details>
+</section><details id="inspectorDetails" open><summary id="inspectorDetailsLabel">Ekran bilgileri</summary><dl><dt id="resolutionTitle">Çözünürlük</dt><dd id="inspectorResolution">—</dd><dt id="typeTitle">Cihaz türü</dt><dd id="inspectorType">—</dd><dt id="positionTitle">Konum</dt><dd id="inspectorPosition">—</dd><dt id="sharingTitle">Paylaşım</dt><dd id="inspectorSharing">—</dd></dl><button id="inspectorKind" type="button">Laptop / Monitör</button><p class="inspector-note" id="inspectorHint">Ekranları sürükleyerek yerleştir. Yalnızca birleşen ekran kenarları geçiş oluşturur.</p></details></aside></div>
 
 
 <footer>
@@ -455,37 +505,7 @@
   <button class="dock-btn" id="screenExtensionBtn" type="button">Extra display</button>
 </footer>
 
-<dialog id="screenExtensionDialog" aria-labelledby="screenExtensionTitle" style="margin:auto;background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:18px;padding:24px;width:min(480px,calc(100vw - 48px));max-height:85vh;overflow:auto">
-  <h2 id="screenExtensionTitle" style="margin:0 0 8px">Mac extended display · Experimental</h2>
-  <p id="screenExtensionHelp" style="color:var(--muted);line-height:1.6"></p>
-  <label for="screenExtensionPeer" id="screenExtensionPeerLabel">Paired device</label>
-  <select id="screenExtensionPeer" style="display:block;width:100%;margin:8px 0 16px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px"></select>
-  <div id="screenExtensionMonitorRow"><label for="screenExtensionMonitor" id="screenExtensionMonitorLabel">Display</label>
-  <select id="screenExtensionMonitor" style="display:block;width:100%;margin:8px 0 16px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px"></select></div>
-  <p id="screenExtensionRisk" style="font-size:12px;color:var(--muted);line-height:1.6"></p>
-  <fieldset id="screenPreferences" style="border:1px solid var(--line);border-radius:12px;padding:16px;margin:16px 0">
-    <legend id="screenPreferencesTitle" style="padding:0 6px">Görüntü ayarları</legend>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px"><div>
-    <label for="screenFrameRate" id="screenFrameRateLabel">FPS</label>
-    <select id="screenFrameRate" style="display:block;width:100%;margin:8px 0 16px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px">
-      <option value="adaptive">Otomatik · 60 fps, gerektiğinde 30</option><option value="30">30 fps · düşük yük</option><option value="60">60 fps · sabit hedef</option>
-    </select>
-    </div><div><label for="screenQuality" id="screenQualityLabel">Görüntü kalitesi</label>
-    <select id="screenQuality" style="display:block;width:100%;margin:8px 0 12px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px">
-      <option value="economy">Ekonomik</option><option value="balanced">Dengeli</option><option value="high">Yüksek</option>
-    </select>
-    </div></div>
-    <p id="screenPreferencesHelp" style="color:var(--muted);font-size:12px;line-height:1.6;margin:8px 0"></p>
-    <button id="screenPreferencesApply" class="ghost" type="button">Kaydet</button>
-    <p id="screenPreferencesMessage" role="status" aria-live="polite" style="font-size:12px;line-height:1.6;margin:8px 0 0;overflow-wrap:anywhere"></p>
-  </fieldset>
-  <p id="screenExtensionStatus" role="status" aria-live="polite" style="line-height:1.6;overflow-wrap:anywhere"></p>
-  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:20px">
-    <button id="screenExtensionStart" type="button">Start</button>
-    <button id="screenExtensionStop" class="ghost" type="button">Stop</button>
-    <button id="screenExtensionClose" class="ghost" type="button" style="margin-left:auto">Close</button>
-  </div>
-</dialog>
+
 
 <div id="overlay">
   <div id="settings">
@@ -757,6 +777,16 @@ function selectScreen(tile) {
   document.getElementById('inspectorPosition').textContent = tileNow ? (arranged?.x ?? tileNow.realX) + ', ' + (arranged?.y ?? tileNow.realY) : '—';
   document.getElementById('inspectorSharing').textContent = tileNow ? (tileNow.el.classList.contains('panel') ? (english ? 'Shared screen' : 'Ortak ekran') : (tileNow.me ? (english ? 'Local' : 'Yerel') : (english ? 'Peer' : 'Diğer bilgisayar'))) : '—';
   if (tileNow && (isDisplayPresentation(tileNow)||tileNow.el.classList.contains('display-virtual'))) document.getElementById('inspectorSharing').textContent=english?'Mac extended display · input stays on Mac':'Mac ek ekranı · kontrol Mac’te';
+  const panel=document.getElementById('screenExtensionPanel');
+  if(tile)delete panel.dataset.pinned;
+  const relevant=screenPanelRelevant(tileNow) || panel.dataset.pinned==='1';
+  const wasHidden=panel.hidden;panel.hidden=!relevant;
+  document.getElementById('inspectorDetailsLabel').textContent=english?'Display details':'Ekran bilgileri';
+  document.getElementById('inspectorDetailsLabel').hidden=!relevant;
+  if(!relevant)document.getElementById('inspectorDetails').open=true;
+  else if(wasHidden)document.getElementById('inspectorDetails').open=false;
+  const target=tileNow?screenKey(tileNow):'';
+  if(tile && relevant && panel.dataset.target!==target){panel.dataset.target=target;loadScreenExtensionPanel().catch(e=>setMsg(String(e),'err'));}
   const kindButton=document.getElementById('inspectorKind');kindButton.disabled=!tileNow || tileNow.el.classList.contains('panel');kindButton.textContent=english?'Change device appearance':'Cihaz görünümünü değiştir';
 }
 document.getElementById('inspectorKind').addEventListener('click',()=>mons.find(m=>screenKey(m)===selectedScreen)?.el.querySelector('.kind').click());
@@ -1852,6 +1882,17 @@ let pollN = 0;
 let screenExtensionState = null;
 let screenExtensionCanStart = false;
 let screenPreferencesBusy = false;
+let screenPreferencesDirty = false;
+let screenPanelData = null;
+function screenPanelRelevant(tile) {
+  if(!tile)return false;
+  if(tile.el.classList.contains('display-virtual') || isDisplayPresentation(tile))return true;
+  if(tile.el.classList.contains('panel'))return false;
+  const sp=sharedPair();if(sp && (tile===sp.a || tile===sp.b))return false;
+  if(screenPanelData?.os==='windows')return tile.me;
+  return !tile.me && !!screenPanelData?.peers.some(p=>p.name===tile.machine && (!p.os || p.os==='windows'));
+}
+for(const id of ['screenFrameRate','screenQuality'])document.getElementById(id).addEventListener('change',()=>{screenPreferencesDirty=true;});
 function isDisplayPresentation(tile) {
   const s=screenExtensionState, r=s?.target;
   if (!r || !['connecting','streaming','stopping'].includes(s.phase)) return false;
@@ -1869,6 +1910,10 @@ function renderScreenExtensionStatus(s) {
     (s?.phase==='streaming'&&s.target?' · '+s.target.w+' × '+s.target.h+(en?' · up to ':' · en fazla ')+s.fps+' fps'+(s.bitrate_mbps?' · '+s.bitrate_mbps+' Mbps':''):'');
   document.getElementById('screenExtensionStart').disabled=screenPreferencesBusy||!!active||!screenExtensionCanStart;
   document.getElementById('screenExtensionStop').disabled=screenPreferencesBusy||!active;
+  const receiving=document.getElementById('screenExtensionPanel').dataset.receiving==='1';
+  document.getElementById('screenExtensionPeerRow').hidden=!!active && !receiving;
+  document.getElementById('screenExtensionStart').hidden=!!active;
+  document.getElementById('screenExtensionStop').hidden=!active;
   const apply=document.getElementById('screenPreferencesApply');apply.disabled=screenPreferencesBusy;
   apply.textContent=screenPreferencesBusy?(en?'Applying…':'Uygulanıyor…'):(active&&s?.role==='source'?(en?'Save & restart display':'Kaydet ve ekranı yeniden başlat'):(en?'Save settings':'Ayarları kaydet'));
   document.getElementById('screenFrameRate').disabled=screenPreferencesBusy;
@@ -1893,12 +1938,12 @@ function renderScreenExtensionStatus(s) {
   renderCorridors();
   selectScreen();
 }
-async function openScreenExtension() {
-  const dialog=document.getElementById('screenExtensionDialog');
+async function loadScreenExtensionPanel() {
+  const panel=document.getElementById('screenExtensionPanel');
   try {
     const response=await fetch('/api/display');if(!response.ok)throw new Error(await response.text());
-    const data=await response.json(), en=lang==='en', receiving=data.os==='windows';
-    document.getElementById('screenExtensionTitle').textContent=en?'Mac extended display · Experimental':'Mac ek ekranı · Deneysel';
+    const data=await response.json(), en=lang==='en', receiving=data.os==='windows';screenPanelData=data;
+    document.getElementById('screenExtensionTitle').textContent=en?'Mac extended display':'Mac ek ekranı';
     document.getElementById('screenExtensionHelp').textContent=receiving?
       (en?'Choose a Mac and a monitor, then accept this session. On the Mac, choose this Windows device under Extra display. Your Windows apps keep running in the background.':'Bir Mac ve monitör seçip oturumu kabul et. Ardından Mac’te Ek ekran bölümünden bu Windows cihazını seç. Windows uygulamaları arka planda çalışmaya devam eder.'):
       (en?'First accept a display session in Kayiver on Windows. Then choose that Windows device here. Drag a Mac window onto the added desktop; keyboard and mouse stay on your Mac.':'Önce Windows’ta Kayiver’den ekran oturumunu kabul et. Sonra buradan o Windows cihazını seç. Mac pencerelerini ek masaüstüne sürükleyebilirsin; klavye ve mouse Mac’te kalır.');
@@ -1911,38 +1956,49 @@ async function openScreenExtension() {
     const selected=mons.find(m=>screenKey(m)===selectedScreen);
     peers.replaceChildren();
     for(const p of data.peers.filter(p=>!p.os||p.os===(receiving?'macos':'windows'))) {const o=document.createElement('option');o.value=p.name;o.textContent=p.name;peers.append(o);}
-    if([...peers.options].some(o=>o.value===previous))peers.value=previous;
-    else if(selected && [...peers.options].some(o=>o.value===selected.machine))peers.value=selected.machine;
+    if(selected && !selected.me && [...peers.options].some(o=>o.value===selected.machine))peers.value=selected.machine;
+    else if(data.status?.role==='source' && [...peers.options].some(o=>o.value===data.status.peer))peers.value=data.status.peer;
+    else if([...peers.options].some(o=>o.value===previous))peers.value=previous;
     const monitors=document.getElementById('screenExtensionMonitor'), oldMonitor=monitors.value;monitors.replaceChildren();
     for(const m of data.monitors.filter(m=>m.id)) {const o=document.createElement('option');o.value=m.id;o.textContent=(m.index+1)+' · '+m.rect.w+' × '+m.rect.h;monitors.append(o);}
-    if([...monitors.options].some(o=>o.value===oldMonitor))monitors.value=oldMonitor;
+    const selectedMonitor=receiving&&selected?.me?data.monitors.find(m=>m.index===selected.idx&&m.id):null;
+    if(selectedMonitor)monitors.value=selectedMonitor.id;
+    else if([...monitors.options].some(o=>o.value===oldMonitor))monitors.value=oldMonitor;
     document.getElementById('screenPreferences').hidden=receiving;
     document.getElementById('screenPreferencesTitle').textContent=en?'Picture settings':'Görüntü ayarları';
     document.getElementById('screenFrameRateLabel').textContent=en?'Frame rate (FPS)':'Kare hızı (FPS)';
     document.getElementById('screenQualityLabel').textContent=en?'Picture quality':'Görüntü kalitesi';
     const rates=document.getElementById('screenFrameRate');
     const rateLabels=en?['Auto · 60 / 30 fps','30 fps · lower load','60 fps · fixed target']:['Otomatik · 60 / 30 fps','30 fps · düşük yük','60 fps · sabit hedef'];
-    [...rates.options].forEach((o,i)=>o.textContent=rateLabels[i]);rates.value=data.preferences?.frame_rate||'adaptive';
+    [...rates.options].forEach((o,i)=>o.textContent=rateLabels[i]);if(!screenPreferencesDirty)rates.value=data.preferences?.frame_rate||'adaptive';
     const quality=document.getElementById('screenQuality');
     const qualityLabels=en?['Economy · 12 / 20 Mbps','Balanced · 20 / 35 Mbps','High · 30 / 45 Mbps']:['Ekonomik · 12 / 20 Mbps','Dengeli · 20 / 35 Mbps','Yüksek · 30 / 45 Mbps'];
-    [...quality.options].forEach((o,i)=>o.textContent=qualityLabels[i]);quality.value=data.preferences?.quality||'balanced';
-    document.getElementById('screenPreferencesHelp').textContent=en?'Bitrate budgets are for 1080p / 1440p. Native resolution stays unchanged. Higher quality uses more bandwidth; 60 fps needs more processing. Applying during a session briefly restarts C and restores its position.':'Hız bütçeleri 1080p / 1440p içindir. Doğal çözünürlük korunur. Yüksek kalite daha fazla ağ, 60 fps daha fazla işlem gücü ister. Oturum sırasında uygulamak C’yi kısa süreliğine yeniden başlatır; konumu korunur.';
+    [...quality.options].forEach((o,i)=>o.textContent=qualityLabels[i]);if(!screenPreferencesDirty)quality.value=data.preferences?.quality||'balanced';
+    document.getElementById('screenPreferencesHelp').textContent=en?'Higher quality uses more bandwidth. Applying briefly restarts the display; windows may move.':'Yüksek kalite daha fazla ağ kullanır. Uygulama ekranı kısa süreliğine yeniden başlatır; pencereler taşınabilir.';
     document.getElementById('screenPreferencesMessage').textContent='';
     document.getElementById('screenExtensionMonitorRow').hidden=!receiving;
     document.getElementById('screenExtensionStart').textContent=receiving?(en?'Accept Mac display session':'Mac ekran oturumunu kabul et'):(en?'Use Windows as extra display':'Windows’u ek ekran olarak kullan');
     document.getElementById('screenExtensionStop').textContent=en?'Stop display':'Ekranı durdur';
-    document.getElementById('screenExtensionClose').textContent=en?'Close':'Kapat';
+    document.getElementById('screenExtensionAboutLabel').textContent=en?'About this display':'Bu ekran hakkında';
     screenExtensionCanStart=!!data.supported&&!!peers.options.length&&(!receiving||!!monitors.options.length);
-    dialog.dataset.receiving=receiving?'1':'0';renderScreenExtensionStatus(data.status);
+    panel.dataset.receiving=receiving?'1':'0';renderScreenExtensionStatus(data.status);
     if(!screenExtensionCanStart) {
       document.getElementById('screenExtensionStart').disabled=true;
       document.getElementById('screenExtensionStatus').textContent=en?'A compatible native build, paired device and identified display are required.':'Uyumlu uygulama sürümü, eşleşmiş cihaz ve kimliği belirlenebilen ekran gerekli.';
     }
-    dialog.showModal();
+
   } catch(e) {setMsg(String(e),'err');}
 }
+async function openScreenExtension() {
+  if(!screenPanelData)await loadScreenExtensionPanel();
+  const panel=document.getElementById('screenExtensionPanel');
+  const target=mons.find(t=>t.el.classList.contains('display-virtual')) || mons.find(t=>screenPanelRelevant(t) && t.el.style.display!=='none');
+  if(target){panel.dataset.target=screenKey(target);selectScreen(target);}else{panel.dataset.pinned='1';panel.hidden=false;}
+  await loadScreenExtensionPanel();
+  document.getElementById('deviceInspector').scrollTo({top:0});
+}
 document.getElementById('screenExtensionBtn').addEventListener('click',openScreenExtension);
-document.getElementById('screenExtensionClose').addEventListener('click',()=>document.getElementById('screenExtensionDialog').close());
+
 function selectedScreenPreferences(){return {frame_rate:document.getElementById('screenFrameRate').value,quality:document.getElementById('screenQuality').value};}
 async function displayRequest(body){
   const response=await fetch('/api/display',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -1972,7 +2028,7 @@ document.getElementById('screenPreferencesApply').addEventListener('click',async
       await displayRequest({action:'source',peer:before.peer});await waitForDisplay(s=>s.phase==='streaming',20000);
       if(before.virtual_rect)await displayRequest({action:'position',x:before.virtual_rect.x,y:before.virtual_rect.y});
     }
-    message.textContent=lang==='en'?'Settings saved.':'Ayarlar kaydedildi.';
+    screenPreferencesDirty=false;message.textContent=lang==='en'?'Settings saved.':'Ayarlar kaydedildi.';
   }catch(error){message.textContent=String(error.message||error);}
   finally{screenPreferencesBusy=false;renderScreenExtensionStatus(screenExtensionState||{phase:'off'});}
 });
@@ -1983,7 +2039,7 @@ async function screenExtensionAction(action) {
     if(!r.ok)throw new Error(await r.text());renderScreenExtensionStatus((await r.json()).status);
   }catch(e){document.getElementById('screenExtensionStatus').textContent=String(e);}
 }
-document.getElementById('screenExtensionStart').addEventListener('click',()=>screenExtensionAction(document.getElementById('screenExtensionDialog').dataset.receiving==='1'?'receive':'source'));
+document.getElementById('screenExtensionStart').addEventListener('click',()=>screenExtensionAction(document.getElementById('screenExtensionPanel').dataset.receiving==='1'?'receive':'source'));
 document.getElementById('screenExtensionStop').addEventListener('click',()=>screenExtensionAction('stop'));
 async function poll() {
   if (!editorActive()) { setTimeout(poll, 1000); return; }
@@ -2225,6 +2281,7 @@ new ResizeObserver(refitOnResize).observe(canvas);
     save.setAttribute('aria-description', t('clientView'));
     document.getElementById('msg').textContent = t('clientView');
   }
+  await loadScreenExtensionPanel();
   poll();
   pollAndroid();
 })().catch(e => setMsg(t('reach') + e, 'err'));
