@@ -156,8 +156,7 @@ The companion's seven tests passed and the main Windows source checked.
 ## FPS/quality controls and modern banner guard — 17 November 2026
 
 Signed Mac preview `919d164` (workflow `44044117741`) is installed with the same
-designated requirement and existing input permissions. **Extra display →
-Picture settings** provides automatic 60/30 fps, fixed-target 30 fps, and
+designated requirement and existing input permissions. The selected-screen inspector's **Picture settings** section provides automatic 60/30 fps, fixed-target 30 fps, and
 fixed-target 60 fps, plus Economy / Balanced / High quality. Their bitrate
 budgets for 1080p / 1440p are 12/20, 20/35, and 30/45 Mbps respectively.
 Resolution stays native; no 120/144 fps, audio, or lossless layer was added.
@@ -195,6 +194,33 @@ protection remains enabled and no active threat was reported. The published
 tests, seven source/display tests, config compatibility/roundtrip checks,
 editor regression and syntax checks, live UI apply/restart, invalid-preference
 API rejection, cable routing, and the modern banner probe.
+
+## Inspector follow-up — 17 November 2026
+
+Mac preview `b7e963b` (successful signed workflow `44050650566`) replaces the
+extra-display modal with a section in the existing right-hand screen inspector.
+Selecting C reveals FPS, quality, apply/restart, and stop controls there. The
+footer Extra display action selects the active virtual screen and focuses that
+same inspector. Physical display details and explanatory text are collapsible;
+ordinary A/B selection retains its screen information. There is no extra-display
+`dialog`, modal backdrop, or Close button to get trapped below the viewport.
+Actions remain sticky in the inspector's own scroll area. The source also
+explicitly hides the Mac-managed preferences action on Windows receiver editors;
+that receiver-only visibility refinement does not change the installed Mac UI.
+
+Read-only preview testing at normal size and 1000×560 confirmed no open modal,
+no horizontal page overflow, controls inside `deviceInspector`, the stop button
+within the visible inspector bounds, and an unapplied FPS value surviving
+polling/refit. Selecting A hides the display controls. Editor syntax and existing
+regressions passed. The installed native Mac UI was then visually checked: C
+selected, FPS/quality and both actions in the right panel, canvas unobstructed.
+The signed update retained the existing preferences and restored C's native
+position; no Windows binary was replaced for this UI-only update. Proof is in
+the ignored `dist/extra-display-sidebar-ci-44050650566/sidebar-proof.jpg` artifact.
+
+The preferences apply flow now keeps the selected surface and inspector while
+the temporary display is recreated, then waits for its origin to be restored
+before completing. Polling does not overwrite an unapplied selector choice.
 
 ## Use
 

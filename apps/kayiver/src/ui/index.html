@@ -1914,7 +1914,7 @@ function renderScreenExtensionStatus(s) {
   document.getElementById('screenExtensionPeerRow').hidden=!!active && !receiving;
   document.getElementById('screenExtensionStart').hidden=!!active;
   document.getElementById('screenExtensionStop').hidden=!active;
-  const apply=document.getElementById('screenPreferencesApply');apply.disabled=screenPreferencesBusy;
+  const apply=document.getElementById('screenPreferencesApply');apply.hidden=receiving;apply.disabled=screenPreferencesBusy;
   apply.textContent=screenPreferencesBusy?(en?'Applying…':'Uygulanıyor…'):(active&&s?.role==='source'?(en?'Save & restart display':'Kaydet ve ekranı yeniden başlat'):(en?'Save settings':'Ayarları kaydet'));
   document.getElementById('screenFrameRate').disabled=screenPreferencesBusy;
   document.getElementById('screenQuality').disabled=screenPreferencesBusy;
