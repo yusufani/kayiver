@@ -1866,8 +1866,9 @@ function renderScreenExtensionStatus(s) {
     const label=tile.el.querySelector('.name');if(label)label.textContent=tile.machine+((presentation||(active&&tile===virtualTile))?(en?' · Mac display':' · Mac ekranı'):'');
   }
   // Native arrangement persistence must never include an ephemeral monitor.
-  const save=document.getElementById('save');save.disabled=!!active;
-  save.title=active?(en?'Stop the extra display before saving the desk layout':'Masa düzenini kaydetmeden önce ek ekranı durdur'):'';
+  const save=document.getElementById('save');save.disabled=!!active && s?.role!=='source';
+  save.title=active?(s?.role==='source'?(en?'Apply the Mac extra display position':'Mac ek ekran konumunu uygula'):(en?'Stop the extra display before saving the desk layout':'Masa düzenini kaydetmeden önce ek ekranı durdur')):'';
+  updateOverlap();
   renderCorridors();
   selectScreen();
 }
@@ -1998,6 +1999,10 @@ async function saveExtendedDisplayPosition() {
   const anchor=sharedPair()?.a || mons.find(t=>t.me && t!==tile && t.el.style.display!=='none');
   if(!tile || !anchor) throw new Error(lang==='en'?'Extra display is not ready':'Ek ekran henüz hazır değil');
   const sx=anchor.w/anchor.realW, sy=anchor.h/anchor.realH;
+  for(const other of mons.filter(t=>t.me && t!==tile)) {
+    const x=Math.round(anchor.realX+(other.x-anchor.x)/sx), y=Math.round(anchor.realY+(other.y-anchor.y)/sy);
+    if(Math.abs(x-other.realX)>1 || Math.abs(y-other.realY)>1) throw new Error(lang==='en'?'Stop the extra display before rearranging physical Mac monitors':'Fiziksel Mac ekranlarını düzenlemeden önce ek ekranı durdur');
+  }
   const body={action:'position',x:Math.round(anchor.realX+(tile.x-anchor.x)/sx),y:Math.round(anchor.realY+(tile.y-anchor.y)/sy)};
   const r=await fetch('/api/display',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(!r.ok) throw new Error(await r.text());
