@@ -473,11 +473,11 @@
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px"><div>
     <label for="screenFrameRate" id="screenFrameRateLabel">FPS</label>
     <select id="screenFrameRate" style="display:block;width:100%;margin:8px 0 16px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px">
-      <option value="adaptive">Otomatik · 60 fps, gerektiğinde 30</option><option value="30">30 fps · düşük yük</option><option value="60">60 fps · sabit hedef</option>
+      <option value="adaptive">Otomatik · 60 fps, gerektiğinde 30</option><option value="30">30 fps · düşük yük</option><option value="60">60 fps · sabit hedef</option><option value="120">120 fps</option><option value="144">144 fps</option>
     </select>
     </div><div><label for="screenQuality" id="screenQualityLabel">Görüntü kalitesi</label>
     <select id="screenQuality" style="display:block;width:100%;margin:8px 0 12px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px">
-      <option value="economy">Ekonomik</option><option value="balanced">Dengeli</option><option value="high">Yüksek</option>
+      <option value="economy">Ekonomik</option><option value="balanced">Dengeli</option><option value="high">Yüksek</option><option value="ultra">Ultra</option><option value="studio">Stüdyo</option>
     </select>
     </div></div>
     <p id="screenPreferencesHelp" style="color:var(--muted);font-size:12px;line-height:1.6;margin:8px 0"></p>
@@ -1905,8 +1905,8 @@ function renderScreenExtensionStatus(s) {
   const phases=en?{off:'Off',starting:'Starting…',listening:'Ready for the selected Mac',connecting:'Connecting…',streaming:'Mac extended display active',stopping:'Stopping…',error:'Stopped'}:
     {off:'Kapalı',starting:'Başlatılıyor…',listening:'Seçilen Mac için hazır',connecting:'Bağlanıyor…',streaming:'Mac ek ekranı açık',stopping:'Durduruluyor…',error:'Durduruldu'};
   const active=s && !['off','error',''].includes(s.phase);
-  const button=document.getElementById('screenExtensionBtn');button.textContent=(en?'Extra display':'Ek ekran')+(active?' ●':'');
-  document.getElementById('screenExtensionStatus').textContent=(phases[s?.phase]||phases.off)+(s?.error?' · '+s.error:'')+
+  const button=document.getElementById('screenExtensionBtn');button.textContent=(en?'Extra display':'Ek ekran')+(s?.phase==='streaming'?' ●':active?' …':'');
+  document.getElementById('screenExtensionStatus').textContent=(s?.role==='source' && s.phase==='connecting' && !s.target ? (en?'Waiting for Windows. If the receiver is closed, open Kayiver Extra Display on Windows.':'Windows bekleniyor. Alıcı kapalıysa Windows’ta Kayiver Extra Display’i açın.') : phases[s?.phase]||phases.off)+(s?.error?' · '+s.error:'')+
     (s?.phase==='streaming'&&s.target?' · '+s.target.w+' × '+s.target.h+(en?' · up to ':' · en fazla ')+s.fps+' fps'+(s.bitrate_mbps?' · '+s.bitrate_mbps+' Mbps':''):'');
   document.getElementById('screenExtensionStart').disabled=screenPreferencesBusy||!!active||!screenExtensionCanStart;
   document.getElementById('screenExtensionStop').disabled=screenPreferencesBusy||!active;
@@ -1969,10 +1969,10 @@ async function loadScreenExtensionPanel() {
     document.getElementById('screenFrameRateLabel').textContent=en?'Frame rate (FPS)':'Kare hızı (FPS)';
     document.getElementById('screenQualityLabel').textContent=en?'Picture quality':'Görüntü kalitesi';
     const rates=document.getElementById('screenFrameRate');
-    const rateLabels=en?['Auto · 60 / 30 fps','30 fps · lower load','60 fps · fixed target']:['Otomatik · 60 / 30 fps','30 fps · düşük yük','60 fps · sabit hedef'];
+    const rateLabels=en?['Auto · 60 / 30 fps','30 fps · lower load','60 fps · fixed target','Up to 120 fps','Up to 144 fps']:['Otomatik · 60 / 30 fps','30 fps · düşük yük','60 fps · sabit hedef','120 fps’ye kadar','144 fps’ye kadar'];
     [...rates.options].forEach((o,i)=>o.textContent=rateLabels[i]);if(!screenPreferencesDirty)rates.value=data.preferences?.frame_rate||'adaptive';
     const quality=document.getElementById('screenQuality');
-    const qualityLabels=en?['Economy · 12 / 20 Mbps','Balanced · 20 / 35 Mbps','High · 30 / 45 Mbps']:['Ekonomik · 12 / 20 Mbps','Dengeli · 20 / 35 Mbps','Yüksek · 30 / 45 Mbps'];
+    const qualityLabels=en?['Economy · 12 / 20 Mbps','Balanced · 20 / 35 Mbps','High · 30 / 45 Mbps','Ultra · 60 / 90 Mbps','Studio · 100 / 150 Mbps']:['Ekonomik · 12 / 20 Mbps','Dengeli · 20 / 35 Mbps','Yüksek · 30 / 45 Mbps','Ultra · 60 / 90 Mbps','Stüdyo · 100 / 150 Mbps'];
     [...quality.options].forEach((o,i)=>o.textContent=qualityLabels[i]);if(!screenPreferencesDirty)quality.value=data.preferences?.quality||'balanced';
     document.getElementById('screenPreferencesHelp').textContent=en?'Higher quality uses more bandwidth. Applying briefly restarts the display; windows may move.':'Yüksek kalite daha fazla ağ kullanır. Uygulama ekranı kısa süreliğine yeniden başlatır; pencereler taşınabilir.';
     document.getElementById('screenPreferencesMessage').textContent='';

@@ -180,7 +180,7 @@ static void encoded(void *context, void *frameContext, OSStatus status,
         if(![self setupEncoder]) {[self stop:@"hardware encoder self-test failed"];return;}
         printf("{\"ready\":true,\"hardware\":true,\"synthetic\":true,\"x\":0,\"y\":0}\n");fflush(stdout);
         self.testTimer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_get_main_queue());
-        dispatch_source_set_timer(self.testTimer,dispatch_time(DISPATCH_TIME_NOW,0),NSEC_PER_SEC/60,0);
+        dispatch_source_set_timer(self.testTimer,dispatch_time(DISPATCH_TIME_NOW,0),NSEC_PER_SEC/fps.load(),0);
         __block int frame=0;
         dispatch_source_set_event_handler(self.testTimer, ^{
             if(self->busy.load())return;
@@ -196,7 +196,7 @@ static void encoded(void *context, void *frameContext, OSStatus status,
                 p[0]=moving?255:(x/64%2?48:220);p[1]=moving?96:(y/64%2?32:200);p[2]=moving?16:128;p[3]=255;
             }
             CVPixelBufferUnlockBaseAddress(image,0);self->busy=true;
-            OSStatus result=VTCompressionSessionEncodeFrame(self->encoder,image,CMTimeMake(frame,60),CMTimeMake(1,60),nullptr,(void *)(uintptr_t)epochUs(),nullptr);
+            OSStatus result=VTCompressionSessionEncodeFrame(self->encoder,image,CMTimeMake(frame,self->fps.load()),CMTimeMake(1,self->fps.load()),nullptr,(void *)(uintptr_t)epochUs(),nullptr);
             CVPixelBufferRelease(image);frame++;
             if(result!=noErr){self->busy=false;[self stop:@"synthetic encode failed"];}
         });dispatch_resume(self.testTimer);return;
@@ -222,7 +222,7 @@ static void encoded(void *context, void *frameContext, OSStatus status,
         self.display=[[displayClass alloc] initWithDescriptor:d];
         KVDisplaySettings *settings=[[settingsClass alloc] init];
         settings.hiDPI=0;
-        settings.modes=@[[[modeClass alloc] initWithWidth:self.width height:self.height refreshRate:60]];
+        settings.modes=@[[[modeClass alloc] initWithWidth:self.width height:self.height refreshRate:fps.load()]];
         if (!self.display || ![self.display applySettings:settings]) {[self stop:@"virtual display creation failed"];return;}
     } @catch (NSException *error) {[self stop:@"unsupported virtual display interface"];return;}
     // Place the added screen beside the current desktop, without moving or
@@ -320,7 +320,7 @@ extern "C" int kayiver_display_native(int argc,const char **argv) {
         if(argc!=5 || (strcmp(argv[0],"source")!=0 && strcmp(argv[0],"test-source")!=0)) return 2;
         if(!kayiver_display_available()){fprintf(stderr,"display source: macOS 12.3+ and virtual display support required\n");return 3;}
         int width=atoi(argv[1]),height=atoi(argv[2]),fps=atoi(argv[3]),bitrate=atoi(argv[4]);
-        if(width<640 || height<480 || width>2560 || height>2560 || width%2 || height%2 || width*height>2560*1440 || (fps!=30 && fps!=60) || bitrate<1000000 || bitrate>45000000) return 2;
+        if(width<640 || height<480 || width>2560 || height>2560 || width%2 || height%2 || width*height>2560*1440 || (fps<30 || fps>144) || bitrate<1000000 || bitrate>150000000) return 2;
         signal(SIGPIPE,SIG_IGN); signal(SIGTERM,SIG_IGN);
         [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
         source=[KVSource new]; source.width=width; source.height=height; source.bitrate=bitrate; source->fps=fps; source->busy=false; source->lastFrame=0;

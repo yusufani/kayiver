@@ -64,6 +64,7 @@ static bool testReadbackDone=false;
 static uint64_t read64(const uint8_t *p) {uint64_t n=0;for(int i=0;i<8;i++) n=(n<<8)|p[i];return n;}
 static uint32_t read32(const uint8_t *p) {return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|((uint32_t)p[2]<<8)|p[3];}
 static void write64(uint8_t *p,uint64_t n){for(int i=7;i>=0;i--){p[i]=n&255;n>>=8;}}
+static int streamFps=60;
 static uint64_t epochUs(){FILETIME t;GetSystemTimePreciseAsFileTime(&t);ULARGE_INTEGER n;n.LowPart=t.dwLowDateTime;n.HighPart=t.dwHighDateTime;return n.QuadPart/10-11644473600000000ULL;}
 static bool readAll(void *p,DWORD size) {
     uint8_t *b=(uint8_t *)p;
@@ -162,7 +163,7 @@ struct Renderer {
         CHECK(device->QueryInterface(__uuidof(ID3D11VideoDevice),(void **)videoDevice.put()));
         CHECK(context->QueryInterface(__uuidof(ID3D11VideoContext),(void **)videoContext.put()));
         DXGI_SWAP_CHAIN_DESC sd={};sd.BufferDesc.Width=w;sd.BufferDesc.Height=h;sd.BufferDesc.Format=DXGI_FORMAT_B8G8R8A8_UNORM;
-        sd.BufferDesc.RefreshRate.Numerator=60;sd.BufferDesc.RefreshRate.Denominator=1;
+        sd.BufferDesc.RefreshRate.Numerator=streamFps;sd.BufferDesc.RefreshRate.Denominator=1;
         sd.SampleDesc.Count=1;sd.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;sd.BufferCount=2;sd.OutputWindow=windowHandle;
         sd.Windowed=TRUE;sd.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
         sd.Flags=DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
@@ -191,13 +192,13 @@ struct Renderer {
         VARIANT low;VariantInit(&low);low.vt=VT_UI4;low.ulVal=1;CHECK(codec->SetValue(&CODECAPI_AVLowLatencyMode,&low));
         Ptr<IMFMediaType> input;CHECK(MFCreateMediaType(input.put()));
         CHECK(input->SetGUID(MF_MT_MAJOR_TYPE,MFMediaType_Video));CHECK(input->SetGUID(MF_MT_SUBTYPE,MFVideoFormat_H264));
-        CHECK(MFSetAttributeSize(input.p,MF_MT_FRAME_SIZE,w,h));CHECK(MFSetAttributeRatio(input.p,MF_MT_FRAME_RATE,60,1));
+        CHECK(MFSetAttributeSize(input.p,MF_MT_FRAME_SIZE,w,h));CHECK(MFSetAttributeRatio(input.p,MF_MT_FRAME_RATE,streamFps,1));
         CHECK(input->SetUINT32(MF_MT_INTERLACE_MODE,MFVideoInterlace_Progressive));
         CHECK(decoder->SetInputType(0,input.p,0));
         if(!setOutput())return false;
         D3D11_VIDEO_PROCESSOR_CONTENT_DESC content={};content.InputFrameFormat=D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
         content.InputWidth=w;content.InputHeight=h;content.OutputWidth=w;content.OutputHeight=h;
-        content.InputFrameRate.Numerator=60;content.InputFrameRate.Denominator=1;
+        content.InputFrameRate.Numerator=streamFps;content.InputFrameRate.Denominator=1;
         content.OutputFrameRate=content.InputFrameRate;content.Usage=D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
         CHECK(videoDevice->CreateVideoProcessorEnumerator(&content,enumerator.put()));
         CHECK(videoDevice->CreateVideoProcessor(enumerator.p,0,processor.put()));
@@ -237,7 +238,7 @@ struct Renderer {
         Ptr<IMFMediaBuffer> buffer;CHECK(MFCreateMemoryBuffer(size,buffer.put()));
         BYTE *p=nullptr;CHECK(buffer->Lock(&p,nullptr,nullptr));memcpy(p,bytes,size);CHECK(buffer->Unlock());CHECK(buffer->SetCurrentLength(size));
         Ptr<IMFSample> sample;CHECK(MFCreateSample(sample.put()));CHECK(sample->AddBuffer(buffer.p));
-        CHECK(sample->SetSampleTime((LONGLONG)(id*10000000/60)));CHECK(sample->SetSampleDuration(10000000/60));
+        CHECK(sample->SetSampleTime((LONGLONG)(id*10000000/streamFps)));CHECK(sample->SetSampleDuration(10000000/streamFps));
         CHECK(decoder->ProcessInput(0,sample.p,0));
         for(int attempts=0;attempts<4;attempts++) {
             MFT_OUTPUT_DATA_BUFFER out={};DWORD flags=0;
@@ -269,7 +270,7 @@ struct Renderer {
             CHECK(swap->Present(flipPresentation?0:1,0));
             if(!testMode)PostMessageW(windowHandle,WM_APP+1,0,0);
             LONGLONG timestamp=0;CHECK(decoded->GetSampleTime(&timestamp));
-            uint64_t presentedId=(uint64_t)((timestamp*60+5000000)/10000000);
+            uint64_t presentedId=(uint64_t)((timestamp*streamFps+5000000)/10000000);
             uint8_t ack[16];write64(ack,presentedId);write64(ack+8,epochUs());
             if(fwrite(ack,1,sizeof(ack),stdout)!=sizeof(ack)||fflush(stdout)!=0)return false;
         }
@@ -348,6 +349,17 @@ static LRESULT CALLBACK wndproc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     return DefWindowProcW(hwnd,msg,wp,lp);
 }
 
+extern "C" unsigned kayiver_monitor_hz(int x,int y) {
+    POINT point={x,y};
+    MONITORINFOEXW info={};info.cbSize=sizeof(info);
+    DEVMODEW mode={};mode.dmSize=sizeof(mode);
+    HMONITOR monitor=MonitorFromPoint(point,MONITOR_DEFAULTTONULL);
+    if(monitor && GetMonitorInfoW(monitor,(MONITORINFO*)&info) &&
+       EnumDisplaySettingsW(info.szDevice,ENUM_CURRENT_SETTINGS,&mode) && mode.dmDisplayFrequency>=30)
+        return mode.dmDisplayFrequency;
+    return 60;
+}
+
 extern "C" bool kayiver_display_available() {
     wchar_t path[MAX_PATH];UINT n=GetSystemDirectoryW(path,MAX_PATH);
     if(!n||n+12>=MAX_PATH)return false;
@@ -357,7 +369,13 @@ extern "C" bool kayiver_display_available() {
 extern "C" int kayiver_display_native(int argc,const char **argv) {
     if((argc!=6&&argc!=7)||(strcmp(argv[0],"sink")!=0&&strcmp(argv[0],"test-sink")!=0))return 2;
     testMode=strcmp(argv[0],"test-sink")==0;
-    if(argc==7){if(!testMode)return 2;testReadbackPath=argv[6];}
+    if(argc==7){
+        if(strncmp(argv[6],"fps=",4)==0){
+            streamFps=atoi(argv[6]+4);
+            if(streamFps<30 || streamFps>144)return 2;
+        }else if(testMode)testReadbackPath=argv[6];
+        else return 2;
+    }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     int x=atoi(argv[1]),y=atoi(argv[2]),w=atoi(argv[3]),h=atoi(argv[4]);
     if(w<640||h<480||w>2560||h>2560||w%2||h%2||w*h>2560*1440)return 2;

@@ -107,6 +107,35 @@ fn position_source(v: &serde_json::Value) -> Result<()> {
         Ok(value as i32)
     };
     let desired = Rect { x: coordinate("x")?, y: coordinate("y")?, ..previous };
+    move_virtual(previous,desired)?;
+    let placement=SavedPlacement {
+        peer:state.peer, monitor:state.target_id.context("missing Windows monitor identity")?,
+        physical:crate::platform::monitors().into_iter().filter(|r|*r!=desired).collect(),
+        rect:desired,
+    };
+    let path=Config::path().with_file_name("extra-display-position.json");
+    let tmp=path.with_extension("tmp");
+    std::fs::write(&tmp,serde_json::to_vec(&placement)?)?;
+    std::fs::rename(tmp,path)?;
+    Ok(())
+}
+
+#[cfg(target_os="macos")]
+#[derive(Serialize,Deserialize)]
+struct SavedPlacement {peer:String,monitor:String,physical:Vec<Rect>,rect:Rect}
+
+#[cfg(target_os="macos")]
+fn restore_virtual(peer:&str,monitor:&str,physical:&[Rect],current:Rect)->Option<Rect>{
+    let path=Config::path().with_file_name("extra-display-position.json");
+    let placement:SavedPlacement=serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    if placement.peer!=peer || placement.monitor!=monitor || placement.physical!=physical ||
+       placement.rect.w!=current.w || placement.rect.h!=current.h {return None;}
+    move_virtual(current,placement.rect).ok()?;
+    Some(placement.rect)
+}
+
+#[cfg(target_os="macos")]
+fn move_virtual(previous:Rect,desired:Rect)->Result<()> {
     let mut screens = crate::platform::monitors();
     let index = screens.iter().position(|r| *r == previous).context("display position changed; refresh and retry")?;
     for (i, other) in screens.iter().enumerate() {
@@ -325,14 +354,21 @@ pub fn exclude_presentation(
     }
 }
 
+fn requested_fps(rate:kayiver_core::config::DisplayFrameRate)->u32 {
+    use kayiver_core::config::DisplayFrameRate::*;
+    match rate { Adaptive | Fps60=>60, Fps30=>30, Fps120=>120, Fps144=>144 }
+}
+
 fn display_profile(rect:Rect,preferences:kayiver_core::config::DisplayPreferences)->(u32,u32) {
-    use kayiver_core::config::{DisplayFrameRate,DisplayQuality};
+    use kayiver_core::config::DisplayQuality;
     let large=rect.w as i64*rect.h as i64>1920*1080;
-    let fps=if preferences.frame_rate==DisplayFrameRate::Fps30 {30}else{60};
+    let fps=requested_fps(preferences.frame_rate);
     let bitrate=match (preferences.quality,large) {
         (DisplayQuality::Economy,false)=>12,(DisplayQuality::Economy,true)=>20,
         (DisplayQuality::Balanced,false)=>20,(DisplayQuality::Balanced,true)=>35,
         (DisplayQuality::High,false)=>30,(DisplayQuality::High,true)=>45,
+        (DisplayQuality::Ultra,false)=>60,(DisplayQuality::Ultra,true)=>90,
+        (DisplayQuality::Studio,false)=>100,(DisplayQuality::Studio,true)=>150,
     };
     (fps,bitrate)
 }
@@ -451,6 +487,8 @@ mod tests {
         let full=Rect{x:0,y:0,w:1920,h:1080};let large=Rect{w:2560,h:1440,..full};
         assert_eq!(display_profile(full,DisplayPreferences::default()),(60,20));
         assert_eq!(display_profile(large,DisplayPreferences{frame_rate:DisplayFrameRate::Fps30,quality:DisplayQuality::High}),(30,45));
+        assert_eq!(display_profile(large,DisplayPreferences{frame_rate:DisplayFrameRate::Fps144,quality:DisplayQuality::Studio}),(144,150));
+        assert_eq!(display_profile(full,DisplayPreferences{frame_rate:DisplayFrameRate::Fps120,quality:DisplayQuality::Ultra}),(120,60));
         assert_eq!(display_profile(full,DisplayPreferences{frame_rate:DisplayFrameRate::Fps60,quality:DisplayQuality::Economy}),(60,12));
     }
     use super::*;

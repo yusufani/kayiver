@@ -22,6 +22,23 @@ use tokio::{
 };
 
 const VERSION: u16 = 1;
+const REFRESH_VERSION: u16 = 2;
+
+#[derive(Debug)]
+struct PeerDisconnected;
+impl std::fmt::Display for PeerDisconnected {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result { f.write_str("display connection interrupted") }
+}
+
+fn monitor_hz(rect: Rect) -> u32 {
+    #[cfg(all(target_os="windows",display_native))]
+    {
+        unsafe extern "C" {fn kayiver_monitor_hz(x:i32,y:i32)->u32;}
+        return unsafe {kayiver_monitor_hz(rect.x,rect.y)}.clamp(30,144);
+    }
+    #[allow(unreachable_code)]
+    {let _=rect;60}
+}
 const IO_TIMEOUT: Duration = Duration::from_millis(500);
 const LIVENESS: Duration = Duration::from_secs(5);
 
@@ -36,10 +53,14 @@ enum Control {
         version: u16,
         rect: Rect,
         monitor_id: String,
+        #[serde(default,skip_serializing_if="Option::is_none")]
+        refresh_hz: Option<u32>,
         time_us: u64,
     },
     Start {
         offset_us: i64,
+        #[serde(default,skip_serializing_if="Option::is_none")]
+        fps: Option<u32>,
     },
     SourceReady {
         virtual_rect: Rect,
@@ -99,16 +120,28 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
     let outcome = {
         let work = async {
-            match state.role.as_str() {
-                "source" => source(&cfg, &args, &key, &mut state, cancel_rx).await,
+            loop {
+                if *cancel_rx.borrow() {break Ok(());}
+                let outcome = match state.role.as_str() {
+                "source" => source(&cfg, &args, &key, &mut state, cancel_rx.clone()).await,
                 "receive" => loop {
-                    if !receive(&cfg, &args, &key, &mut state, cancel_rx.clone()).await?
-                        || *cancel_rx.borrow()
-                    {
-                        break Ok(());
+                    match receive(&cfg, &args, &key, &mut state, cancel_rx.clone()).await {
+                        Ok(true) if !*cancel_rx.borrow()=>continue,
+                        Ok(_)=>break Ok(()),
+                        Err(error)=>break Err(error),
                     }
                 },
                 _ => bail!("unknown display worker role"),
+                };
+                match outcome {
+                    Err(error) if error.is::<PeerDisconnected>() && !*cancel_rx.borrow() => {
+                        let old=std::mem::take(&mut state);
+                        state=Status { role:old.role,peer:old.peer,phase:"connecting".into(),..Default::default() };
+                        emit(&state);
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    other => break other,
+                }
             }
         };
         tokio::pin!(work);
@@ -366,7 +399,7 @@ impl Network {
         }
     }
     async fn next(&mut self) -> Result<Vec<u8>> {
-        self.rx.recv().await.context("display connection ended")?
+        self.rx.recv().await.context(PeerDisconnected)?.context(PeerDisconnected)
     }
 }
 async fn send_control(tx: &mpsc::Sender<Outbound>, c: Control) -> Result<()> {
@@ -465,36 +498,41 @@ async fn source(
     let Some((mut reader, mut writer)) = accept_receiver(cfg, args, key, &mut cancel).await? else {
         return Ok(());
     };
+    let requested_fps=requested_fps(cfg.extra_display.frame_rate);
+    let requested_version=if requested_fps>60 {REFRESH_VERSION}else{VERSION};
     let started = now_us();
     writer
         .send_payload(&serde_json::to_vec(&Control::Request {
-            version: VERSION,
+            version: requested_version,
             name: cfg.name.clone(),
         })?)
         .await?;
-    let offer = timeout(Duration::from_secs(5), reader.recv_payload()).await??;
+    let offer = timeout(Duration::from_secs(5), reader.recv_payload()).await?
+        .context("Windows receiver disconnected during setup; high refresh rates require an updated receiver")?;
     let Control::Offer {
         version,
         rect,
         monitor_id,
+        refresh_hz,
         time_us,
     } = serde_json::from_slice(offer)?
     else {
         bail!("invalid display offer")
     };
-    anyhow::ensure!(version == VERSION, "incompatible display service version");
+    anyhow::ensure!(version == requested_version, "incompatible display service version");
     validate_size(rect.w, rect.h)?;
     let ended = now_us();
     let midpoint = started + (ended - started) / 2;
     let offset = time_us as i64 - midpoint as i64;
     state.clock_uncertainty_ms = Some((ended - started) as f64 / 2000.0);
+    let (preferred_fps,preferred_bitrate)=display_profile(rect,cfg.extra_display);
+    let preferred_fps=preferred_fps.min(refresh_hz.unwrap_or(60).clamp(30,144));
     writer
-        .send_payload(&serde_json::to_vec(&Control::Start { offset_us: offset })?)
+        .send_payload(&serde_json::to_vec(&Control::Start { offset_us: offset, fps:refresh_hz.map(|_|preferred_fps) })?)
         .await?;
     state.phase = "connecting".into();
     state.target = Some(rect);
-    state.target_id = Some(monitor_id);
-    let (preferred_fps,preferred_bitrate)=display_profile(rect,cfg.extra_display);
+    state.target_id = Some(monitor_id.clone());
     state.fps = preferred_fps;
     state.bitrate_mbps = preferred_bitrate;
     let base_bitrate_mbps = state.bitrate_mbps;
@@ -525,6 +563,10 @@ async fn source(
         crate::platform::identified_monitors().into_iter().find(|(_,r)| *r == virtual_rect).and_then(|(id,_)|id)
     };
     anyhow::ensure!(synthetic || source_id.is_some(), "virtual display identity unavailable");
+    #[cfg(target_os="macos")]
+    let virtual_rect=if synthetic {virtual_rect} else {
+        restore_virtual(&state.peer,&monitor_id,&native.physical,virtual_rect).unwrap_or(virtual_rect)
+    };
     if !synthetic {
         native.source_rect = Some(virtual_rect);
         state.virtual_rect = Some(virtual_rect);
@@ -686,7 +728,7 @@ async fn receive(
     emit(state);
     // The selected Mac must also explicitly start its service. Windows is
     // always the TCP/Noise initiator; media direction remains Mac -> Windows.
-    let (mut reader, mut writer) = loop {
+    let (mut reader, mut writer,version) = loop {
         // A KVM connection may become ready after the receiver was launched.
         // Refresh its optional route hint while waiting, rather than pinning
         // an old Wi-Fi address for the entire accepted application session.
@@ -699,11 +741,9 @@ async fn receive(
                 write_frame(&mut socket, cfg.name.as_bytes()).await?;
                 let (mut reader, writer) = handshake_initiator(socket, key).await?;
                 let request: Control = serde_json::from_slice(reader.recv_payload().await?)?;
-                anyhow::ensure!(
-                    matches!(request,Control::Request {version:VERSION,ref name} if name==&args[1]),
-                    "invalid Mac display request"
-                );
-                Ok::<_, anyhow::Error>((reader, writer))
+                let Control::Request{version,name}=request else {bail!("invalid Mac display request")};
+                anyhow::ensure!(matches!(version,VERSION|REFRESH_VERSION) && name==args[1],"incompatible Mac display request");
+                Ok::<_, anyhow::Error>((reader, writer,version))
             };
             let attempt = tokio::select! {result=timeout(Duration::from_secs(2),dial)=>result,_=cancel.changed()=>return Ok(false)};
             if let Ok(Ok(session)) = attempt {
@@ -733,7 +773,8 @@ async fn receive(
     );
     writer
         .send_payload(&serde_json::to_vec(&Control::Offer {
-            version: VERSION,
+            version,
+            refresh_hz:(version==REFRESH_VERSION).then(||monitor_hz(rect)),
             rect,
             monitor_id: id.clone(),
             time_us: now_us(),
@@ -741,9 +782,11 @@ async fn receive(
         .await?;
     let start: Control =
         serde_json::from_slice(timeout(Duration::from_secs(5), reader.recv_payload()).await??)?;
-    let Control::Start { offset_us: _ } = start else {
+    let Control::Start { fps,.. } = start else {
         bail!("invalid display start")
     };
+    state.fps=fps.unwrap_or(60);
+    anyhow::ensure!((30..=144).contains(&state.fps),"invalid negotiated frame rate");
     state.phase = "connecting".into();
     emit(state);
     let mut native = Native::spawn(&[
@@ -753,6 +796,7 @@ async fn receive(
         rect.w.to_string(),
         rect.h.to_string(),
         std::process::id().to_string(),
+        format!("fps={}",state.fps),
     ])?;
     let mut acknowledgments = BufReader::new(native.child.stdout.take().unwrap());
     let mut ready = String::new();

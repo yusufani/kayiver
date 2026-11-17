@@ -72,10 +72,14 @@ pub enum DisplayFrameRate {
     Fps30,
     #[serde(rename="60")]
     Fps60,
+    #[serde(rename="120")]
+    Fps120,
+    #[serde(rename="144")]
+    Fps144,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="snake_case")]
-pub enum DisplayQuality {Economy,#[default] Balanced,High}
+pub enum DisplayQuality {Economy,#[default] Balanced,High,Ultra,Studio}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default,deny_unknown_fields)]
 pub struct DisplayPreferences {
@@ -378,7 +382,7 @@ mod tests {
         let old:Config=old.try_into().unwrap();assert_eq!(old.extra_display,DisplayPreferences::default());
         let supported:DisplayPreferences=toml::from_str("frame_rate = \"30\"\nquality = \"high\"").unwrap();
         assert_eq!(supported.frame_rate,DisplayFrameRate::Fps30);assert_eq!(supported.quality,DisplayQuality::High);
-        assert!(toml::from_str::<DisplayPreferences>("frame_rate = \"120\"").is_err());
+        assert!(toml::from_str::<DisplayPreferences>("frame_rate = \"240\"").is_err());
         assert!(toml::from_str::<DisplayPreferences>("quality = \"lossless\"").is_err());
     }
     use super::*;
