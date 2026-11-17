@@ -384,14 +384,24 @@ async fn send_control(tx: &mpsc::Sender<Outbound>, c: Control) -> Result<()> {
 }
 
 fn source_addresses(cfg: &Config, args: &[String]) -> Result<Vec<std::net::SocketAddr>> {
+    let active_route = crate::ui::peer_remote_addr(&args[1]);
+    source_addresses_for_route(cfg,args,active_route.as_deref())
+}
+fn source_addresses_for_route(cfg:&Config,args:&[String],active_route:Option<&str>) -> Result<Vec<std::net::SocketAddr>> {
     let peer = cfg.peer(&args[1]).context("peer no longer paired")?;
     let mut candidates = Vec::new();
-    let active_route = crate::ui::peer_remote_addr(&args[1]);
+    // A live authenticated input connection is stronger evidence than a
+    // saved Wi-Fi address or an earlier manager snapshot. Do not race its
+    // refused media port against Wi-Fi while the Mac source is starting.
+    // With input sharing off/unavailable, saved screen-only routes still work.
+    if let Some(route) = active_route.and_then(|s|s.parse::<std::net::SocketAddr>().ok()) {
+        let mut route=route;route.set_port(display_port(cfg)?);
+        return Ok(vec![route]);
+    }
     for address in args
         .get(3)
         .filter(|s| !s.starts_with("--"))
         .into_iter()
-        .chain(active_route.iter())
         .chain(peer.addr.iter())
         .chain(peer.last_good.iter())
         .chain(peer.addrs.iter())
@@ -700,6 +710,7 @@ async fn receive(
             };
             let attempt = tokio::select! {result=timeout(Duration::from_secs(2),dial)=>result,_=cancel.changed()=>return Ok(false)};
             if let Ok(Ok(session)) = attempt {
+                eprintln!("display transport: connected through {}",address);
                 authenticated = Some(session);
                 break;
             }
@@ -834,6 +845,17 @@ async fn receive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_cable_route_beats_stale_wifi_but_screen_only_retains_fallbacks() {
+        let mut cfg=Config::default();
+        cfg.peers.push(serde_json::from_value(serde_json::json!({"name":"mac","psk":"test","addr":"192.168.0.22:24817","addrs":["10.99.0.1:24817"]})).unwrap());
+        let args=vec!["receive".into(),"mac".into(),"monitor".into(),"192.168.0.22:24817".into()];
+        let cable=source_addresses_for_route(&cfg,&args,Some("10.99.0.1:24817")).unwrap();
+        assert_eq!(cable,vec!["10.99.0.1:24822".parse::<std::net::SocketAddr>().unwrap()]);
+        let standalone=source_addresses_for_route(&cfg,&args,None).unwrap();
+        assert_eq!(standalone,vec!["192.168.0.22:24822".parse::<std::net::SocketAddr>().unwrap(),"10.99.0.1:24822".parse().unwrap()]);
+        assert_eq!(source_addresses_for_route(&cfg,&args,Some("invalid")).unwrap(),standalone);
+    }
     #[tokio::test]
     async fn encrypted_media_finishes_with_a_flushed_stop() {
         timeout(Duration::from_secs(5), async {

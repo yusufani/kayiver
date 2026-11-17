@@ -3,6 +3,9 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
+#include <dxgi1_3.h>
+#include <shobjidl.h>
+#include <shellapi.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mftransform.h>
@@ -54,6 +57,7 @@ static RECT targetRect;
 static volatile LONG stopping=0;
 static bool testMode=false;
 static bool displayInUse=false;
+static ITaskbarList2 *fullscreenShell=nullptr;
 // Synthetic test frames only. Never enable readback for a user's live desktop.
 static const char *testReadbackPath=nullptr;
 static bool testReadbackDone=false;
@@ -102,6 +106,9 @@ struct Renderer {
     Ptr<ID3D11Device> device;
     Ptr<ID3D11DeviceContext> context;
     Ptr<IDXGISwapChain> swap;
+    Ptr<IDXGISwapChain2> pacedSwap;
+    HANDLE frameLatency=nullptr;
+    bool flipPresentation=false;
     Ptr<IMFDXGIDeviceManager> manager;
     Ptr<IMFTransform> decoder;
     Ptr<ID3D11VideoDevice> videoDevice;
@@ -157,8 +164,22 @@ struct Renderer {
         DXGI_SWAP_CHAIN_DESC sd={};sd.BufferDesc.Width=w;sd.BufferDesc.Height=h;sd.BufferDesc.Format=DXGI_FORMAT_B8G8R8A8_UNORM;
         sd.BufferDesc.RefreshRate.Numerator=60;sd.BufferDesc.RefreshRate.Denominator=1;
         sd.SampleDesc.Count=1;sd.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;sd.BufferCount=2;sd.OutputWindow=windowHandle;
-        sd.Windowed=TRUE;sd.SwapEffect=DXGI_SWAP_EFFECT_DISCARD;
-        CHECK(factory->CreateSwapChain(device.p,&sd,swap.put()));
+        sd.Windowed=TRUE;sd.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+        sd.Flags=DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+        HRESULT create=factory->CreateSwapChain(device.p,&sd,swap.put());
+        if(SUCCEEDED(create) && SUCCEEDED(swap->QueryInterface(__uuidof(IDXGISwapChain2),(void **)pacedSwap.put()))
+            && SUCCEEDED(pacedSwap->SetMaximumFrameLatency(1))) {
+            frameLatency=pacedSwap->GetFrameLatencyWaitableObject();
+            flipPresentation=frameLatency!=nullptr;
+        }
+        if(!flipPresentation) {
+            if(frameLatency){CloseHandle(frameLatency);frameLatency=nullptr;}
+            if(pacedSwap.p){pacedSwap.p->Release();pacedSwap.p=nullptr;}
+            if(swap.p){swap.p->Release();swap.p=nullptr;}
+            sd.SwapEffect=DXGI_SWAP_EFFECT_DISCARD;sd.Flags=0;
+            CHECK(factory->CreateSwapChain(device.p,&sd,swap.put()));
+        }
+        fprintf(stderr,"display receiver: presentation=%s\n",flipPresentation?"flip, one queued frame":"legacy fallback");
         factory->MakeWindowAssociation(windowHandle,DXGI_MWA_NO_ALT_ENTER);
         Ptr<IDXGIDevice1> dxgiDevice;CHECK(device->QueryInterface(__uuidof(IDXGIDevice1),(void **)dxgiDevice.put()));
         CHECK(dxgiDevice->SetMaximumFrameLatency(1));
@@ -190,14 +211,18 @@ struct Renderer {
         videoContext->VideoProcessorSetStreamSourceRect(processor.p,0,TRUE,&imageRect);
         videoContext->VideoProcessorSetStreamDestRect(processor.p,0,TRUE,&imageRect);
         videoContext->VideoProcessorSetOutputTargetRect(processor.p,TRUE,&imageRect);
-        Ptr<ID3D11Texture2D> back;CHECK(swap->GetBuffer(0,__uuidof(ID3D11Texture2D),(void **)back.put()));
-        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC view={};view.ViewDimension=D3D11_VPOV_DIMENSION_TEXTURE2D;
-        CHECK(videoDevice->CreateVideoProcessorOutputView(back.p,enumerator.p,&view,outputView.put()));
+        if(!bindBackBuffer())return false;
         D3D11_VIDEO_PROCESSOR_COLOR_SPACE cs={};cs.YCbCr_Matrix=1;cs.Nominal_Range=1;
         videoContext->VideoProcessorSetStreamColorSpace(processor.p,0,&cs);
         cs.RGB_Range=0;videoContext->VideoProcessorSetOutputColorSpace(processor.p,&cs);
         CHECK(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,0));CHECK(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM,0));
         initialized=true;return true;
+    }
+    bool bindBackBuffer() {
+        Ptr<ID3D11Texture2D> back;CHECK(swap->GetBuffer(0,__uuidof(ID3D11Texture2D),(void **)back.put()));
+        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC view={};view.ViewDimension=D3D11_VPOV_DIMENSION_TEXTURE2D;
+        CHECK(videoDevice->CreateVideoProcessorOutputView(back.p,enumerator.p,&view,outputView.put()));
+        return true;
     }
     bool setOutput() {
         Ptr<IMFMediaType> output;
@@ -231,9 +256,17 @@ struct Renderer {
             D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC iv={};iv.ViewDimension=D3D11_VPIV_DIMENSION_TEXTURE2D;iv.Texture2D.ArraySlice=slice;
             Ptr<ID3D11VideoProcessorInputView> inputView;CHECK(videoDevice->CreateVideoProcessorInputView(texture.p,enumerator.p,&iv,inputView.put()));
             D3D11_VIDEO_PROCESSOR_STREAM stream={};stream.Enable=TRUE;stream.pInputSurface=inputView.p;
+            if(frameLatency && !testMode && WaitForSingleObject(frameLatency,500)!=WAIT_OBJECT_0) {
+                fail(E_FAIL,"display presentation stalled");return false;
+            }
+            // Flip presentation rotates its buffers. Reacquire the current
+            // output after pacing, instead of rendering into an old surface.
+            if(flipPresentation && !bindBackBuffer())return false;
             CHECK(videoContext->VideoProcessorBlt(processor.p,outputView.p,0,1,&stream));
             if(!readbackTestFrame())return false;
-            CHECK(swap->Present(1,0));
+            // No extra application vsync wait: the one-frame swap-chain
+            // gate and Windows compositor pace scanout without tearing.
+            CHECK(swap->Present(flipPresentation?0:1,0));
             if(!testMode)PostMessageW(windowHandle,WM_APP+1,0,0);
             LONGLONG timestamp=0;CHECK(decoded->GetSampleTime(&timestamp));
             uint64_t presentedId=(uint64_t)((timestamp*60+5000000)/10000000);
@@ -242,7 +275,7 @@ struct Renderer {
         }
         return true;
     }
-    ~Renderer(){if(initialized){decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM,0);decoder->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH,0);}}
+    ~Renderer(){if(frameLatency)CloseHandle(frameLatency);if(initialized){decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM,0);decoder->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH,0);}}
 };
 
 static DWORD WINAPI consume(LPVOID param) {
@@ -274,6 +307,25 @@ static LRESULT CALLBACK wndproc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
                     PostMessageW(hwnd,WM_CLOSE,0,0);return 0;
                 }
                 displayInUse=true;
+                // Tell Explorer this is an intentional fullscreen surface,
+                // so its fullscreen notification rules can apply. This
+                // changes no global notification preference or history.
+                if(SUCCEEDED(CoCreateInstance(CLSID_TaskbarList,nullptr,CLSCTX_INPROC_SERVER,
+                    __uuidof(ITaskbarList2),(void **)&fullscreenShell))) {
+                    if(FAILED(fullscreenShell->HrInit()) || FAILED(fullscreenShell->MarkFullscreenWindow(hwnd,TRUE))) {
+                        fullscreenShell->Release();fullscreenShell=nullptr;
+                    }
+                }
+                fprintf(stderr,"display receiver: shell fullscreen=%s\n",fullscreenShell?"marked":"unavailable");
+                // The legacy KVM uses this app-owned tray identity. Empty
+                // NIF_INFO dismisses its current connection balloon, without
+                // clearing notification history or touching other senders.
+                if(HWND tray=FindWindowW(L"kayiver_tray_class",L"kayiver")) {
+                    NOTIFYICONDATAW notice={};notice.cbSize=sizeof(notice);
+                    notice.hWnd=tray;notice.uID=0xD41F;notice.uFlags=NIF_INFO;
+                    BOOL cleared=Shell_NotifyIconW(NIM_MODIFY,&notice);
+                    fprintf(stderr,"display receiver: own connection balloon clear=%s\n",cleared?"accepted":"unavailable");
+                }
                 if(!wakeSelectedMonitor()) {
                     PostMessageW(hwnd,WM_CLOSE,0,0);return 0;
                 }
@@ -288,6 +340,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
         case WM_SETCURSOR: if((HWND)wp==hwnd&&LOWORD(lp)==HTCLIENT){SetCursor(nullptr);return TRUE;}break;
         case WM_CLOSE: InterlockedExchange(&stopping,1);DestroyWindow(hwnd);return 0;
         case WM_DESTROY:
+            if(fullscreenShell){fullscreenShell->MarkFullscreenWindow(hwnd,FALSE);fullscreenShell->Release();fullscreenShell=nullptr;}
             if(displayInUse){SetThreadExecutionState(ES_CONTINUOUS);displayInUse=false;}
             PostQuitMessage(0);return 0;
         case WM_ERASEBKGND: return 1;
@@ -314,6 +367,7 @@ extern "C" int kayiver_display_native(int argc,const char **argv) {
     parentHandle=OpenProcess(SYNCHRONIZE,FALSE,(DWORD)strtoul(argv[5],nullptr,10));
     if(!parentHandle)return 4;
     _setmode(_fileno(stdin),_O_BINARY);_setmode(_fileno(stdout),_O_BINARY);
+    HRESULT uiCom=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     WNDCLASSW cls={};cls.lpfnWndProc=wndproc;cls.hInstance=GetModuleHandleW(nullptr);cls.lpszClassName=L"KayiverExtendedDisplay";cls.hbrBackground=(HBRUSH)GetStockObject(BLACK_BRUSH);
     if(!RegisterClassW(&cls))return 5;
     windowHandle=CreateWindowExW(WS_EX_TOPMOST,cls.lpszClassName,L"Kayiver — Mac extended display",WS_POPUP|WS_CLIPCHILDREN,x,y,w,h,nullptr,nullptr,cls.hInstance,nullptr);
@@ -329,5 +383,5 @@ extern "C" int kayiver_display_native(int argc,const char **argv) {
     }
     InterlockedExchange(&stopping,1);CancelSynchronousIo(thread);WaitForSingleObject(thread,2000);
     DWORD exitCode=0;GetExitCodeThread(thread,&exitCode);
-    CloseHandle(thread);CloseHandle(parentHandle);return exitCode==STILL_ACTIVE?1:(int)exitCode;
+    CloseHandle(thread);CloseHandle(parentHandle);if(SUCCEEDED(uiCom))CoUninitialize();return exitCode==STILL_ACTIVE?1:(int)exitCode;
 }

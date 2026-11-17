@@ -58,7 +58,7 @@ fn build_display_native() {
         println!("cargo:rustc-link-arg=-Wl,-weak_framework,ScreenCaptureKit");
         println!("cargo:rustc-link-lib=c++");
     } else {
-        for lib in ["mfplat", "mf", "mfuuid", "wmcodecdspuuid", "strmiids", "d3d11", "dxgi", "ole32", "user32", "gdi32", "wtsapi32"] {
+        for lib in ["mfplat", "mf", "mfuuid", "wmcodecdspuuid", "strmiids", "d3d11", "dxgi", "ole32", "uuid", "shell32", "user32", "gdi32", "wtsapi32"] {
             println!("cargo:rustc-link-lib={lib}");
         }
     }

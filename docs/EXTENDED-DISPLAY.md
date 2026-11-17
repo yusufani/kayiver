@@ -44,26 +44,22 @@ Windows Escape/Stop closes its accepted session. Close or restart the companion
 to revoke a waiting acceptance. There is no automatic stream restart.
 
 The currently installed companion SHA-256 is
-`9e5bd19c1ef4050f5b2d1420444f37bde8ede08dda2daf24fc0a8e3c94d2f0ff`.
+`ed49c8dc5776c2969635e860ce1d1785ebb936db4ab474a6038d9b477064fcf7`.
 Exact-file Defender checks passed at staging and installation; protection is
 still enabled and the original KVM is unchanged. The companion uses the active
 KVM cable route when available, with saved peer addresses as a screen-only
 fallback. Parent exit stops its children.
 
-**Current acceptance is incomplete:** the user reports no image on C even
-while software reports streaming. Read-only telemetry of the selected BenQ
-identity found DDC standby (VCP D6 = 2). A targeted DDC wake changed it to on
-(1), but a later reading returned to standby despite an active Windows display
-power request. Resetting the Windows display idle timer then produced another
-on reading. The receiver now shows its window before resetting that timer,
-holding the continuous playback request, and waking the selected panel. This
-startup change has been built, scanned and installed. At 22:32:48 local
-time, more than five minutes after the 22:27:17 launch, the selected panel
-still reported power-on (D6 = 1), the cable media connection was established,
-and software presentation continued. The physical image still needs user
-confirmation; this is not a complete visual acceptance test. A software frame counter is not proof of a visible image. Do
-not treat this build as ready for daily use until visible output and sustained
-wake behavior are confirmed.
+The initial no-image acceptance failure was traced to the selected BenQ
+reporting standby while the software stream was healthy. Resetting the Windows
+display idle timer, showing the viewer, holding a continuous playback request,
+and waking only the selected panel produced an on reading past the five-minute
+idle timeout. On 17 November the user confirmed visible output and typed `abc`
+into a temporary Mac text field placed on C using their physical Mac mouse and
+keyboard. Cursor telemetry located those samples on the virtual Mac surface
+with control local, forwarding false, and no Windows focus handoff. This proves
+that interaction path; it does not prove all long-running failure scenarios or
+physical color/latency acceptance.
 
 Automatic D3D video enhancement was responsible for excessive brightness in
 the synthetic color fixture. Disabling it reduced sampled patch-interior error
@@ -115,6 +111,45 @@ rejected without moving the display or ending capture. The source's five
 unit tests, companion's six tests, editor syntax check and editor overlap/
 coordinate regressions passed. Positions remain scoped to the current stream;
 this does not add saved desk profiles or claim physical latency/color acceptance.
+
+## Content latency and connection balloons — 17 November 2026
+
+The currently installed receive-only companion uses flip-sequential presentation
+with a waitable swap chain and maximum frame latency of one when supported.
+It reacquires the output surface after pacing and uses `Present(0, 0)` without
+the tearing flag; unsupported systems retain the old blt/vsync path. The live
+receiver log confirmed the flip path on C. Synthetic decoding completed and
+476 patch interiors matched the software reference within one channel value.
+The same renderer source was retained through the final routing/logging build.
+
+The receiver marks its own viewer fullscreen through `ITaskbarList2` and clears
+only Kayiver's legacy connection balloon via an empty `NIF_INFO` for the known
+app tray identity. Live logs reported both marking and balloon clearing
+accepted. This does not disable notification history or global settings and is
+not proof that every third-party toast will be suppressed. Visual confirmation
+that the reported balloon disappeared is pending. The KVM tray source also
+omits connection/lost balloons while an actual visible receiver window exists;
+that change is checked for Windows but is **not** deployed over the published
+0.3.16 KVM binary. The receive-only companion remains isolated from input hooks.
+
+A live input route now takes precedence over saved Wi-Fi and stale manager
+addresses while waiting for the Mac source. Screen-only operation without a
+live input route retains saved-address fallbacks. The bounded optional HTTP
+hint accepts only a complete parsed matching-peer JSON body, even if HTTP close
+is delayed. A regression covers live cable preference and independent saved
+fallbacks. The final live media connection was verified as
+`10.99.0.2 → 10.99.0.1:24822`.
+
+A verified 15-second moving-pattern window on the virtual surface advanced at
+least 747 frames at the 60 fps target, ending with estimated software p95
+10.402 ms. Capture/encode averaged 4.92% of one core and transport 1.34%
+(about 0.52% of the Mac's 12-core total capacity). Global WindowServer was
+52.54% of one core during this separate sample and includes other display/app
+activity; this is not a controlled before/after CPU or scanout-latency result.
+The user's physical A/B and C panels run at 144 Hz, while the virtual source
+remains 60 Hz. Flip presentation does not remove that cadence difference or
+prove a physical content-latency improvement. No 120/144 fps mode was added.
+The companion's seven tests passed and the main Windows source checked.
 
 ## Use
 

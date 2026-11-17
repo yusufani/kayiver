@@ -21,7 +21,10 @@ mod ui {
         socket.set_read_timeout(Some(Duration::from_millis(200))).ok()?;
         socket.set_write_timeout(Some(Duration::from_millis(150))).ok()?;
         socket.write_all(b"GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:24818\r\nConnection: close\r\n\r\n").ok()?;
-        let mut response=Vec::new();socket.take(65536).read_to_end(&mut response).ok()?;
+        let mut response=Vec::new();
+        // A complete JSON response can precede a delayed HTTP close. Accept
+        // only a fully parsed body, even if the bounded final read times out.
+        let _=socket.take(65536).read_to_end(&mut response);
         connected_address(&response,peer)
     }
     fn connected_address(response:&[u8],peer:&str)->Option<String> {
@@ -69,6 +72,18 @@ fn main() -> Result<()> {
         return display::worker(args[1..].to_vec());
     }
     let options = Options::parse();
+    #[cfg(target_os="windows")]
+    if let Some(root)=std::env::var_os("LOCALAPPDATA") {
+        // GUI/task launches have no console. Preserve native diagnostics in
+        // our own installation directory instead of letting PowerShell turn
+        // stderr records into terminating errors. No desktop pixels/keys.
+        let path=std::path::PathBuf::from(root).join("kayiver/display-receiver/diagnostic.log");
+        let truncate=std::fs::metadata(&path).is_ok_and(|m|m.len()>1024*1024);
+        if let Ok(file)=std::fs::OpenOptions::new().create(true).write(true).append(!truncate).truncate(truncate).open(path) {
+            let _=tracing_subscriber::fmt().with_ansi(false).with_max_level(tracing::Level::WARN)
+                .with_writer(std::sync::Mutex::new(file)).try_init();
+        }
+    }
     anyhow::ensure!(cfg!(target_os="windows"),"this companion runs on Windows");
     if options.list {
         println!("{}",display::api_status());

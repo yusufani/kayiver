@@ -19,7 +19,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
-    GetCursorPos, GetMessageW, LoadIconW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
+    FindWindowW, GetCursorPos, GetMessageW, IsWindowVisible, LoadIconW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
     TrackPopupMenu, TranslateMessage, HICON, HMENU, IDI_APPLICATION, MF_STRING, MSG,
     TPM_BOTTOMALIGN, TPM_RIGHTALIGN, WM_APP, WM_COMMAND, WM_DESTROY, WM_RBUTTONUP, WNDCLASSW,
     WINDOW_EX_STYLE, WINDOW_STYLE,
@@ -99,12 +99,18 @@ unsafe fn refresh_with(connected_balloon: bool, lost_balloon: bool) {
     data.uCallbackMessage = WM_TRAY;
     data.hIcon = load_icon();
     fill(&mut data.szTip, &tooltip());
-    if connected_balloon {
+    // A separate receive-only viewer can occupy a local monitor while this
+    // KVM remains on an older protocol. Tooltip/icon updates still run, but
+    // connection balloons must not cover that accepted Mac desktop.
+    let viewer_class=to_wide("KayiverExtendedDisplay");
+    let viewer=FindWindowW(PCWSTR(viewer_class.as_ptr()),PCWSTR::null()).ok();
+    let display_visible=viewer.is_some_and(|h|IsWindowVisible(h).as_bool());
+    if connected_balloon && !display_visible {
         data.uFlags |= NIF_INFO;
         fill(&mut data.szInfoTitle, "Kayıver bağlandı");
         fill(&mut data.szInfo, &tooltip());
         data.dwInfoFlags = NIIF_INFO;
-    } else if lost_balloon {
+    } else if lost_balloon && !display_visible {
         let host = HOST_NAME.get().map(|s| s.as_str()).unwrap_or("host");
         data.uFlags |= NIF_INFO;
         fill(&mut data.szInfoTitle, "Kayıver bağlantısı koptu");
