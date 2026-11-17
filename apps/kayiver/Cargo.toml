@@ -46,6 +46,10 @@ arboard = { version = "3.6.1", default-features = false, features = ["image-data
 [target.'cfg(target_os = "windows")'.dependencies.windows]
 version = "0.62"
 features = [
+    "UI_Notifications",
+    "Data_Xml_Dom",
+    "Win32_System_WinRT",
+    "Win32_System_Registry",
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",

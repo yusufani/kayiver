@@ -91,6 +91,7 @@ pub fn api_status() -> serde_json::Value {
         .collect();
     serde_json::json!({"supported":supported(),"os":std::env::consts::OS,
         "experimental":true,"default_enabled":false,"status":status(),"peers":peers,"monitors":monitors,
+        "preferences":cfg.as_ref().map(|c|c.extra_display).unwrap_or_default(),
         "port":cfg.and_then(|c|c.port.checked_add(PORT_OFFSET))})
 }
 
@@ -126,6 +127,12 @@ fn position_source(v: &serde_json::Value) -> Result<()> {
 pub fn action(body: &[u8]) -> Result<()> {
     let v: serde_json::Value = serde_json::from_slice(body)?;
     let action = v["action"].as_str().context("missing display action")?;
+    if action == "preferences" {
+        anyhow::ensure!(cfg!(target_os="macos"),"change display preferences on the Mac");
+        let preferences:kayiver_core::config::DisplayPreferences=serde_json::from_value(v["preferences"].clone()).context("invalid display preferences")?;
+        let mut cfg=Config::load_or_init()?;cfg.extra_display=preferences;cfg.save()?;
+        return Ok(());
+    }
     if action == "position" {
         #[cfg(target_os = "macos")]
         return position_source(&v);
@@ -318,6 +325,18 @@ pub fn exclude_presentation(
     }
 }
 
+fn display_profile(rect:Rect,preferences:kayiver_core::config::DisplayPreferences)->(u32,u32) {
+    use kayiver_core::config::{DisplayFrameRate,DisplayQuality};
+    let large=rect.w as i64*rect.h as i64>1920*1080;
+    let fps=if preferences.frame_rate==DisplayFrameRate::Fps30 {30}else{60};
+    let bitrate=match (preferences.quality,large) {
+        (DisplayQuality::Economy,false)=>12,(DisplayQuality::Economy,true)=>20,
+        (DisplayQuality::Balanced,false)=>20,(DisplayQuality::Balanced,true)=>35,
+        (DisplayQuality::High,false)=>30,(DisplayQuality::High,true)=>45,
+    };
+    (fps,bitrate)
+}
+
 pub fn validate_size(w: i32, h: i32) -> Result<()> {
     anyhow::ensure!((640..=2560).contains(&w) && (480..=2560).contains(&h) && w%2==0 && h%2==0 && (w as i64)*(h as i64)<=2560*1440,
         "experimental display supports even native dimensions from 640×480 up to 1440p (including portrait)");
@@ -426,6 +445,14 @@ impl Assembly {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn picture_preferences_control_fps_and_native_resolution_budgets() {
+        use kayiver_core::config::{DisplayPreferences,DisplayFrameRate,DisplayQuality};
+        let full=Rect{x:0,y:0,w:1920,h:1080};let large=Rect{w:2560,h:1440,..full};
+        assert_eq!(display_profile(full,DisplayPreferences::default()),(60,20));
+        assert_eq!(display_profile(large,DisplayPreferences{frame_rate:DisplayFrameRate::Fps30,quality:DisplayQuality::High}),(30,45));
+        assert_eq!(display_profile(full,DisplayPreferences{frame_rate:DisplayFrameRate::Fps60,quality:DisplayQuality::Economy}),(60,12));
+    }
     use super::*;
     #[test]
     fn reassembly_bounds_sequence_and_replay() {

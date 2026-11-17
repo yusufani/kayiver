@@ -62,6 +62,27 @@ impl Peer {
     }
 }
 
+/// Preferences do not enable an extra-display session or automatic startup.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all="snake_case")]
+pub enum DisplayFrameRate {
+    #[default]
+    Adaptive,
+    #[serde(rename="30")]
+    Fps30,
+    #[serde(rename="60")]
+    Fps60,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all="snake_case")]
+pub enum DisplayQuality {Economy,#[default] Balanced,High}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default,deny_unknown_fields)]
+pub struct DisplayPreferences {
+    pub frame_rate: DisplayFrameRate,
+    pub quality: DisplayQuality,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// This machine's name in the layout. Defaults to the hostname.
@@ -75,6 +96,8 @@ pub struct Config {
     pub layout: Layout,
     #[serde(default)]
     pub shared_monitor: SharedMonitor,
+    #[serde(default)]
+    pub extra_display: DisplayPreferences,
     #[serde(default)]
     pub remote: RemoteApi,
     /// How long the cursor must rest against a portal edge before it crosses to
@@ -264,6 +287,7 @@ impl Default for Config {
             peers: Vec::new(),
             layout: Layout::default(),
             shared_monitor: SharedMonitor::default(),
+            extra_display: DisplayPreferences::default(),
             remote: RemoteApi::default(),
             edge_dwell_ms: 0,
             corner_barrier_px: 0,
@@ -344,6 +368,19 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn display_preferences_preserve_old_configs_and_reject_unsupported_values() {
+        let text=toml::to_string(&Config::default()).unwrap();
+        let decoded:Config=toml::from_str(&text).unwrap();
+        assert_eq!(decoded.extra_display,DisplayPreferences::default());
+        let mut old:toml::Value=toml::from_str(&text).unwrap();
+        old.as_table_mut().unwrap().remove("extra_display");
+        let old:Config=old.try_into().unwrap();assert_eq!(old.extra_display,DisplayPreferences::default());
+        let supported:DisplayPreferences=toml::from_str("frame_rate = \"30\"\nquality = \"high\"").unwrap();
+        assert_eq!(supported.frame_rate,DisplayFrameRate::Fps30);assert_eq!(supported.quality,DisplayQuality::High);
+        assert!(toml::from_str::<DisplayPreferences>("frame_rate = \"120\"").is_err());
+        assert!(toml::from_str::<DisplayPreferences>("quality = \"lossless\"").is_err());
+    }
     use super::*;
     use crate::layout::{Edge, Link};
 
@@ -358,6 +395,7 @@ mod tests {
                 links: vec![Link { from: "mac-studio".into(), edge: Edge::Right, to: "win".into() }],
             },
             shared_monitor: SharedMonitor::default(),
+            extra_display: DisplayPreferences::default(),
             remote: RemoteApi::default(),
             edge_dwell_ms: 0,
             corner_barrier_px: 0,

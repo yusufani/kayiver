@@ -494,12 +494,9 @@ async fn source(
     state.phase = "connecting".into();
     state.target = Some(rect);
     state.target_id = Some(monitor_id);
-    state.fps = 60;
-    state.bitrate_mbps = if rect.w as i64 * rect.h as i64 > 1920 * 1080 {
-        35
-    } else {
-        20
-    };
+    let (preferred_fps,preferred_bitrate)=display_profile(rect,cfg.extra_display);
+    state.fps = preferred_fps;
+    state.bitrate_mbps = preferred_bitrate;
     let base_bitrate_mbps = state.bitrate_mbps;
     emit(state);
     let mut network = Network::new(reader, writer);
@@ -508,7 +505,7 @@ async fn source(
         if synthetic { "test-source" } else { "source" }.into(),
         rect.w.to_string(),
         rect.h.to_string(),
-        "60".into(),
+        state.fps.to_string(),
         (state.bitrate_mbps * 1_000_000).to_string(),
     ])?;
     let stdout = native.child.stdout.take().unwrap();
@@ -640,7 +637,7 @@ async fn source(
                         let mut sorted:Vec<_>=latencies.iter().copied().collect();sorted.sort_by(f64::total_cmp);
                         state.latency_p95_ms=sorted.get((sorted.len()*95/100).min(sorted.len()-1)).copied();
                         state.phase="streaming".into();state.hardware_confirmed=true;
-                        if last_adapt.elapsed()>Duration::from_secs(3) {
+                        if cfg.extra_display.frame_rate==kayiver_core::config::DisplayFrameRate::Adaptive && last_adapt.elapsed()>Duration::from_secs(3) {
                             let desired=if state.latency_p95_ms.unwrap_or(0.)>80. {30}else if state.latency_p95_ms.unwrap_or(0.)<45. {60}else{state.fps};
                             if desired!=state.fps {native_input.lock().await.write_u8(desired as u8).await?;state.fps=desired;state.bitrate_mbps=if desired==30{base_bitrate_mbps*3/4}else{base_bitrate_mbps};}
                             last_adapt=Instant::now();

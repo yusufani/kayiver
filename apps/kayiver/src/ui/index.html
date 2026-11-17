@@ -463,6 +463,22 @@
   <div id="screenExtensionMonitorRow"><label for="screenExtensionMonitor" id="screenExtensionMonitorLabel">Display</label>
   <select id="screenExtensionMonitor" style="display:block;width:100%;margin:8px 0 16px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px"></select></div>
   <p id="screenExtensionRisk" style="font-size:12px;color:var(--muted);line-height:1.6"></p>
+  <fieldset id="screenPreferences" style="border:1px solid var(--line);border-radius:12px;padding:16px;margin:16px 0">
+    <legend id="screenPreferencesTitle" style="padding:0 6px">Görüntü ayarları</legend>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px"><div>
+    <label for="screenFrameRate" id="screenFrameRateLabel">FPS</label>
+    <select id="screenFrameRate" style="display:block;width:100%;margin:8px 0 16px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px">
+      <option value="adaptive">Otomatik · 60 fps, gerektiğinde 30</option><option value="30">30 fps · düşük yük</option><option value="60">60 fps · sabit hedef</option>
+    </select>
+    </div><div><label for="screenQuality" id="screenQualityLabel">Görüntü kalitesi</label>
+    <select id="screenQuality" style="display:block;width:100%;margin:8px 0 12px;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px">
+      <option value="economy">Ekonomik</option><option value="balanced">Dengeli</option><option value="high">Yüksek</option>
+    </select>
+    </div></div>
+    <p id="screenPreferencesHelp" style="color:var(--muted);font-size:12px;line-height:1.6;margin:8px 0"></p>
+    <button id="screenPreferencesApply" class="ghost" type="button">Kaydet</button>
+    <p id="screenPreferencesMessage" role="status" aria-live="polite" style="font-size:12px;line-height:1.6;margin:8px 0 0;overflow-wrap:anywhere"></p>
+  </fieldset>
   <p id="screenExtensionStatus" role="status" aria-live="polite" style="line-height:1.6;overflow-wrap:anywhere"></p>
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:20px">
     <button id="screenExtensionStart" type="button">Start</button>
@@ -1835,6 +1851,7 @@ document.getElementById('linkGo').addEventListener('click', async () => {
 let pollN = 0;
 let screenExtensionState = null;
 let screenExtensionCanStart = false;
+let screenPreferencesBusy = false;
 function isDisplayPresentation(tile) {
   const s=screenExtensionState, r=s?.target;
   if (!r || !['connecting','streaming','stopping'].includes(s.phase)) return false;
@@ -1849,9 +1866,13 @@ function renderScreenExtensionStatus(s) {
   const active=s && !['off','error',''].includes(s.phase);
   const button=document.getElementById('screenExtensionBtn');button.textContent=(en?'Extra display':'Ek ekran')+(active?' ●':'');
   document.getElementById('screenExtensionStatus').textContent=(phases[s?.phase]||phases.off)+(s?.error?' · '+s.error:'')+
-    (s?.phase==='streaming'&&s.target?' · '+s.target.w+' × '+s.target.h+(en?' · up to ':' · en fazla ')+s.fps+' fps':'');
-  document.getElementById('screenExtensionStart').disabled=!!active||!screenExtensionCanStart;
-  document.getElementById('screenExtensionStop').disabled=!active;
+    (s?.phase==='streaming'&&s.target?' · '+s.target.w+' × '+s.target.h+(en?' · up to ':' · en fazla ')+s.fps+' fps'+(s.bitrate_mbps?' · '+s.bitrate_mbps+' Mbps':''):'');
+  document.getElementById('screenExtensionStart').disabled=screenPreferencesBusy||!!active||!screenExtensionCanStart;
+  document.getElementById('screenExtensionStop').disabled=screenPreferencesBusy||!active;
+  const apply=document.getElementById('screenPreferencesApply');apply.disabled=screenPreferencesBusy;
+  apply.textContent=screenPreferencesBusy?(en?'Applying…':'Uygulanıyor…'):(active&&s?.role==='source'?(en?'Save & restart display':'Kaydet ve ekranı yeniden başlat'):(en?'Save settings':'Ayarları kaydet'));
+  document.getElementById('screenFrameRate').disabled=screenPreferencesBusy;
+  document.getElementById('screenQuality').disabled=screenPreferencesBusy;
   const sourceMachine=s?.role==='source'?machines.find(m=>m.me)?.name:s?.peer;
   const vr=s?.virtual_rect;
   const virtualTile=vr && mons.find(tile=>tile.machine===sourceMachine && tile.realX===vr.x && tile.realY===vr.y && tile.realW===vr.w && tile.realH===vr.h);
@@ -1895,6 +1916,18 @@ async function openScreenExtension() {
     const monitors=document.getElementById('screenExtensionMonitor'), oldMonitor=monitors.value;monitors.replaceChildren();
     for(const m of data.monitors.filter(m=>m.id)) {const o=document.createElement('option');o.value=m.id;o.textContent=(m.index+1)+' · '+m.rect.w+' × '+m.rect.h;monitors.append(o);}
     if([...monitors.options].some(o=>o.value===oldMonitor))monitors.value=oldMonitor;
+    document.getElementById('screenPreferences').hidden=receiving;
+    document.getElementById('screenPreferencesTitle').textContent=en?'Picture settings':'Görüntü ayarları';
+    document.getElementById('screenFrameRateLabel').textContent=en?'Frame rate (FPS)':'Kare hızı (FPS)';
+    document.getElementById('screenQualityLabel').textContent=en?'Picture quality':'Görüntü kalitesi';
+    const rates=document.getElementById('screenFrameRate');
+    const rateLabels=en?['Auto · 60 / 30 fps','30 fps · lower load','60 fps · fixed target']:['Otomatik · 60 / 30 fps','30 fps · düşük yük','60 fps · sabit hedef'];
+    [...rates.options].forEach((o,i)=>o.textContent=rateLabels[i]);rates.value=data.preferences?.frame_rate||'adaptive';
+    const quality=document.getElementById('screenQuality');
+    const qualityLabels=en?['Economy · 12 / 20 Mbps','Balanced · 20 / 35 Mbps','High · 30 / 45 Mbps']:['Ekonomik · 12 / 20 Mbps','Dengeli · 20 / 35 Mbps','Yüksek · 30 / 45 Mbps'];
+    [...quality.options].forEach((o,i)=>o.textContent=qualityLabels[i]);quality.value=data.preferences?.quality||'balanced';
+    document.getElementById('screenPreferencesHelp').textContent=en?'Bitrate budgets are for 1080p / 1440p. Native resolution stays unchanged. Higher quality uses more bandwidth; 60 fps needs more processing. Applying during a session briefly restarts C and restores its position.':'Hız bütçeleri 1080p / 1440p içindir. Doğal çözünürlük korunur. Yüksek kalite daha fazla ağ, 60 fps daha fazla işlem gücü ister. Oturum sırasında uygulamak C’yi kısa süreliğine yeniden başlatır; konumu korunur.';
+    document.getElementById('screenPreferencesMessage').textContent='';
     document.getElementById('screenExtensionMonitorRow').hidden=!receiving;
     document.getElementById('screenExtensionStart').textContent=receiving?(en?'Accept Mac display session':'Mac ekran oturumunu kabul et'):(en?'Use Windows as extra display':'Windows’u ek ekran olarak kullan');
     document.getElementById('screenExtensionStop').textContent=en?'Stop display':'Ekranı durdur';
@@ -1910,8 +1943,42 @@ async function openScreenExtension() {
 }
 document.getElementById('screenExtensionBtn').addEventListener('click',openScreenExtension);
 document.getElementById('screenExtensionClose').addEventListener('click',()=>document.getElementById('screenExtensionDialog').close());
+function selectedScreenPreferences(){return {frame_rate:document.getElementById('screenFrameRate').value,quality:document.getElementById('screenQuality').value};}
+async function displayRequest(body){
+  const response=await fetch('/api/display',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!response.ok)throw new Error(await response.text());return response.json();
+}
+async function waitForDisplay(predicate,timeoutMs){
+  const until=Date.now()+timeoutMs;
+  while(Date.now()<until){
+    const response=await fetch('/api/display');if(!response.ok)throw new Error(await response.text());
+    const data=await response.json();renderScreenExtensionStatus(data.status);
+    if(predicate(data.status))return data.status;
+    if(data.status.phase==='error')throw new Error(data.status.error||'Display stopped');
+    await new Promise(resolve=>setTimeout(resolve,200));
+  }
+  throw new Error(lang==='en'?'Display did not respond in time':'Ekran zamanında yanıt vermedi');
+}
+document.getElementById('screenPreferencesApply').addEventListener('click',async()=>{
+  if(screenPreferencesBusy)return;
+  const before=screenExtensionState?{...screenExtensionState}:null;
+  const message=document.getElementById('screenPreferencesMessage');
+  screenPreferencesBusy=true;renderScreenExtensionStatus(before||{phase:'off'});
+  try {
+    await displayRequest({action:'preferences',preferences:selectedScreenPreferences()});
+    if(before?.role==='source' && before.phase==='streaming'){
+      message.textContent=lang==='en'?'Restarting the display with your settings…':'Ekran seçtiğin ayarlarla yeniden başlatılıyor…';
+      await displayRequest({action:'stop'});await waitForDisplay(s=>!s.virtual_rect && ['off','error'].includes(s.phase),10000);
+      await displayRequest({action:'source',peer:before.peer});await waitForDisplay(s=>s.phase==='streaming',20000);
+      if(before.virtual_rect)await displayRequest({action:'position',x:before.virtual_rect.x,y:before.virtual_rect.y});
+    }
+    message.textContent=lang==='en'?'Settings saved.':'Ayarlar kaydedildi.';
+  }catch(error){message.textContent=String(error.message||error);}
+  finally{screenPreferencesBusy=false;renderScreenExtensionStatus(screenExtensionState||{phase:'off'});}
+});
 async function screenExtensionAction(action) {
   try {
+    if(action==='source')await displayRequest({action:'preferences',preferences:selectedScreenPreferences()});
     const r=await fetch('/api/display',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,peer:document.getElementById('screenExtensionPeer').value,monitor_id:document.getElementById('screenExtensionMonitor').value})});
     if(!r.ok)throw new Error(await r.text());renderScreenExtensionStatus((await r.json()).status);
   }catch(e){document.getElementById('screenExtensionStatus').textContent=String(e);}

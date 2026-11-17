@@ -4,6 +4,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 mod display;
+#[path="display/notification_guard.rs"]
+mod notification_guard;
 #[path = "display/receiver_platform.rs"]
 mod platform;
 
@@ -97,6 +99,8 @@ fn main() -> Result<()> {
     // A second explicit launch must not compete for the same physical panel.
     let _instance=std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,guard_port))
         .context("an extra-display receiver is already open on this Windows session")?;
+    #[cfg(target_os="windows")]
+    let mut banners=notification_guard::Guard::new().map_err(|e|tracing::warn!("notification guard unavailable: {e}")).ok();
     let parent_exit=display::parent_lifetime()?;
     // Explicit launch accepts this paired Mac/physical monitor for this process
     // lifetime only. The saved configuration is never changed.
@@ -108,6 +112,12 @@ fn main() -> Result<()> {
         let mut previous=String::new();
         loop {
             let status=display::status();
+            #[cfg(target_os="windows")]
+            if status.phase=="streaming" {
+                if let Some(guard)=banners.as_mut() {
+                    if let Err(error)=guard.clear_connection_banners() {tracing::warn!("notification guard disabled: {error}");banners=None;}
+                }
+            }
             let next=serde_json::to_string(&status)?;
             if next!=previous {println!("{next}");previous=next;}
             if matches!(status.phase.as_str(),"off"|"error") {

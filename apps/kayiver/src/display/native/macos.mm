@@ -163,7 +163,7 @@ static void encoded(void *context, void *frameContext, OSStatus status,
     NSDictionary *properties=@{
         (__bridge NSString *)kVTCompressionPropertyKey_RealTime:@YES,
         (__bridge NSString *)kVTCompressionPropertyKey_AllowFrameReordering:@NO,
-        (__bridge NSString *)kVTCompressionPropertyKey_ExpectedFrameRate:@60,
+        (__bridge NSString *)kVTCompressionPropertyKey_ExpectedFrameRate:@(fps.load()),
         (__bridge NSString *)kVTCompressionPropertyKey_AverageBitRate:@(self.bitrate),
         (__bridge NSString *)kVTCompressionPropertyKey_MaxKeyFrameInterval:@120,
         (__bridge NSString *)kVTCompressionPropertyKey_ProfileLevel:(__bridge NSString *)kVTProfileLevel_H264_High_AutoLevel,
@@ -251,7 +251,7 @@ static void encoded(void *context, void *frameContext, OSStatus status,
                 SCContentFilter *filter=[[SCContentFilter alloc] initWithDisplay:selected excludingWindows:@[]];
                 SCStreamConfiguration *config=[SCStreamConfiguration new];
                 config.width=self.width; config.height=self.height; config.queueDepth=3;
-                config.minimumFrameInterval=CMTimeMake(1,60); config.showsCursor=YES;
+                config.minimumFrameInterval=CMTimeMake(1,fps.load()); config.showsCursor=YES;
                 if([config respondsToSelector:@selector(setCapturesAudio:)])config.capturesAudio=NO;
                 // ScreenCaptureKit performs this conversion on the GPU. Feed
                 // its IOSurface-backed NV12 buffer directly to VideoToolbox,
@@ -320,10 +320,10 @@ extern "C" int kayiver_display_native(int argc,const char **argv) {
         if(argc!=5 || (strcmp(argv[0],"source")!=0 && strcmp(argv[0],"test-source")!=0)) return 2;
         if(!kayiver_display_available()){fprintf(stderr,"display source: macOS 12.3+ and virtual display support required\n");return 3;}
         int width=atoi(argv[1]),height=atoi(argv[2]),fps=atoi(argv[3]),bitrate=atoi(argv[4]);
-        if(width<640 || height<480 || width>2560 || height>2560 || width%2 || height%2 || width*height>2560*1440 || fps!=60 || bitrate<1000000 || bitrate>45000000) return 2;
+        if(width<640 || height<480 || width>2560 || height>2560 || width%2 || height%2 || width*height>2560*1440 || (fps!=30 && fps!=60) || bitrate<1000000 || bitrate>45000000) return 2;
         signal(SIGPIPE,SIG_IGN); signal(SIGTERM,SIG_IGN);
         [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
-        source=[KVSource new]; source.width=width; source.height=height; source.bitrate=bitrate; source->fps=60; source->busy=false; source->lastFrame=0;
+        source=[KVSource new]; source.width=width; source.height=height; source.bitrate=bitrate; source->fps=fps; source->busy=false; source->lastFrame=0;
         source.testMode=strcmp(argv[0],"test-source")==0;
         if(!source.testMode&&CGPreflightListenEventAccess()) {
             escapeTap=CGEventTapCreate(kCGSessionEventTap,kCGHeadInsertEventTap,kCGEventTapOptionListenOnly,CGEventMaskBit(kCGEventKeyDown),escapeEvent,nullptr);
