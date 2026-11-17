@@ -514,6 +514,10 @@ async fn source(
         w: rect.w,
         h: rect.h,
     };
+    let source_id = if synthetic { None } else {
+        crate::platform::identified_monitors().into_iter().find(|(_,r)| *r == virtual_rect).and_then(|(id,_)|id)
+    };
+    anyhow::ensure!(synthetic || source_id.is_some(), "virtual display identity unavailable");
     if !synthetic {
         native.source_rect = Some(virtual_rect);
         state.virtual_rect = Some(virtual_rect);
@@ -598,6 +602,17 @@ async fn source(
                 return result;
             }
             _=stats_tick.tick()=>{
+                if let Some(id) = source_id.as_ref() {
+                    let (_,current) = crate::platform::identified_monitors().into_iter()
+                        .find(|(key,_)| key.as_ref()==Some(id)).context("virtual display disconnected")?;
+                    anyhow::ensure!(current.w==rect.w && current.h==rect.h,"virtual display resolution changed");
+                    if state.virtual_rect != Some(current) {
+                        native.source_rect=Some(current);
+                        state.virtual_rect=Some(current);
+                        network.control(Control::SourceReady {virtual_rect:current}).await?;
+                        emit(state);
+                    }
+                }
                 if last_report.elapsed()>=Duration::from_secs(1) {state.frames=count.load(Ordering::Relaxed);emit(state);last_report=Instant::now();}
             }
             packet=network.next()=>{

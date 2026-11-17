@@ -1007,6 +1007,9 @@ function makeTile(t) {
       savePositions();
       refreshSnap(); updateOverlap();
       selectScreen(t);
+      if(moved && !panOnly && t.el.classList.contains('display-virtual')) {
+        saveExtendedDisplayPosition().catch(error=>setMsg(String(error.message || error),'err'));
+      }
     };
     const cancel = () => {
       start.forEach(s => { s.g.x=s.x; s.g.y=s.y; pos(s.g); s.g.el.classList.remove('dragging'); });
@@ -1453,12 +1456,12 @@ function updateOverlap() {
   candidate = null;
   let best = null;
   for (const a of mons) {
-    if (!a.me) continue;
+    if (!a.me || a.el.style.display === 'none' || a.el.classList.contains('display-virtual') || a.el.classList.contains('display-presentation')) continue;
     // The monitor already serving as the shared panel is taken — overlapping
     // onto it isn't a "make shared" gesture, so its neighbours just attach.
     if (sharedCfg && a.idx === sharedCfg.local_monitor) continue;
     for (const b of mons) {
-      if (b.me || b.machine === a.machine) continue;
+      if (b.me || b.machine === a.machine || b.el.style.display === 'none' || b.el.classList.contains('display-virtual') || b.el.classList.contains('display-presentation')) continue;
       if (sharedCfg && b.machine === sharedCfg.peer && b.idx === sharedCfg.peer_monitor) continue;
       const area = interArea(a, b);
       if (area <= 0) continue;
@@ -1987,7 +1990,26 @@ function peerArrangements() {
   return out;
 }
 
+// The Mac virtual surface is a real local screen. Apply its editor position
+// directly instead of saving a KVM link or a permanent physical arrangement.
+async function saveExtendedDisplayPosition() {
+  if(screenExtensionState?.role!=='source' || screenExtensionState?.phase!=='streaming') return false;
+  const tile=mons.find(t=>t.el.classList.contains('display-virtual'));
+  const anchor=sharedPair()?.a || mons.find(t=>t.me && t!==tile && t.el.style.display!=='none');
+  if(!tile || !anchor) throw new Error(lang==='en'?'Extra display is not ready':'Ek ekran henüz hazır değil');
+  const sx=anchor.w/anchor.realW, sy=anchor.h/anchor.realH;
+  const body={action:'position',x:Math.round(anchor.realX+(tile.x-anchor.x)/sx),y:Math.round(anchor.realY+(tile.y-anchor.y)/sy)};
+  const r=await fetch('/api/display',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok) throw new Error(await r.text());
+  setMsg(lang==='en'?'Mac extra display position applied':'Mac ek ekran konumu uygulandı','ok');
+  return true;
+}
+
 document.getElementById('save').addEventListener('click', async () => {
+  if(screenExtensionState?.role==='source' && screenExtensionState?.phase==='streaming') {
+    try { await saveExtendedDisplayPosition(); } catch(error) {setMsg(String(error.message || error),'err');}
+    return;
+  }
   const links = currentLinks();
   const body = { links, arrangements: peerArrangements() };
   const r = await fetch('/api/layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

@@ -94,9 +94,44 @@ pub fn api_status() -> serde_json::Value {
         "port":cfg.and_then(|c|c.port.checked_add(PORT_OFFSET))})
 }
 
+/// Move only the temporary Mac surface; never persist it as a physical desk.
+#[cfg(target_os = "macos")]
+fn position_source(v: &serde_json::Value) -> Result<()> {
+    let state = status();
+    anyhow::ensure!(state.role == "source" && state.phase == "streaming", "start the Mac extended display first");
+    let previous = state.virtual_rect.context("virtual display is not ready")?;
+    let coordinate = |key: &str| -> Result<i32> {
+        let value = v[key].as_i64().context("missing display position")?;
+        anyhow::ensure!((-32768..=32767).contains(&value), "display position is out of range");
+        Ok(value as i32)
+    };
+    let desired = Rect { x: coordinate("x")?, y: coordinate("y")?, ..previous };
+    let mut screens = crate::platform::monitors();
+    let index = screens.iter().position(|r| *r == previous).context("display position changed; refresh and retry")?;
+    for (i, other) in screens.iter().enumerate() {
+        if i == index { continue; }
+        let overlaps = (desired.x as i64) < other.x as i64 + other.w as i64
+            && (other.x as i64) < desired.x as i64 + desired.w as i64
+            && (desired.y as i64) < other.y as i64 + other.h as i64
+            && (other.y as i64) < desired.y as i64 + desired.h as i64;
+        anyhow::ensure!(!overlaps, "place the extra display beside an edge, without overlapping another Mac screen");
+    }
+    if previous != desired {
+        screens[index] = desired;
+        anyhow::ensure!(crate::platform::apply_arrangement(&screens)?, "could not apply the display position");
+    }
+    Ok(())
+}
+
 pub fn action(body: &[u8]) -> Result<()> {
     let v: serde_json::Value = serde_json::from_slice(body)?;
     let action = v["action"].as_str().context("missing display action")?;
+    if action == "position" {
+        #[cfg(target_os = "macos")]
+        return position_source(&v);
+        #[cfg(not(target_os = "macos"))]
+        anyhow::bail!("position the extra display from the Mac");
+    }
     if action == "stop" {
         stop();
         return Ok(());

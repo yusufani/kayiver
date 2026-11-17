@@ -86,3 +86,6 @@ pub fn init(){
 pub fn rescue_windows_off(_:Rect)->usize{unreachable!("receiver has no source windows")}
 pub fn cursor_pos()->(i32,i32){unreachable!("receiver cannot inspect cursor")}
 pub fn warp_cursor_settled(_:i32,_:i32){unreachable!("receiver cannot move cursor")}
+
+#[cfg(target_os="macos")]
+pub fn apply_arrangement(_: &[Rect])->anyhow::Result<bool>{anyhow::bail!("receiver cannot arrange a Mac desktop")}

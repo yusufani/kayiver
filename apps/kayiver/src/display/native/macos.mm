@@ -363,8 +363,15 @@ extern "C" int kayiver_display_native(int argc,const char **argv) {
         dispatch_source_set_event_handler(source.parentWatch, ^{
             if(getppid()!=parent) [source stop:@"parent exited"];
             if(!source.testMode) {
-                if(source.display&&!CGRectIsEmpty(source.initialBounds)&&!CGRectEqualToRect(CGDisplayBounds(source.display.displayID),source.initialBounds)) {
-                    [source stop:@"virtual display geometry changed; restart the display session"];
+                if(source.display&&!CGRectIsEmpty(source.initialBounds)) {
+                    CGRect current=CGDisplayBounds(source.display.displayID);
+                    if(!CGSizeEqualToSize(current.size,source.initialBounds.size)) {
+                        [source stop:@"virtual display resolution changed; restart the display session"];
+                    } else {
+                        // Moving a surface keeps the same capture/display ID.
+                        // The worker follows its new origin for routing/cleanup.
+                        source.initialBounds=current;
+                    }
                 }
                 CFDictionaryRef session=CGSessionCopyCurrentDictionary();
                 if(session) {
