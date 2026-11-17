@@ -44,7 +44,7 @@ Windows Escape/Stop closes its accepted session. Close or restart the companion
 to revoke a waiting acceptance. There is no automatic stream restart.
 
 The currently installed companion SHA-256 is
-`ed49c8dc5776c2969635e860ce1d1785ebb936db4ab474a6038d9b477064fcf7`.
+`d59134ce718efec64de2baa27673b809e6799392223de76a28321e41ab7b76a3`.
 Exact-file Defender checks passed at staging and installation; protection is
 still enabled and the original KVM is unchanged. The companion uses the active
 KVM cable route when available, with saved peer addresses as a screen-only
@@ -125,9 +125,11 @@ The same renderer source was retained through the final routing/logging build.
 The receiver marks its own viewer fullscreen through `ITaskbarList2` and clears
 only Kayiver's legacy connection balloon via an empty `NIF_INFO` for the known
 app tray identity. Live logs reported both marking and balloon clearing
-accepted. This does not disable notification history or global settings and is
-not proof that every third-party toast will be suppressed. Visual confirmation
-that the reported balloon disappeared is pending. The KVM tray source also
+accepted. That legacy dismissal did not remove the user's visible banner:
+Windows had converted it to a modern toast. A later app-scoped history removal
+changed the known Kayiver notification count from one to zero, and the user
+confirmed it disappeared. This does not prove that every third-party toast
+will be suppressed or change global settings. The KVM tray source also
 omits connection/lost balloons while an actual visible receiver window exists;
 that change is checked for Windows but is **not** deployed over the published
 0.3.16 KVM binary. The receive-only companion remains isolated from input hooks.
@@ -150,6 +152,49 @@ The user's physical A/B and C panels run at 144 Hz, while the virtual source
 remains 60 Hz. Flip presentation does not remove that cadence difference or
 prove a physical content-latency improvement. No 120/144 fps mode was added.
 The companion's seven tests passed and the main Windows source checked.
+
+## FPS/quality controls and modern banner guard — 17 November 2026
+
+Signed Mac preview `919d164` (workflow `44044117741`) is installed with the same
+designated requirement and existing input permissions. **Extra display →
+Picture settings** provides automatic 60/30 fps, fixed-target 30 fps, and
+fixed-target 60 fps, plus Economy / Balanced / High quality. Their bitrate
+budgets for 1080p / 1440p are 12/20, 20/35, and 30/45 Mbps respectively.
+Resolution stays native; no 120/144 fps, audio, or lossless layer was added.
+Preferences persist under `extra_display` in the ordinary config. Old configs
+still default to adaptive/balanced without enabling a display or auto-start.
+Invalid FPS/quality values are rejected before saving. Initial 30 fps configures
+both ScreenCaptureKit and VideoToolbox at 30, rather than only dropping frames.
+Only the automatic profile uses latency-driven 60↔30 adaptation.
+
+Save during a streaming session explicitly restarts the extra display and
+restores its screen position; Mac app windows can move during that interruption.
+Starting a source also saves the current selector choices first. Live browser
+UI testing selected 30 fps / High, clicked Save & restart, and verified a new
+hardware stream at 30 fps and 30 Mbps with C at `(2781, -1080)`. It then restored
+Automatic / Balanced through the same UI, obtaining a 60 fps target / 20 Mbps
+stream with the same position. The native app panel displays those controls.
+A screenshot is retained under the ignored settings CI artifact directory.
+
+The receive-only companion now includes a modern notification guard. It maps
+only NotifyIconSettings entries whose executable matches our installed KVM
+path to their generated notification identity. While streaming, it checks at
+most twice per second and clears only a sender whose entire history consists
+of the known Kayiver connected/disconnected titles. Mixed/unknown titles and
+other app identities are left alone. It changes no registry value or global
+notification policy and requests no notification-listener permission. A legacy
+KVM may briefly show a banner before this bridge clears it; the future KVM tray
+source also avoids generating banners while a visible receiver exists.
+
+A controlled own-app toast probe observed history counts 0 → 1 → 0 within two
+seconds, with the receiver diagnostic confirming it cleared one connection
+banner. The user had already confirmed the earlier targeted removal worked.
+The final companion passed staging and installed-path Defender checks; runtime
+protection remains enabled and no active threat was reported. The published
+0.3.16 KVM binary/task remains unchanged. Validation passed: nine companion
+tests, seven source/display tests, config compatibility/roundtrip checks,
+editor regression and syntax checks, live UI apply/restart, invalid-preference
+API rejection, cable routing, and the modern banner probe.
 
 ## Use
 
