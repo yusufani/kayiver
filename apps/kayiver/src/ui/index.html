@@ -910,7 +910,7 @@ function buildFromState(s) {
   mons.forEach(pos);
   refreshSnap(); renderLegend(); renderDock();
   const visible = mons.filter(t => t.el.style.display !== 'none');
-  if (!visible.some(t => screenKey(t) === selectedScreen)) selectedScreen = visible.length ? screenKey(visible[0]) : null;
+  if (!visible.some(t => screenKey(t) === selectedScreen) && !screenPreferencesBusy) selectedScreen = visible.length ? screenKey(visible[0]) : null;
   selectScreen();
 }
 
@@ -2019,6 +2019,7 @@ document.getElementById('screenPreferencesApply').addEventListener('click',async
   if(screenPreferencesBusy)return;
   const before=screenExtensionState?{...screenExtensionState}:null;
   const message=document.getElementById('screenPreferencesMessage');
+  const panel=document.getElementById('screenExtensionPanel'), oldPin=panel.dataset.pinned;panel.dataset.pinned='1';
   screenPreferencesBusy=true;renderScreenExtensionStatus(before||{phase:'off'});
   try {
     await displayRequest({action:'preferences',preferences:selectedScreenPreferences()});
@@ -2026,11 +2027,15 @@ document.getElementById('screenPreferencesApply').addEventListener('click',async
       message.textContent=lang==='en'?'Restarting the display with your settings…':'Ekran seçtiğin ayarlarla yeniden başlatılıyor…';
       await displayRequest({action:'stop'});await waitForDisplay(s=>!s.virtual_rect && ['off','error'].includes(s.phase),10000);
       await displayRequest({action:'source',peer:before.peer});await waitForDisplay(s=>s.phase==='streaming',20000);
-      if(before.virtual_rect)await displayRequest({action:'position',x:before.virtual_rect.x,y:before.virtual_rect.y});
+      if(before.virtual_rect){
+        await displayRequest({action:'position',x:before.virtual_rect.x,y:before.virtual_rect.y});
+        await waitForDisplay(s=>s.virtual_rect?.x===before.virtual_rect.x && s.virtual_rect?.y===before.virtual_rect.y,5000);
+      }
+      await refreshStateIfChanged();
     }
     screenPreferencesDirty=false;message.textContent=lang==='en'?'Settings saved.':'Ayarlar kaydedildi.';
   }catch(error){message.textContent=String(error.message||error);}
-  finally{screenPreferencesBusy=false;renderScreenExtensionStatus(screenExtensionState||{phase:'off'});}
+  finally{screenPreferencesBusy=false;if(oldPin)panel.dataset.pinned=oldPin;else delete panel.dataset.pinned;renderScreenExtensionStatus(screenExtensionState||{phase:'off'});}
 });
 async function screenExtensionAction(action) {
   try {
