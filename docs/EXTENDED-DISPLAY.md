@@ -1,5 +1,34 @@
 # Experimental Mac extended display
 
+## High refresh rates and reconnecting an accepted display
+
+Open **Extra display**, select the target screen, and use its right sidebar.
+The Mac shows a waiting indicator until Windows acknowledges presentation.
+Launching the Windows **Kayiver Extra Display** shortcut accepts the paired Mac
+for that receiver process. An interrupted media connection returns to waiting.
+Quitting the receiver ends its acceptance. After a cold Mac launch, start the
+display from the sidebar. Neither side enables the display at login by default.
+
+The fixed 120 and 144 fps targets negotiate against the selected Windows
+monitor's current refresh rate. For example, requesting 144 fps from a 120 Hz
+target sets the virtual display, capture, encoder and receiver to 120 fps.
+High refresh requires an updated receiver. The existing adaptive 60/30, fixed
+30 and fixed 60 options continue to work with the earlier receiver.
+
+| Quality | Up to 1080p | Above 1080p through 1440p |
+| --- | ---: | ---: |
+| Economy | 12 Mbps | 20 Mbps |
+| Balanced | 20 Mbps | 35 Mbps |
+| High | 30 Mbps | 45 Mbps |
+| Ultra | 60 Mbps | 90 Mbps |
+| Studio | 100 Mbps | 150 Mbps |
+
+Budgets are encoder targets. The actual frame and data rates depend on scene
+changes, hardware and available bandwidth. Fixed targets can overload a link
+during motion. Saving the virtual screen's position remembers the last paired
+endpoint, its dimensions and the Mac screen geometry. A matching desk restores
+that placement on the next session.
+
 ## Installation status — 16 November 2026
 
 The Mac preview is now installed as `0.3.17-dev`, signed by the same certificate
@@ -260,7 +289,7 @@ Save also applies that position while streaming. For example, placing C against
 B's top edge moves the actual virtual display above B, so the pointer crosses
 that edge without handing control to Windows. Existing physical Mac screens
 are preserved; rearranging those still requires stopping the extra display.
-Virtual display positions are session-only; saved profiles remain deferred.
+The last compatible virtual display position is restored as described above.
 Origin changes keep capture alive and update the source/receiver rectangles
 and cleanup region by stable display identity. Resolution changes still stop
 the stream. Hidden presentation endpoints and virtual surfaces are excluded

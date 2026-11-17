@@ -893,6 +893,17 @@ async fn receive(
 mod tests {
     use super::*;
     #[test]
+    fn legacy_display_control_stays_compatible() {
+        let start=Control::Start {offset_us:42,fps:None};
+        let json=serde_json::to_value(start).unwrap();
+        assert!(json.get("fps").is_none());
+        let old=serde_json::json!({"type":"offer","version":1,"rect":{"x":0,"y":0,"w":1920,"h":1080},"monitor_id":"panel","time_us":5});
+        assert!(matches!(serde_json::from_value::<Control>(old),Ok(Control::Offer{refresh_hz:None,..})));
+        let new=Control::Start{offset_us:42,fps:Some(120)};
+        assert_eq!(serde_json::to_value(new).unwrap()["fps"],120);
+    }
+
+    #[test]
     fn live_cable_route_beats_stale_wifi_but_screen_only_retains_fallbacks() {
         let mut cfg=Config::default();
         cfg.peers.push(serde_json::from_value(serde_json::json!({"name":"mac","psk":"test","addr":"192.168.0.22:24817","addrs":["10.99.0.1:24817"]})).unwrap());
