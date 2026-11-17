@@ -25,6 +25,7 @@ New-Item -ItemType Directory -Force $root|Out-Null
 Copy-Item -LiteralPath $Path -Destination $exe
 & (Join-Path $PSScriptRoot 'verify-windows-artifact.ps1') -Path $exe -ReportPath (Join-Path $root 'verification.json')
 @{peer=$Peer;monitor_id=$MonitorId}|ConvertTo-Json|Set-Content (Join-Path $root 'selection.json') -Encoding UTF8
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'display-notification-session.ps1') -Destination $root
 $launcher=Join-Path $root 'start.ps1'
 @'
 $ErrorActionPreference='Stop'
@@ -32,6 +33,8 @@ $exe=Join-Path $PSScriptRoot 'kayiver-display-receiver.exe'
 $v=Get-Content -Raw (Join-Path $PSScriptRoot 'verification.json')|ConvertFrom-Json
 if(-not $v.passed -or (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $v.sha256){throw 'Receiver bytes no longer match verification'}
 $s=Get-Content -Raw (Join-Path $PSScriptRoot 'selection.json')|ConvertFrom-Json
+$guard=Join-Path $PSScriptRoot 'display-notification-session.ps1'
+Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList ('-NoProfile -NonInteractive -WindowStyle Hidden -File "'+$guard+'" -OwnerPid '+$PID) -WindowStyle Hidden
 & $exe --peer $s.peer --monitor-id $s.monitor_id > (Join-Path $PSScriptRoot 'status.log') 2> (Join-Path $PSScriptRoot 'errors.log')
 exit $LASTEXITCODE
 '@|Set-Content -LiteralPath $launcher -Encoding UTF8
