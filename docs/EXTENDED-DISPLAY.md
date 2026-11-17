@@ -101,6 +101,21 @@ driver, and never resumes a stream automatically. First-version support is
 one Mac → Windows monitor, native even pixel dimensions up to 2560×1440
 (portrait equivalents included), SDR, up to 60 frames/second, without audio.
 
+## Positioning follow-up — 17 November 2026
+
+Signed preview commit `18716cf` (workflow `44033907313`) was installed with the
+same Mac designated requirement. Dragging C above B in the actual editor moved
+the actual macOS virtual display from `(5120, 0)` to `(2781, -1080)` while
+preserving both physical Mac displays at `(0, 0)` and `(2560, 0)`. The source
+and Windows receiver both reported the new rectangle and continued streaming
+over `10.99.0.2 → 10.99.0.1`. The rendered editor showed C touching B's top edge,
+C identified as a Mac extended display, Save enabled for that position, and no
+shared-panel suggestion. Overlapping and out-of-range position API calls were
+rejected without moving the display or ending capture. The source's five
+unit tests, companion's six tests, editor syntax check and editor overlap/
+coordinate regressions passed. Positions remain scoped to the current stream;
+this does not add saved desk profiles or claim physical latency/color acceptance.
+
 ## Use
 
 The Mac needs a build containing this feature and an existing pairing. Windows
@@ -133,9 +148,18 @@ Mirrored/ambiguous targets and unsupported sizes are rejected. The editor
 labels/merges the presentation endpoint; it is excluded from the input topology.
 Stop the stream before saving a physical desk arrangement, so a temporary
 display is never persisted as part of the ordinary monitor inventory.
-The added Mac surface starts to the right of the current Mac desktop. Custom
-extra-display placement/profiles are deferred; changing its geometry externally
-stops the session instead of keeping stale cursor/layout coordinates.
+The added Mac surface starts to the right of the current Mac desktop. Drag its
+tile in the Mac editor to apply the temporary surface's real macOS position;
+Save also applies that position while streaming. For example, placing C against
+B's top edge moves the actual virtual display above B, so the pointer crosses
+that edge without handing control to Windows. Existing physical Mac screens
+are preserved; rearranging those still requires stopping the extra display.
+Virtual display positions are session-only; saved profiles remain deferred.
+Origin changes keep capture alive and update the source/receiver rectangles
+and cleanup region by stable display identity. Resolution changes still stop
+the stream. Hidden presentation endpoints and virtual surfaces are excluded
+from physical shared-panel suggestions; eligible visible physical screens must
+actually overlap before a suggestion appears.
 
 ### Network and profiles
 
