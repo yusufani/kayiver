@@ -30,6 +30,38 @@ impl std::fmt::Display for PeerDisconnected {
     fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result { f.write_str("display connection interrupted") }
 }
 
+#[derive(Debug)]
+struct CaptureInterrupted;
+impl std::fmt::Display for CaptureInterrupted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Mac display capture interrupted")
+    }
+}
+
+#[derive(Debug)]
+struct DecoderStalled;
+impl std::fmt::Display for DecoderStalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Windows decoder stalled")
+    }
+}
+
+async fn write_decoder_frame(
+    input: &mut (impl tokio::io::AsyncWrite + Unpin), id: u64, captured: u64, data: &[u8],
+) -> Result<()> {
+    let write = async {
+        input.write_u32(data.len() as u32).await?;
+        input.write_u64(captured).await?;
+        input.write_u64(id).await?;
+        input.write_all(data).await?;
+        input.flush().await
+    };
+    // The timeout can leave a partial frame on stdin. Drop the decoder and
+    // the encrypted stream together, and request a fresh source/keyframe.
+    timeout(Duration::from_millis(200), write).await.context(DecoderStalled)??;
+    Ok(())
+}
+
 fn monitor_hz(rect: Rect) -> u32 {
     #[cfg(all(target_os="windows",display_native))]
     {
@@ -128,6 +160,15 @@ pub async fn run(args: Vec<String>) -> Result<()> {
                     match receive(&cfg, &args, &key, &mut state, cancel_rx.clone()).await {
                         Ok(true) if !*cancel_rx.borrow()=>continue,
                         Ok(_)=>break Ok(()),
+                        Err(error) if error.is::<DecoderStalled>() && !*cancel_rx.borrow() => {
+                            eprintln!("display receiver: {error:#}; reopening accepted monitor");
+                            state.phase="listening".into();
+                            state.virtual_rect=None;
+                            state.hardware_confirmed=false;
+                            state.frames=0;
+                            emit(&state);
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
                         Err(error)=>break Err(error),
                     }
                 },
@@ -162,10 +203,11 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     };
     // Route selection and the hardware presenter can still be settling on a
     // cold app launch. The manager bounds startup retries per explicit start.
-    if state.role=="source" && !state.hardware_confirmed && !*cancel_rx.borrow() &&
-        outcome.as_ref().is_err_and(|error|error.is::<tokio::time::error::Elapsed>()) {
+    if state.role=="source" && !*cancel_rx.borrow() && outcome.as_ref().is_err_and(|error|
+        error.is::<CaptureInterrupted>() || (!state.hardware_confirmed && error.is::<tokio::time::error::Elapsed>())
+    ) {
         emit(&Status {phase:"retrying".into(),role:state.role,peer:state.peer,
-            error:Some("The display did not become ready in time".into()),..Default::default()});
+            error:outcome.as_ref().err().map(|error|format!("{error:#}")),..Default::default()});
         return Ok(());
     }
     if state.role=="source" && outcome.as_ref().is_err_and(|error|error.is::<PeerDisconnected>()) && !*cancel_rx.borrow() {
@@ -425,7 +467,7 @@ async fn send_control(tx: &mpsc::Sender<Outbound>, c: Control) -> Result<()> {
     )
     .await
     .context("display control queue stalled")?
-    .context("display writer stopped")?;
+    .context("display writer stopped").context(PeerDisconnected)?;
     Ok(())
 }
 
@@ -605,7 +647,7 @@ async fn source(
         loop {
             let permit = timeout(Duration::from_secs(3), p.acquire())
                 .await
-                .context("receiver stopped presenting frames")??;
+                .context("receiver stopped presenting frames").context(PeerDisconnected)??;
             // Release the native producer only after a network/presentation
             // slot exists, so even a single prefetched frame cannot age in
             // its pipe while both network slots are occupied.
@@ -630,13 +672,13 @@ async fn source(
                         flushed: None,
                     })
                     .await
-                    .context("display writer stopped")?;
+                    .context("display writer stopped").context(PeerDisconnected)?;
                 }
                 Ok::<_, anyhow::Error>(())
             };
             timeout(Duration::from_millis(200), send)
                 .await
-                .context("video backlog exceeded 200 ms")??;
+                .context("video backlog exceeded 200 ms").context(PeerDisconnected)??;
             counter.store(id, Ordering::Relaxed);
         }
         #[allow(unreachable_code)]
@@ -658,11 +700,15 @@ async fn source(
         tokio::select! {
             _=cancel.changed()=>{network.finish().await;return Ok(());}
             result=&mut producer, if !finishing=>{
-                if timeout(Duration::from_secs(2),native.child.wait()).await??.success() {
+                if result.as_ref().is_err_and(|e|e.is::<PeerDisconnected>()) {return result;}
+                // EOF also signals deliberate Escape/lock. Respect a clean
+                // native exit; retry an unexpected capture failure separately.
+                let exit=timeout(Duration::from_secs(2),native.child.wait()).await.context(CaptureInterrupted)??;
+                if exit.success() {
                     if synthetic {finishing=true;continue;}
                     network.finish().await;return Ok(());
                 }
-                return result;
+                return result.context(CaptureInterrupted);
             }
             _=stats_tick.tick()=>{
                 if let Some(id) = source_id.as_ref() {
@@ -841,7 +887,7 @@ async fn receive(
                     presented_us,
                 },
             )
-            .await?;
+            .await.context(PeerDisconnected)?;
             counter.store(frame, Ordering::Relaxed);
         }
         #[allow(unreachable_code)]
@@ -853,7 +899,10 @@ async fn receive(
     loop {
         tokio::select! {
             _=cancel.changed()=>{network.finish().await;return Ok(false);}
-            _result=&mut acks=>{
+            result=&mut acks=>{
+                if let Err(error)=result {
+                    if error.is::<PeerDisconnected>() {return Err(error);}
+                }
                 let exited=timeout(Duration::from_secs(2),native.child.wait()).await??;
                 anyhow::ensure!(exited.success(),"Windows hardware decoder stopped unexpectedly");
                 network.finish().await;return Ok(false);
@@ -873,11 +922,7 @@ async fn receive(
                 let packet=packet?;
                 if packet.first()==Some(&0x10) {
                     if let Some((id,captured,data))=assembly.push(&packet)? {
-                        let write=async {
-                            input.write_u32(data.len() as u32).await?;input.write_u64(captured).await?;input.write_u64(id).await?;
-                            input.write_all(&data).await?;input.flush().await?;Ok::<_,anyhow::Error>(())
-                        };
-                        timeout(Duration::from_millis(200),write).await.context("Windows decoder stalled")??;
+                        write_decoder_frame(&mut input,id,captured,&data).await?;
                     }
                 } else {
                     match serde_json::from_slice::<Control>(&packet)? {
@@ -900,6 +945,16 @@ async fn receive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn decoder_backpressure_restarts_the_session_but_closed_input_does_not() {
+        let (mut input,reader)=tokio::io::duplex(4);
+        let error=write_decoder_frame(&mut input,1,0,&[42;128]).await.unwrap_err();
+        assert!(error.is::<DecoderStalled>());
+        drop(reader);
+        let closed=write_decoder_frame(&mut input,2,0,&[42]).await.unwrap_err();
+        assert!(!closed.is::<DecoderStalled>());
+    }
+
     #[test]
     fn legacy_display_control_stays_compatible() {
         let start=Control::Start {offset_us:42,fps:None};

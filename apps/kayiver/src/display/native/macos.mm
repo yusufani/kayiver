@@ -85,6 +85,10 @@ static void encoded(void *context, void *frameContext, OSStatus status,
                     VTEncodeInfoFlags flags, CMSampleBufferRef sample) {
     @autoreleasepool {
     KVSource *s = (__bridge KVSource *)context;
+    if (status==noErr && (flags & kVTEncodeInfo_FrameDropped)) {
+        s->busy=false;
+        return;
+    }
     if (status || !sample || !CMSampleBufferDataIsReady(sample)) {
         s->busy = false;
         dispatch_async(dispatch_get_main_queue(), ^{[s stop:@"hardware encoding failed"];});

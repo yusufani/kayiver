@@ -260,6 +260,7 @@ pub fn action(body: &[u8]) -> Result<()> {
     m.child = Some(child);
     std::thread::spawn(move || {
         let mut startup_retries=0;
+        let mut streaming_since=None;
         loop {
             for line in std::io::BufReader::new(output).lines() {
                 let Ok(line) = line else { break };
@@ -274,7 +275,10 @@ pub fn action(body: &[u8]) -> Result<()> {
                     || m.status.target != next.target
                     || m.status.virtual_rect != next.virtual_rect;
                 if m.status.phase=="stopping" && !matches!(next.phase.as_str(),"off"|"error") {continue;}
-                if next.phase=="streaming" {startup_retries=0;}
+                if next.phase=="streaming" {
+                    let since=streaming_since.get_or_insert_with(std::time::Instant::now);
+                    if since.elapsed()>=std::time::Duration::from_secs(10) {startup_retries=0;}
+                } else {streaming_since=None;}
                 m.status = next;
                 drop(m);
                 if changed {
