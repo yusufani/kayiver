@@ -292,6 +292,26 @@ static DWORD WINAPI consume(LPVOID param) {
     }
     PostMessageW(windowHandle,WM_CLOSE,0,0);return 0;
 }
+// Explorer can raise the taskbar again after the viewer is already fullscreen.
+// Repair the stacking order only if the taskbar actually covers this monitor.
+static void keepTaskbarBehindViewer(HWND viewer) {
+    if (!IsWindowVisible(viewer)) return;
+    const wchar_t *classes[] = {L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd"};
+    for (const wchar_t *name : classes) {
+        HWND bar = nullptr;
+        while ((bar = FindWindowExW(nullptr, bar, name, nullptr)) != nullptr) {
+            RECT bounds, overlap;
+            if (!IsWindowVisible(bar) || !GetWindowRect(bar, &bounds) ||
+                !IntersectRect(&overlap, &bounds, &targetRect)) continue;
+            POINT center = {(overlap.left + overlap.right) / 2, (overlap.top + overlap.bottom) / 2};
+            if (GetAncestor(WindowFromPoint(center), GA_ROOT) == bar) {
+                SetWindowPos(viewer, HWND_TOPMOST, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                return;
+            }
+        }
+    }
+}
 static LRESULT CALLBACK wndproc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
     switch(msg) {
         case WM_APP+1:
@@ -332,9 +352,13 @@ static LRESULT CALLBACK wndproc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp) {
                 }
             }
             return 0;
-        case WM_COMMAND: if(LOWORD(wp)==100)PostMessageW(hwnd,WM_CLOSE,0,0);return 0;
         case WM_KEYDOWN: if(wp==VK_ESCAPE)PostMessageW(hwnd,WM_CLOSE,0,0);return 0;
-        case WM_TIMER: if(parentHandle&&WaitForSingleObject(parentHandle,0)==WAIT_OBJECT_0)PostMessageW(hwnd,WM_CLOSE,0,0);return 0;
+        case WM_TIMER:
+            if(parentHandle&&WaitForSingleObject(parentHandle,0)==WAIT_OBJECT_0)
+                PostMessageW(hwnd,WM_CLOSE,0,0);
+            else if(displayInUse)
+                keepTaskbarBehindViewer(hwnd);
+            return 0;
         case WM_DISPLAYCHANGE: PostMessageW(hwnd,WM_CLOSE,0,0);return 0;
         case WM_WTSSESSION_CHANGE: if(wp==WTS_SESSION_LOCK||wp==WTS_SESSION_LOGOFF)PostMessageW(hwnd,WM_CLOSE,0,0);return 0;
         case WM_POWERBROADCAST: if(wp==PBT_APMSUSPEND)PostMessageW(hwnd,WM_CLOSE,0,0);return TRUE;
@@ -390,7 +414,6 @@ extern "C" int kayiver_display_native(int argc,const char **argv) {
     if(!RegisterClassW(&cls))return 5;
     windowHandle=CreateWindowExW(WS_EX_TOPMOST,cls.lpszClassName,L"Kayiver — Mac extended display",WS_POPUP|WS_CLIPCHILDREN,x,y,w,h,nullptr,nullptr,cls.hInstance,nullptr);
     if(!windowHandle)return 6;
-    CreateWindowW(L"BUTTON",L"Stop display (Esc)",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,w-180,12,168,36,windowHandle,(HMENU)100,cls.hInstance,nullptr);
     WTSRegisterSessionNotification(windowHandle,NOTIFY_FOR_THIS_SESSION);SetTimer(windowHandle,1,1000,nullptr);
     int size[]={w,h};HANDLE thread=CreateThread(nullptr,0,consume,size,0,nullptr);
     if(!thread){DestroyWindow(windowHandle);CloseHandle(parentHandle);return 7;}

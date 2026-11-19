@@ -265,8 +265,7 @@ ones but cannot provide the new display service.
    if requested, then retry.
 3. Drag a Mac application to the added desktop. Mouse/keyboard sharing need
    not be enabled. The receiver sends no keyboard, pointer or clipboard input.
-4. Stop from either editor. Windows also provides **Stop display (Esc)** in
-   the receiver window. On the Mac, triple Escape is available through the
+4. Stop from either editor. Press **Escape** in the Windows receiver to stop locally. On the Mac, triple Escape is available through the
    input engine or the helper's listen-only observer when the existing Input
    Monitoring permission is granted; the editor Stop button needs no such grant.
 
